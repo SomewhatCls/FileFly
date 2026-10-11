@@ -3774,27 +3774,12 @@ fn table_ui(
         *anchor = None;
     }
     body_resp.context_menu(|ui| {
-        if menu_item(
-            ui,
-            m,
-            pal,
-            Some("new_folder"),
-            "New folder",
-            Some("Ctrl+Shift+N"),
-            true,
-        ) {
+        if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+N"), true, ) {
             actions.push(Action::NewFolder);
             ui.close_menu();
         }
         if menu_item(
-            ui,
-            m,
-            pal,
-            Some("paste"),
-            "Paste",
-            Some("Ctrl+V"),
-            can_paste,
-        ) {
+            ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), can_paste, ) {
             actions.push(Action::Paste);
             ui.close_menu();
         }
@@ -4056,6 +4041,10 @@ fn table_ui(
                     }
                     if menu_item(ui, m, pal, Some("copy"), "Copy", Some("Ctrl+C"), true) {
                         actions.push(Action::Copy(targets.clone()));
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), true) {
+                        actions.push(Action::Paste);
                         ui.close_menu();
                     }
                     if menu_item(ui, m, pal, Some("link"), "Copy path", None, true) {
