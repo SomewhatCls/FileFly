@@ -114,7 +114,7 @@ pub fn system_transparency() -> bool {
 }
 #[cfg(not(windows))]
 pub fn system_transparency() -> bool {
-    true
+    false
 }
 
 /// Hides the window at once, so closing looks instant even if saving takes a moment.

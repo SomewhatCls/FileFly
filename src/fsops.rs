@@ -228,6 +228,7 @@ pub fn copy_item(source: &Path, destination: &Path) -> io::Result<()> {
 // ---------------------------------------------------------------------------------------------
 
 /// Windows marks a cut with this format (DROPEFFECT_MOVE = 2); no format means copy.
+#[cfg(windows)]
 const WIN_DROP_EFFECT: &str = "Preferred DropEffect";
 /// GNOME/Nautilus-style file managers: first line is "cut" or "copy", then one URI per line.
 #[cfg(all(unix, not(target_os = "macos")))]
