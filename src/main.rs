@@ -166,6 +166,22 @@ struct ConfirmPurge {
     text: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum SearchScope {
+    #[default]
+    CurrentDir,
+    System,
+}
+
+impl SearchScope {
+    fn label(self) -> &'static str {
+        match self {
+            SearchScope::CurrentDir => "Current folder",
+            SearchScope::System => "Entire system",
+        }
+    }
+}
+
 struct Tab {
     id: u64,
     dir: PathBuf,
@@ -196,6 +212,8 @@ struct Tab {
     search_lookup: HashMap<PathBuf, usize>, // path -> index into search_results
     /// Normalized query the current search job was started for (see `Explorer::pump_search`).
     search_query: String,
+    chosen_search_scope: SearchScope,
+    current_search_scope: SearchScope
 }
 
 impl Tab {
@@ -228,6 +246,8 @@ impl Tab {
             search_results: Vec::new(),
             search_lookup: HashMap::new(),
             search_query: String::new(),
+            chosen_search_scope: SearchScope::CurrentDir,
+            current_search_scope: SearchScope::CurrentDir,
         }
     }
 
@@ -777,13 +797,26 @@ fn on_search_changed(tab: &mut Tab, show_hidden: bool, fmt: DateFormat, ctx: &eg
     tab.search_lookup.clear();
     tab.rename = None;
     if !tab.search_query.is_empty() {
-        tab.search_job = Some(start_search(
-            tab.dir.clone(),
-            tab.search_query.clone(),
-            show_hidden,
-            fmt,
-            ctx.clone(),
-        ));
+        if tab.chosen_search_scope == SearchScope::System{
+            for d in load_drives(){
+                tab.search_job = Some(start_search(
+                    d.mount_point.clone(),
+                    tab.search_query.clone(),
+                    show_hidden,
+                    fmt,
+                    ctx.clone(),
+                ));
+            }
+        }else{
+            tab.search_job = Some(start_search(
+                tab.dir.clone(),
+                tab.search_query.clone(),
+                show_hidden,
+                fmt,
+                ctx.clone(),
+            ));
+        }
+
     }
     tab.view_dirty = true;
 }
@@ -1618,8 +1651,9 @@ impl Explorer {
             } else {
                 t.search.trim().to_lowercase()
             };
-            if q != t.search_query {
+            if q != t.search_query || t.chosen_search_scope !=  t.current_search_scope{
                 t.search_query = q;
+                t.current_search_scope = t.chosen_search_scope;
                 on_search_changed(t, show_hidden, fmt, ctx);
             }
             poll_search(t, &self.indexer);
@@ -2923,12 +2957,28 @@ fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab, width: f32
         StrokeKind::Inside,
     );
 
-    let icon_c = pos2(pill.right() - m.pad - m.small_icon / 2.0, pill.center().y);
+    // Right-most slot: scope dropdown (icon + chevron)
+    let menu_w = m.small_icon + m.pad * 2.0;
+    let menu_rect = Rect::from_min_max(
+        pos2(pill.right() - menu_w, pill.top()),
+        pill.right_bottom(),
+    );
+    // Slot to its left: clear button (only used when there's text)
+    let clear_w = m.ctl_h * 0.8;
+    let clear_rect = Rect::from_center_size(
+        pos2(menu_rect.left() - clear_w / 2.0, pill.center().y),
+        vec2(clear_w, clear_w),
+    );
+    // Always reserve both slots so the layout never shifts while typing
+    let right_reserved = menu_w + clear_w;
     let te_rect = Rect::from_min_max(
         pill.min + vec2(m.pad * 0.4, 0.0),
-        pill.max - vec2(m.pad * 2.0 + m.small_icon, 0.0),
+        pill.max - vec2(right_reserved, 0.0),
     );
-    let hint = format!("Search {}", tab.title());
+    let hint = match tab.chosen_search_scope {
+        SearchScope::CurrentDir => format!("Search {}", tab.title()),
+        SearchScope::System => "Search entire system".to_owned(),
+    };
     let te = egui::TextEdit::singleline(&mut tab.search)
         .id(Id::new("search_box"))
         .frame(egui::Frame::NONE)
@@ -2954,18 +3004,55 @@ fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab, width: f32
             resp.surrender_focus();
         }
     }
-    if tab.search.is_empty() {
-        draw_icon(ui, icon_c, m.small_icon, "search", pal.text_secondary);
-    } else {
-        let rect = Rect::from_center_size(icon_c, vec2(m.ctl_h * 0.8, m.ctl_h * 0.8));
-        let cr = ui.interact(rect, Id::new("search_clear"), Sense::click());
-        hover_fill(ui, rect, &cr, pal, m);
-        draw_icon(ui, icon_c, m.small_icon * 0.8, "close", pal.text);
+
+    // Clear button
+    if !tab.search.is_empty() {
+        let cr = ui.interact(clear_rect, Id::new("search_clear"), Sense::click());
+        hover_fill(ui, clear_rect, &cr, pal, m);
+        draw_icon(ui, clear_rect.center(), m.small_icon * 0.8, "close", pal.text);
         if cr.clicked() {
             tab.search.clear();
             tab.view_dirty = true;
         }
     }
+
+    // SearchScope dropdown menu
+    let mr = ui.interact(menu_rect, Id::new("search_scope_btn"), Sense::click());
+    hover_fill(ui, menu_rect, &mr, pal, m);
+    let icon_c = pos2(
+        menu_rect.left() + m.pad * 0.5 + m.small_icon / 2.0,
+        pill.center().y,
+    );
+    draw_icon(ui, icon_c, m.small_icon, "search", pal.text_secondary);
+
+    // Small chevron to the right of the icon
+    let cx = icon_c.x + m.small_icon / 2.0 + m.pad * 0.5;
+    let cy = pill.center().y;
+    let s = m.small_icon * 0.18;
+    ui.painter().add(egui::Shape::line(
+        vec![
+            pos2(cx - s, cy - s * 0.5),
+            pos2(cx, cy + s * 0.5),
+            pos2(cx + s, cy - s * 0.5),
+        ],
+        Stroke::new(1.2_f32, pal.text_secondary),
+    ));
+
+    let mr = mr.on_hover_text(format!("Search scope: {}", tab.chosen_search_scope.label()));
+    egui::Popup::menu(&mr)
+        .align(egui::RectAlign::BOTTOM_END)
+        .show(|ui| {
+            ui.set_min_width(140.0);
+            for scope in [SearchScope::CurrentDir, SearchScope::System] {
+                if ui
+                    .selectable_value(&mut tab.chosen_search_scope, scope, scope.label())
+                    .clicked()
+                {
+                    tab.view_dirty = true; // re-run search with the new scope
+                    ui.close();
+                }
+            }
+        });
 }
 
 fn primary_button(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str) -> egui::Response {
@@ -4225,10 +4312,10 @@ fn table_ui(
                     // In search results, show where the item lives relative to the searched folder.
                     let label;
                     let name_text: &str = if searching_now {
-                        label = match e.path.parent().and_then(|p| p.strip_prefix(&*dir).ok()) {
-                            Some(rel) if !rel.as_os_str().is_empty() => {
-                                format!("{}   \u{2192}   {}", e.name, rel.display())
-                            }
+                        let scope = tab.current_search_scope == SearchScope::System;
+                        label = match e.path.parent().and_then(|p| if scope { Some(p) } else { p.strip_prefix(&*dir).ok() }) {
+                            Some(rel) if !rel.as_os_str().is_empty() =>
+                                format!("{}   \u{2192}   {}", e.name, rel.display()),
                             _ => e.name.clone(),
                         };
                         &label
@@ -4872,6 +4959,7 @@ impl Explorer {
         self.sidebar_rect = Some(panel.response.rect);
     }
 
+    //ui_nav represents the navbar found below the tabs.
     fn ui_nav(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
         let nw = (((m.radius + 2) as f32) * (1.0 - self.first_anim)).round() as u8;
@@ -4917,6 +5005,7 @@ impl Explorer {
             });
     }
 
+    //ui_command is the bottom section of the navbar, where you can find quick commands and the settings button
     fn ui_command(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
         let (in_trash, trash_sel, trash_any) = match &self.tabs[self.active].trash {
@@ -5078,6 +5167,8 @@ impl Explorer {
             });
     }
 
+    //The bottom status bar, showing the number of items in the current view and potentially
+    //a loading symbol.
     fn ui_status(&mut self, ui: &mut Ui) {
         let (m, pal) = (self.m, self.pal);
         let tab = &self.tabs[self.active];
@@ -6036,7 +6127,7 @@ impl eframe::App for Explorer {
             self.mica = false;
         }
 
-        // Handle closing before the UI is drawn.
+        // Handle closing the app before the UI is drawn.
         if ctx.input(|i| i.viewport().close_requested()) {
             // Vanish first, then save.
             hide_window(frame);
