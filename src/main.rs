@@ -31,6 +31,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime},
 };
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use sysinfo::Disks;
 use theme::*;
@@ -967,6 +968,9 @@ struct Explorer {
     font_edit: Option<f32>,
     confirm: Option<ConfirmPurge>,
     sidebar_rect: Option<Rect>,
+    key_state: Option<device_query::DeviceState>,
+    prev_paste_key: Cell<bool>,
+    last_paste: Cell<std::time::Instant>,
 
     /// None: the normal single-tab view. Some: up to four tabs tiled in the file area.
     tiles: Option<Tile>,
@@ -1084,12 +1088,30 @@ impl Explorer {
             transparency: system_transparency(),
             backdrop_transp: None,
             peer_under: (Instant::now(), false),
+            key_state: std::panic::catch_unwind(device_query::DeviceState::new).ok(),
+            prev_paste_key: Cell::new(false),
+            last_paste: Cell::new(
+                std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap_or_else(std::time::Instant::now),
+            ),
         };
         app.load_tab(0);
         app.on_active_changed();
         app
     }
 
+    //paste key detection workaround
+    fn paste_key_down(&self) -> bool {
+        use device_query::{DeviceQuery, Keycode};
+        let Some(state) = &self.key_state else { return false };
+        let keys = state.get_keys();
+        #[cfg(target_os = "macos")]
+        let modifier = keys.contains(&Keycode::Command) || keys.contains(&Keycode::RCommand);
+        #[cfg(not(target_os = "macos"))]
+        let modifier = keys.contains(&Keycode::LControl) || keys.contains(&Keycode::RControl);
+        modifier && keys.contains(&Keycode::V)
+    }
     // ------------------------------------------------------------------ navigation
 
     fn load_tab(&mut self, ti: usize) {
@@ -1521,7 +1543,7 @@ impl Explorer {
         if self.conflict.is_some() {
             return; // a question is already on screen
         }
-        let Some((sources, cut)) = self.clipboard.clone() else {
+        let Some((sources, cut)) = get_clipboard() else {
             return;
         };
         let dir = self.tabs[self.active].dir.clone();
@@ -1866,6 +1888,9 @@ impl Explorer {
             tab.selected_paths()
         };
         let active = self.active;
+        let key_down = self.paste_key_down();
+        let paste_edge = key_down && !self.prev_paste_key.get();
+        self.prev_paste_key.set(key_down);
 
         ctx.input_mut(|i| {
             if i.consume_key(M::CTRL | M::SHIFT, Key::Tab) {
@@ -1952,7 +1977,10 @@ impl Explorer {
                     actions.push(Action::Properties(sel[0].clone()));
                 }
             }
-            if ev_paste || (i.modifiers.command && i.key_pressed(Key::V)) {
+            if (ev_paste || (paste_edge && i.focused))
+                && self.last_paste.get().elapsed() > std::time::Duration::from_millis(300)
+            {
+                self.last_paste.set(std::time::Instant::now());
                 actions.push(Action::Paste);
             }
             if i.consume_key(M::NONE, Key::Backspace) {
@@ -2080,11 +2108,13 @@ impl Explorer {
             Action::Open(p) => self.open_path(&p),
             Action::Copy(p) => {
                 if !p.is_empty() {
+                    let _ = set_clipboard(&p, false); // `true` in the Cut arm
                     self.clipboard = Some((p, false));
                 }
             }
             Action::Cut(p) => {
                 if !p.is_empty() {
+                    let _ = set_clipboard(&p, true);
                     self.clipboard = Some((p, true));
                 }
             }
@@ -4886,7 +4916,7 @@ impl Explorer {
         };
         let sel = self.tabs[self.active].selected_paths();
         let (can_paste, hidden, settings_open) = (
-            self.clipboard.is_some(),
+            get_clipboard().is_some(),
             self.settings.show_hidden,
             self.settings_open,
         );
@@ -5145,7 +5175,7 @@ impl Explorer {
     fn ui_central(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         self.fix_tiles();
         let (m, pal) = (self.m, self.pal);
-        let can_paste = self.clipboard.is_some();
+        let can_paste = get_clipboard().is_some();
         let has_peazip = self.peazip.is_some();
         let cut_set: Option<HashSet<PathBuf>> = self
             .clipboard
@@ -5985,7 +6015,7 @@ impl eframe::App for Explorer {
         self.pump_search();
         let rect = ctx.screen_rect();
         let painter = ctx.layer_painter(egui::LayerId::background());
-
+        
         if self.mica{
             painter.rect_filled(rect, 8.0, Color32::from_rgba_unmultiplied(120, 120, 120, 10));
         }else {

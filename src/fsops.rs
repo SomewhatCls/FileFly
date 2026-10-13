@@ -221,6 +221,97 @@ pub fn copy_item(source: &Path, destination: &Path) -> io::Result<()> {
     result
 }
 
+// ---------------------------------------------------------------------------------------------
+// System clipboard: Copy/Cut publish the selection as a file list, Paste reads it back, so it
+// works with Explorer/Finder/file managers and other apps. Same shape as the app's own
+// `clipboard: Option<(Vec<PathBuf>, bool)>` (paths, is_cut).
+// ---------------------------------------------------------------------------------------------
+
+/// Windows marks a cut with this format (DROPEFFECT_MOVE = 2); no format means copy.
+const WIN_DROP_EFFECT: &str = "Preferred DropEffect";
+/// GNOME/Nautilus-style file managers: first line is "cut" or "copy", then one URI per line.
+#[cfg(all(unix, not(target_os = "macos")))]
+const GNOME_FILES: &str = "x-special/gnome-copied-files";
+/// KDE/Dolphin marks a cut with "1" in this format.
+#[cfg(all(unix, not(target_os = "macos")))]
+const KDE_CUT: &str = "application/x-kde-cutselection";
+
+/// `canonicalize` yields `\\?\C:\...` on Windows, which many apps can't paste; drop the prefix.
+fn strip_verbatim(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+        _ => p.to_path_buf(),
+    }
+}
+
+/// Publishes the items on the system clipboard (with the "cut" marker if `cut`). Nothing is copied
+/// or moved here; whichever app pastes does that. macOS has no native file cut, so there a cut
+/// is published as a plain copy (the source stays in place, nothing can be lost).
+pub fn set_clipboard(paths: &[PathBuf], cut: bool) -> io::Result<()> {
+    use clipboard_rs::{Clipboard, ClipboardContent, ClipboardContext};
+    let files = paths
+        .iter()
+        .map(|p| fs::canonicalize(p).map(|c| strip_verbatim(&c).to_string_lossy().into_owned()))
+        .collect::<io::Result<Vec<String>>>()?;
+    // The text copy exists so egui sees a non-empty clipboard and emits Event::Paste on Ctrl+V;
+    // file managers ignore it and use the file list.
+    let mut content = vec![ClipboardContent::Files(files.clone()), ClipboardContent::Text(files.join("\n"))];
+    if cut {
+        #[cfg(windows)]
+        content.push(ClipboardContent::Other(WIN_DROP_EFFECT.into(), 2u32.to_le_bytes().to_vec()));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let mut list = String::from("cut");
+            for f in &files {
+                if let Ok(u) = url::Url::from_file_path(f) {
+                    list.push('\n');
+                    list.push_str(u.as_str());
+                }
+            }
+            content.push(ClipboardContent::Other(GNOME_FILES.into(), list.into_bytes()));
+            content.push(ClipboardContent::Other(KDE_CUT.into(), b"1".to_vec()));
+        }
+    }
+    let ctx = ClipboardContext::new().map_err(|e| io::Error::other(e.to_string()))?;
+    ctx.set(content).map_err(|e| io::Error::other(e.to_string()))
+}
+
+/// The files on the system clipboard (from this app or any other) and whether they were cut.
+/// `None` if the clipboard holds something else, or only items that no longer exist (which also
+/// covers a finished cut-and-paste, since the sources are gone by then).
+pub fn get_clipboard() -> Option<(Vec<PathBuf>, bool)> {
+    use clipboard_rs::{Clipboard, ClipboardContext};
+    let ctx = ClipboardContext::new().ok()?;
+    let paths: Vec<PathBuf> = ctx
+        .get_files()
+        .ok()?
+        .into_iter()
+        .filter_map(|s| {
+            if s.starts_with("file://") {
+                url::Url::parse(&s).ok()?.to_file_path().ok()
+            } else {
+                Some(PathBuf::from(s))
+            }
+        })
+        .filter(|p| fs::symlink_metadata(p).is_ok())
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+    #[cfg(windows)]
+    let cut = match ctx.get_buffer(WIN_DROP_EFFECT) {
+        Ok(b) if b.len() >= 4 => u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 2 != 0,
+        _ => false,
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let cut = ctx.get_buffer(GNOME_FILES).map(|b| b.starts_with(b"cut")).unwrap_or(false)
+        || ctx.get_buffer(KDE_CUT).map(|b| b.starts_with(b"1")).unwrap_or(false);
+    #[cfg(target_os = "macos")]
+    let cut = false;
+    Some((paths, cut))
+}
+
 fn is_cross_device(e: &io::Error) -> bool {
     // ERROR_NOT_SAME_DEVICE on Windows, EXDEV elsewhere
     e.raw_os_error() == Some(if cfg!(windows) { 17 } else { 18 })
