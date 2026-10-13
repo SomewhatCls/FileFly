@@ -4,9 +4,9 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -143,30 +143,103 @@ pub fn unique_copy_name(destination: &Path) -> PathBuf {
     unreachable!()
 }
 
-pub fn copy_item(source: &Path, destination: &Path) -> std::io::Result<()> {
-    if source.is_dir() {
-        if destination.starts_with(source) {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "cannot copy a folder into itself"));
+/// A free name next to `path` for something that is only temporary: the leading dot hides it from
+/// listings, the pid keeps two running instances apart, the counter avoids clobbering a leftover.
+fn free_sibling(path: &Path, tag: &str) -> PathBuf {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    for n in 0u32.. {
+        let candidate = path.with_file_name(format!(".{name}.{tag}-{}-{n}", std::process::id()));
+        if fs::symlink_metadata(&candidate).is_err() {
+            return candidate;
         }
-        fs::create_dir_all(destination)?;
-        for item in fs::read_dir(source)? {
-            let item = item?;
-            copy_item(&item.path(), &destination.join(item.file_name()))?;
+    }
+    unreachable!()
+}
+
+/// Where "Replace" parks the existing item until the new one is safely in place. If the app dies
+/// in between, the original is still sitting next to the destination under this name.
+pub fn backup_name(path: &Path) -> PathBuf {
+    free_sibling(path, "replaced")
+}
+
+/// Final rename of a finished temp item. Antivirus/indexers sometimes hold a just-written file or
+/// folder for a moment, which shows up as "access denied"; a few short retries ride that out.
+fn rename_retry(from: &Path, to: &Path) -> io::Result<()> {
+    let mut attempt = 0u64;
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < 5 && (e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(32)) => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(60 * attempt));
+            }
+            Err(e) => return Err(e),
         }
-        Ok(())
-    } else {
-        fs::copy(source, destination).map(|_| ())
     }
 }
 
-/// Rename when possible, otherwise copy + delete (moves across drives).
-pub fn move_item(source: &Path, destination: &Path) -> std::io::Result<()> {
+/// Recursive copy into `destination` (always a temp folder, so partial results are never visible).
+/// The depth limit turns a junction/symlink loop into an error instead of endless recursion.
+fn copy_tree(source: &Path, destination: &Path, depth: usize) -> io::Result<()> {
+    if depth > 128 {
+        return Err(io::Error::other("folders are nested too deeply (possible link loop)"));
+    }
+    fs::create_dir_all(destination)?;
+    for item in fs::read_dir(source)? {
+        let item = item?;
+        let (from, to) = (item.path(), destination.join(item.file_name()));
+        if from.is_dir() {
+            copy_tree(&from, &to, depth + 1)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies to a temporary name next to the destination and renames it into place only when the
+/// whole copy has succeeded, so the real name never points at a half-written file or folder.
+/// Never overwrites: an existing destination is an error (callers move it aside first).
+pub fn copy_item(source: &Path, destination: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(destination).is_ok() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
+    }
+    let is_dir = source.is_dir();
+    if is_dir && destination.starts_with(source) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot copy a folder into itself"));
+    }
+    let tmp = free_sibling(destination, "part");
+    let copied = if is_dir {
+        copy_tree(source, &tmp, 0)
+    } else {
+        fs::copy(source, &tmp).map(|_| ())
+    };
+    let result = copied.and_then(|_| rename_retry(&tmp, destination));
+    if result.is_err() {
+        let _ = remove_existing(&tmp); // don't leave the partial copy behind
+    }
+    result
+}
+
+fn is_cross_device(e: &io::Error) -> bool {
+    // ERROR_NOT_SAME_DEVICE on Windows, EXDEV elsewhere
+    e.raw_os_error() == Some(if cfg!(windows) { 17 } else { 18 })
+}
+
+/// Rename when possible (atomic on one drive); copy + delete only when the rename failed because
+/// the destination is on another drive. Any other failure (item in use, access denied, ...) is
+/// reported as is, without half-moving anything. Never replaces an existing destination.
+pub fn move_item(source: &Path, destination: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(destination).is_ok() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
+    }
     match fs::rename(source, destination) {
         Ok(()) => Ok(()),
-        Err(_) => {
-            copy_item(source, destination)?;
+        Err(e) if is_cross_device(&e) => {
+            copy_item(source, destination)?; // source stays untouched until this fully succeeded
             remove_existing(source)
         }
+        Err(e) => Err(e),
     }
 }
 

@@ -1,5 +1,6 @@
 Cargo.lock
-target/
-.idea/
+target
+.idea
 *.iss
-installer/
+installer
+.backup

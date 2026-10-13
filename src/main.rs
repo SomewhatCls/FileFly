@@ -31,8 +31,10 @@ use std::{
     },
     time::{Duration, Instant, SystemTime},
 };
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use sysinfo::Disks;
 use theme::*;
+use jwalk::{Parallelism, WalkDir};
 
 // ==============================================================================================
 // Data
@@ -58,6 +60,38 @@ impl Entry {
             self.dir_size.unwrap_or(0)
         } else {
             self.size
+        }
+    }
+    fn from_path(name: String, path: PathBuf, md: &fs::Metadata, fmt: DateFormat) -> Self {
+        let is_link = md.file_type().is_symlink();
+        let target = if is_link { fs::metadata(&path).ok() } else { None };
+        let eff = target.as_ref().unwrap_or(md);
+        let is_dir = eff.is_dir();
+        let modified = eff.modified().ok().or_else(|| md.modified().ok());
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase());
+        let (type_text, icon) = if is_dir {
+            ("File folder".to_owned(), "folder")
+        } else {
+            match &ext {
+                Some(e) => (format!("{} file", e.to_uppercase()), icon_for_extension(e)),
+                None => ("File".to_owned(), "file"),
+            }
+        };
+        Self {
+            name_lc: name.to_lowercase(),
+            name,
+            path,
+            is_dir,
+            is_link,
+            size: if is_dir { 0 } else { eff.len() },
+            modified,
+            date_text: format_date(modified, fmt, false),
+            type_text,
+            icon,
+            dir_size: None,
         }
     }
 }
@@ -155,6 +189,11 @@ struct Tab {
     rename: Option<RenameState>,
     pending_rename: Option<PathBuf>,
     trash: Option<TrashState>,
+    search_job: Option<SearchJob>,
+    search_results: Vec<Entry>,
+    search_lookup: HashMap<PathBuf, usize>, // path -> index into search_results
+    /// Normalized query the current search job was started for (see `Explorer::pump_search`).
+    search_query: String,
 }
 
 impl Tab {
@@ -183,6 +222,10 @@ impl Tab {
             rename: None,
             pending_rename: None,
             trash: None,
+            search_job: None,
+            search_results: Vec::new(),
+            search_lookup: HashMap::new(),
+            search_query: String::new(),
         }
     }
 
@@ -202,7 +245,7 @@ impl Tab {
         // `get`, not indexing: right after a listing refresh `view` may briefly be stale.
         self.view
             .iter()
-            .filter_map(|&i| self.entries.get(i))
+            .filter_map(|&i| self.source().get(i))
             .map(|e| &e.path)
             .filter(|p| self.selected.contains(*p))
             .cloned()
@@ -217,6 +260,30 @@ impl Tab {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.dir.display().to_string())
+    }
+    fn searching(&self) -> bool {
+        !self.search.trim().is_empty()
+    }
+    /// Everything that indexes into `view` (the table, selection, context menu) must read from this instead of `self.entries`.
+    fn source(&self) -> &[Entry] {
+        if self.search.trim().is_empty() { &self.entries } else { &self.search_results }
+    }
+
+    /// Index of `p` in whichever list `view` currently points into.
+    fn index_of(&self, p: &Path) -> Option<usize> {
+        if self.searching() {
+            self.search_lookup.get(p).copied()
+        } else {
+            self.lookup.get(p).copied()
+        }
+    }
+
+    fn find(&self, p: &Path) -> Option<&Entry> {
+        if self.search.trim().is_empty() {
+            self.lookup.get(p).map(|&i| &self.entries[i])
+        } else {
+            self.search_lookup.get(p).map(|&i| &self.search_results[i])
+        }
     }
 }
 
@@ -601,57 +668,158 @@ fn read_listing(dir: &Path, show_hidden: bool, fmt: DateFormat) -> Result<Vec<En
     let rd = fs::read_dir(dir).map_err(|e| format!("Could not read this folder: {e}"))?;
     let mut out = Vec::with_capacity(256);
     for item in rd.flatten() {
-        // DirEntry::metadata() is free on Windows and carries the real attributes of junctions.
         let Ok(md) = item.metadata() else { continue };
         let name = item.file_name().to_string_lossy().into_owned();
         if !show_hidden && is_hidden_entry(&name, &md) {
             continue;
         }
-        let path = item.path();
-        let is_link = md.file_type().is_symlink();
-        let target = if is_link {
-            fs::metadata(&path).ok()
-        } else {
-            None
-        };
-        let eff = target.as_ref().unwrap_or(&md);
-        let is_dir = eff.is_dir();
-        let modified = eff.modified().ok().or_else(|| md.modified().ok());
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase());
-        let (type_text, icon) = if is_dir {
-            ("File folder".to_owned(), "folder")
-        } else {
-            match &ext {
-                Some(e) => (format!("{} file", e.to_uppercase()), icon_for_extension(e)),
-                None => ("File".to_owned(), "file"),
-            }
-        };
-        out.push(Entry {
-            name_lc: name.to_lowercase(),
-            name,
-            path,
-            is_dir,
-            is_link,
-            size: if is_dir { 0 } else { eff.len() },
-            modified,
-            date_text: format_date(modified, fmt, false),
-            type_text,
-            icon,
-            dir_size: None,
-        });
+        out.push(Entry::from_path(name, item.path(), &md, fmt));
     }
     Ok(out)
 }
 
+const SEARCH_THREADS: usize = 4; // raise for more speed, lower for less CPU
+const MAX_RESULTS: usize = 100_000;
+
+pub struct SearchJob {
+    rx: mpsc::Receiver<Vec<Entry>>,
+    cancel: Arc<AtomicBool>,
+    pub done: bool,
+}
+
+impl Drop for SearchJob {
+    fn drop(&mut self) {
+        self.cancel.store(true, AtomicOrdering::Relaxed); // dropping = cancelling
+    }
+}
+
+fn start_search(root: PathBuf, query: String, show_hidden: bool, fmt: DateFormat, ctx: egui::Context, ) -> SearchJob {
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let c = cancel.clone();
+
+    std::thread::spawn(move || {
+        let c_walk = c.clone();
+        let walker = WalkDir::new(&root)
+            .skip_hidden(false)
+            .follow_links(false)
+            .parallelism(Parallelism::RayonNewPool(SEARCH_THREADS))
+            .process_read_dir(move |_, _, _, children| {
+                if c_walk.load(AtomicOrdering::Relaxed) {
+                    children.clear(); // stop descending
+                    return;
+                }
+                if !show_hidden {
+                    // don't walk into dot-folders (.git etc.) at all
+                    children.retain(|c| match c {
+                        Ok(d) => !d.file_name().to_string_lossy().starts_with('.'),
+                        Err(_) => false,
+                    });
+                }
+            });
+
+        let mut batch: Vec<Entry> = Vec::new();
+        let mut sent = 0usize;
+        let mut last_flush = Instant::now();
+
+        for res in walker {
+            if c.load(AtomicOrdering::Relaxed) {
+                return;
+            }
+            let Ok(de) = res else { continue };
+            if de.depth() == 0 {
+                continue;
+            }
+            let name = de.file_name().to_string_lossy().into_owned();
+            if !name.to_lowercase().contains(&query) {
+                continue;
+            }
+            // only matches pay for a metadata call
+            let Ok(md) = de.metadata() else { continue };
+            if !show_hidden && is_hidden_entry(&name, &md) {
+                continue;
+            }
+            batch.push(Entry::from_path(name, de.path(), &md, fmt));
+
+            if batch.len() >= 256 || last_flush.elapsed() > Duration::from_millis(50) {
+                sent += batch.len();
+                if tx.send(std::mem::take(&mut batch)).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+                last_flush = Instant::now();
+                if sent >= MAX_RESULTS {
+                    break; // fall through so the channel is closed and `done` gets set
+                }
+            }
+        }
+        if !batch.is_empty() {
+            let _ = tx.send(batch);
+        }
+        drop(tx); // disconnect first, so the repaint below sees `done`
+        ctx.request_repaint();
+    });
+
+    SearchJob { rx, cancel, done: false }
+}
+
+fn on_search_changed(tab: &mut Tab, show_hidden: bool, fmt: DateFormat, ctx: &egui::Context) {
+    tab.search_job = None; // dropping the old job cancels its walk
+    tab.search_results.clear();
+    tab.search_lookup.clear();
+    tab.rename = None;
+    if !tab.search_query.is_empty() {
+        tab.search_job = Some(start_search(
+            tab.dir.clone(),
+            tab.search_query.clone(),
+            show_hidden,
+            fmt,
+            ctx.clone(),
+        ));
+    }
+    tab.view_dirty = true;
+}
+
+fn poll_search(tab: &mut Tab, indexer: &Indexer) {
+    use mpsc::TryRecvError;
+    let Some(job) = &mut tab.search_job else { return };
+    let mut changed = false;
+    loop {
+        match job.rx.try_recv() {
+            Ok(mut batch) => {
+                for e in batch.iter_mut().filter(|e| e.is_dir && !e.is_link) {
+                    e.dir_size = indexer.lookup(&e.path);
+                }
+                let base = tab.search_results.len();
+                for (k, e) in batch.iter().enumerate() {
+                    tab.search_lookup.insert(e.path.clone(), base + k);
+                }
+                tab.search_results.extend(batch);
+                changed = true;
+            }
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => {
+                job.done = true;
+                break;
+            }
+        }
+    }
+    if changed {
+        tab.view_dirty = true;
+    }
+}
+
 fn rebuild_view(tab: &mut Tab) {
-    let q = tab.search.trim().to_lowercase();
-    let entries = &tab.entries;
+    // While searching, the walker has already filtered by name, so no contains() check here.
+    let entries = if tab.search.trim().is_empty() {
+        &tab.entries
+    } else {
+        &tab.search_results
+    };
+
     tab.view.clear();
-    tab.view
-        .extend((0..entries.len()).filter(|&i| q.is_empty() || entries[i].name_lc.contains(&q)));
+    tab.view.extend(0..entries.len());
+
     let (col, asc) = (tab.sort_col, tab.sort_asc);
     tab.view.sort_by(|&a, &b| {
         let (ea, eb) = (&entries[a], &entries[b]);
@@ -1304,10 +1472,17 @@ impl Explorer {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
+                // "Replace": park the old item next to the destination first and delete it only
+                // once the new one is in place, so a failure or crash can't leave neither.
+                let mut backup: Option<PathBuf> = None;
                 if it.replace && occupied(&it.dst) {
-                    if let Err(e) = remove_existing(&it.dst) {
-                        errors.push(format!("Could not replace “{name}”: {e}"));
-                        continue;
+                    let aside = backup_name(&it.dst);
+                    match fs::rename(&it.dst, &aside) {
+                        Ok(()) => backup = Some(aside),
+                        Err(e) => {
+                            errors.push(format!("Could not replace “{name}”: {e}"));
+                            continue;
+                        }
                     }
                 }
                 let r = if cut {
@@ -1315,6 +1490,16 @@ impl Explorer {
                 } else {
                     copy_item(&it.src, &it.dst)
                 };
+                match (&r, backup) {
+                    (Ok(()), Some(b)) => {
+                        let _ = remove_existing(&b);
+                    }
+                    (Err(_), Some(b)) => {
+                        let _ = remove_existing(&it.dst); // anything half-written
+                        let _ = fs::rename(&b, &it.dst); // put the original back
+                    }
+                    _ => {}
+                }
                 if let Err(e) = r {
                     errors.push(format!("Could not paste “{name}”: {e}"));
                 }
@@ -1393,6 +1578,25 @@ impl Explorer {
         });
     }
 
+    /// Starts/cancels the recursive search whenever a tab's search text changes (this also
+    /// covers Escape, the clear button and navigation, which all just clear `tab.search`),
+    /// and drains results from the running job.
+    fn pump_search(&mut self) {
+        let (show_hidden, fmt) = (self.settings.show_hidden, self.settings.date_format);
+        for t in &mut self.tabs {
+            let q = if t.trash.is_some() {
+                String::new()
+            } else {
+                t.search.trim().to_lowercase()
+            };
+            if q != t.search_query {
+                t.search_query = q;
+                on_search_changed(t, show_hidden, fmt, &self.ctx);
+            }
+            poll_search(t, &self.indexer);
+        }
+    }
+
     fn pump_messages(&mut self) {
         let active_id = self.tabs[self.active].id;
         let mut reindex = false;
@@ -1430,10 +1634,12 @@ impl Explorer {
                                         t.select_only(p);
                                     }
                                 }
-                                let lookup = &t.lookup;
-                                t.selected.retain(|p| lookup.contains_key(p));
-                                if t.anchor.as_ref().is_some_and(|a| !lookup.contains_key(a)) {
-                                    t.anchor = None;
+                                if !t.searching() {
+                                    let lookup = &t.lookup;
+                                    t.selected.retain(|p| lookup.contains_key(p));
+                                    if t.anchor.as_ref().is_some_and(|a| !lookup.contains_key(a)) {
+                                        t.anchor = None;
+                                    }
                                 }
                                 // `view` holds indices into `entries`; they are stale as soon as the
                                 // list changes. Rebuild now, before anything else touches them
@@ -1497,6 +1703,8 @@ impl Explorer {
                             self.load_trash(ti);
                         } else {
                             self.load_tab(ti);
+                            // forces pump_search to rerun an active search (results may be stale)
+                            self.tabs[ti].search_query.clear();
                         }
                     }
                 }
@@ -1521,6 +1729,14 @@ impl Explorer {
                         if t.sort_col == SortColumn::Size {
                             t.view_dirty = true;
                         }
+                    }
+                }
+                if let Some(&i) = t.search_lookup.get(&path) {
+                    if let Some(e) = t.search_results.get_mut(i) {
+                        e.dir_size = Some(size);
+                    }
+                    if t.searching() && t.sort_col == SortColumn::Size {
+                        t.view_dirty = true;
                     }
                 }
             }
@@ -1883,10 +2099,14 @@ impl Explorer {
             Action::Paste => self.paste(),
             Action::Rename(p) => {
                 let tab = &mut self.tabs[ti];
-                if let Some(&i) = tab.lookup.get(&p) {
+                if let Some(i) = tab.index_of(&p) {
+                    let (name, is_dir) = {
+                        let e = &tab.source()[i];
+                        (e.name.clone(), e.is_dir)
+                    };
                     tab.rename = Some(RenameState {
-                        text: tab.entries[i].name.clone(),
-                        is_dir: tab.entries[i].is_dir,
+                        text: name,
+                        is_dir,
                         path: p.clone(),
                         focus_pending: true,
                     });
@@ -1913,11 +2133,21 @@ impl Explorer {
                 }
                 let Some(parent) = p.parent() else { return };
                 let dest = parent.join(&new_name);
+                // fs::rename silently replaces an existing file on Windows, so check first.
+                // (Changing only the letter case is the same file and stays allowed.)
+                if fs::symlink_metadata(&dest).is_ok()
+                    && !p.as_os_str().eq_ignore_ascii_case(dest.as_os_str())
+                {
+                    self.tabs[ti].error =
+                        Some(format!("An item named “{new_name}” already exists here."));
+                    return;
+                }
                 match fs::rename(&p, &dest) {
                     Ok(()) => {
                         self.indexer.invalidate(&p);
                         self.tabs[ti].select_only(dest);
                         self.load_tab(ti);
+                        self.tabs[ti].search_query.clear(); // rerun an active search
                     }
                     Err(e) => self.tabs[ti].error = Some(format!("Could not rename item: {e}")),
                 }
@@ -2033,11 +2263,15 @@ impl Explorer {
                 if tab.trash.is_some() {
                     return;
                 }
-                tab.selected = tab
-                    .view
-                    .iter()
-                    .map(|&i| tab.entries[i].path.clone())
-                    .collect();
+                let all: HashSet<PathBuf> = {
+                    let src = tab.source();
+                    tab.view
+                        .iter()
+                        .filter_map(|&i| src.get(i))
+                        .map(|e| e.path.clone())
+                        .collect()
+                };
+                tab.selected = all;
             }
             Action::MoveSelection(delta) => {
                 let tab = &mut self.tabs[ti];
@@ -2051,13 +2285,13 @@ impl Explorer {
                 let cur = tab
                     .anchor
                     .as_ref()
-                    .and_then(|s| tab.lookup.get(s))
-                    .and_then(|&i| tab.view.iter().position(|&v| v == i));
+                    .and_then(|s| tab.index_of(s))
+                    .and_then(|i| tab.view.iter().position(|&v| v == i));
                 let next = match cur {
                     Some(c) => (c as i32 + delta).clamp(0, tab.view.len() as i32 - 1) as usize,
                     None => 0,
                 };
-                let path = tab.entries[tab.view[next]].path.clone();
+                let path = tab.source()[tab.view[next]].path.clone();
                 tab.select_only(path);
                 tab.scroll_to = Some(next);
             }
@@ -2071,7 +2305,7 @@ impl Explorer {
                     return;
                 }
                 let i = if last { tab.view.len() - 1 } else { 0 };
-                let path = tab.entries[tab.view[i]].path.clone();
+                let path = tab.source()[tab.view[i]].path.clone();
                 tab.select_only(path);
                 tab.scroll_to = Some(i);
             }
@@ -3591,6 +3825,8 @@ fn table_ui(
         id: tab_id,
         dir,
         entries,
+        search_results,
+        search_job,
         view,
         selected,
         anchor,
@@ -3605,6 +3841,13 @@ fn table_ui(
         ..
     } = tab;
     let tab_id = *tab_id;
+    // `view` holds indices into whichever list is on screen.
+    let searching_now = !search.trim().is_empty();
+    let entries: &Vec<Entry> = if searching_now {
+        &*search_results
+    } else {
+        &*entries
+    };
     let avail = (ui.available_width() - m.pad * 0.5).max(100.0);
 
     // ---- error bar (Fluent InfoBar)
@@ -3802,7 +4045,11 @@ fn table_ui(
         let msg = if *loading {
             "Loading…"
         } else if !search.trim().is_empty() {
-            "No items match your search"
+            if search_job.as_ref().is_some_and(|j| !j.done) {
+                "Searching…"
+            } else {
+                "No items match your search"
+            }
         } else {
             "This folder is empty"
         };
@@ -3936,10 +4183,23 @@ fn table_ui(
                         actions.push(Action::CommitRename(rs.path.clone(), rs.text.clone()));
                     }
                 } else {
+                    // In search results, show where the item lives relative to the searched folder.
+                    let label;
+                    let name_text: &str = if searching_now {
+                        label = match e.path.parent().and_then(|p| p.strip_prefix(&*dir).ok()) {
+                            Some(rel) if !rel.as_os_str().is_empty() => {
+                                format!("{}   \u{2192}   {}", e.name, rel.display())
+                            }
+                            _ => e.name.clone(),
+                        };
+                        &label
+                    } else {
+                        &e.name
+                    };
                     paint_text(
                         ui,
                         name_rect,
-                        &e.name,
+                        name_text,
                         FontId::proportional(m.font),
                         text_col,
                         false,
@@ -3950,6 +4210,7 @@ fn table_ui(
                     match (e.dir_size, e.is_link) {
                         (Some(s), _) => format_size(s),
                         (None, true) => "—".to_owned(),
+                        (None, false) if searching_now => "—".to_owned(),
                         (None, false) => "Calculating…".to_owned(),
                     }
                 } else {
@@ -4800,8 +5061,7 @@ impl Explorer {
         } else if !tab.selected.is_empty() {
             let (mut count, mut bytes, mut all_known) = (0usize, 0u64, true);
             for p in &tab.selected {
-                if let Some(&i) = tab.lookup.get(p) {
-                    let e = &tab.entries[i];
+                if let Some(e) = tab.find(p) {
                     count += 1;
                     match if e.is_dir { e.dir_size } else { Some(e.size) } {
                         Some(s) => bytes = bytes.saturating_add(s),
@@ -4818,6 +5078,9 @@ impl Explorer {
                     text.push_str(&format!("   {}", format_size(bytes)));
                 }
             }
+        }
+        if tab.trash.is_none() && tab.search_job.as_ref().is_some_and(|j| !j.done) {
+            text.push_str("   |   searching…");
         }
         let busy =
             self.jobs_running > 0 || tab.loading || tab.trash.as_ref().is_some_and(|t| t.loading);
@@ -5719,6 +5982,7 @@ impl eframe::App for Explorer {
         self.track_window(ctx);
         handle_resize(ctx, &self.m);
         self.pump_messages();
+        self.pump_search();
         let rect = ctx.screen_rect();
         let painter = ctx.layer_painter(egui::LayerId::background());
 
