@@ -717,66 +717,67 @@ impl Drop for SearchJob {
 }
 
 //Executes recursive search, called when search field input changes
-fn start_search(root: PathBuf, query: String, show_hidden: bool, fmt: DateFormat, ui: egui::Context, ) -> SearchJob {
+fn start_search(roots: Vec<PathBuf>, query: String, show_hidden: bool, fmt: DateFormat, ui: egui::Context, ) -> SearchJob {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let c = cancel.clone();
 
     std::thread::spawn(move || {
-        let c_walk = c.clone();
-        let walker = WalkDir::new(&root)
-            .skip_hidden(false)
-            .follow_links(false)
-            .parallelism(Parallelism::RayonNewPool(SEARCH_THREADS))
-            .process_read_dir(move |_, _, _, children| {
-                if c_walk.load(AtomicOrdering::Relaxed) {
-                    children.clear(); // stop descending
-                    return;
-                }
-                if !show_hidden {
-                    // don't walk into dot-folders (.git etc.) at all
-                    children.retain(|c| match c {
-                        Ok(dir) => !dir.file_name().to_string_lossy().starts_with('.') ,
-                        //This is overtly aggressive since it targets all system folders, including Program Files etc.
-                        //leading to root search being impossible.
-                        //Ok(dir) => !is_hidden_entry(&dir.file_name().to_string_lossy(), &dir.metadata().unwrap()),
-                        Err(_) => false,
-                    });
-                }
-            });
-
         let mut batch: Vec<Entry> = Vec::new();
         let mut sent = 0usize;
         let mut last_flush = Instant::now();
+        for root in roots {
+            let c_walk = c.clone();
+            let walker = WalkDir::new(&root)
+                .skip_hidden(false)
+                .follow_links(false)
+                .parallelism(Parallelism::RayonNewPool(SEARCH_THREADS))
+                .process_read_dir(move |_, _, _, children| {
+                    if c_walk.load(AtomicOrdering::Relaxed) {
+                        children.clear(); // stop descending
+                        return;
+                    }
+                    if !show_hidden {
+                        // don't walk into dot-folders (.git etc.) at all
+                        children.retain(|c| match c {
+                            Ok(dir) => !dir.file_name().to_string_lossy().starts_with('.'),
+                            //This is overtly aggressive since it targets all system folders, including Program Files etc.
+                            //leading to root search being impossible.
+                            //Ok(dir) => !is_hidden_entry(&dir.file_name().to_string_lossy(), &dir.metadata().unwrap()),
+                            Err(_) => false,
+                        });
+                    }
+                });
 
-        for res in walker {
-            if c.load(AtomicOrdering::Relaxed) {
-                return;
-            }
-            let Ok(de) = res else { continue };
-            if de.depth() == 0 {
-                continue;
-            }
-            let name = de.file_name().to_string_lossy().into_owned();
-            if !name.to_lowercase().contains(&query) {
-                continue;
-            }
-            // only matches pay for a metadata call
-            let Ok(md) = de.metadata() else { continue };
-            if !show_hidden && is_hidden_entry(&name, &md) {
-                continue;
-            }
-            batch.push(Entry::from_path(name, de.path(), &md, fmt));
-
-            if batch.len() >= 256 || last_flush.elapsed() > Duration::from_millis(50) {
-                sent += batch.len();
-                if tx.send(std::mem::take(&mut batch)).is_err() {
+            for res in walker {
+                if c.load(AtomicOrdering::Relaxed) {
                     return;
                 }
-                ui.request_repaint();
-                last_flush = Instant::now();
-                if sent >= MAX_RESULTS {
-                    break; // fall through so the channel is closed and `done` gets set
+                let Ok(de) = res else { continue };
+                if de.depth() == 0 {
+                    continue;
+                }
+                let name = de.file_name().to_string_lossy().into_owned();
+                if !name.to_lowercase().contains(&query) {
+                    continue;
+                }
+                // only matches pay for a metadata call
+                let Ok(md) = de.metadata() else { continue };
+                if !show_hidden && is_hidden_entry(&name, &md) {
+                    continue;
+                }
+                batch.push(Entry::from_path(name, de.path(), &md, fmt));
+
+                if batch.len() >= 256 || last_flush.elapsed() > Duration::from_millis(50) {
+                    sent += batch.len();
+                    if tx.send(std::mem::take(&mut batch)).is_err() {
+                        return;
+                    }
+                    ui.request_repaint();
+                    last_flush = Instant::now();
+                    if sent >= MAX_RESULTS {
+                        break; // fall through so the channel is closed and `done` gets set
+                    }
                 }
             }
         }
@@ -797,25 +798,12 @@ fn on_search_changed(tab: &mut Tab, show_hidden: bool, fmt: DateFormat, ctx: &eg
     tab.search_lookup.clear();
     tab.rename = None;
     if !tab.search_query.is_empty() {
-        if tab.chosen_search_scope == SearchScope::System{
-            for d in load_drives(){
-                tab.search_job = Some(start_search(
-                    d.mount_point.clone(),
-                    tab.search_query.clone(),
-                    show_hidden,
-                    fmt,
-                    ctx.clone(),
-                ));
-            }
-        }else{
-            tab.search_job = Some(start_search(
-                tab.dir.clone(),
-                tab.search_query.clone(),
-                show_hidden,
-                fmt,
-                ctx.clone(),
-            ));
-        }
+        let roots = if tab.chosen_search_scope == SearchScope::System {
+            load_drives().into_iter().map(|d| d.mount_point).collect()
+        } else {
+            vec![tab.dir.clone()]
+        };
+        tab.search_job = Some(start_search(roots, tab.search_query.clone(), show_hidden, fmt, ctx.clone()));
 
     }
     tab.view_dirty = true;
