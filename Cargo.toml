@@ -1,5 +1,5 @@
 [package]
-name = "SlopExplore"
+name = "SlopExplorer"
 version = "0.2.2"
 edition = "2021"
 
@@ -28,4 +28,4 @@ winres = "0.1"
 
 [package.metadata.appimage]
 icon = "assets/logo.png"
-desktop_entry = "other/SlopExplore.desktop"
+desktop_entry = "other/SlopExplorer.desktop"
