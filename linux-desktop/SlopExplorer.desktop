@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=SlopExplore
+Name=SlopExplorer
 Comment=A sloppy file explorer
-Exec=SlopExplore
+Exec=SlopExplorer
 Icon=logo.png
 Categories=Utility;
