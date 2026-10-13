@@ -195,6 +195,7 @@ pub struct Palette {
     pub hover: Color32,
     pub danger: Color32,
     pub danger_bg: Color32,
+    pub chrome: Color32,
 }
 
 fn a(c: u8, alpha: f32) -> Color32 {
@@ -203,6 +204,8 @@ fn a(c: u8, alpha: f32) -> Color32 {
 fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (alpha * 255.0).round() as u8)
 }
+
+//Claude doing funny shit
 fn luminance(c: Color32) -> f32 {
     (0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32) / 255.0
 }
@@ -216,43 +219,45 @@ impl Palette {
             Self {
                 dark, mica, accent: acc, on_accent,
                 base: Color32::from_rgb(60, 60, 60),
-                layer: if mica { Color32::from_rgba_unmultiplied(50, 50, 50, 20) } else { Color32::from_rgb(0x28, 0x28, 0x28) },
-                flyout: Color32::from_rgb(60, 60, 60),
+                layer: if mica { a(80, 0.75) } else { Color32::from_rgb(0x28, 0x28, 0x28) },
+                flyout: Color32::from_rgb(80, 80, 80),
                 text: Color32::WHITE,
                 text_secondary: a(255, 0.785),
                 text_disabled: a(255, 0.36),
                 subtle_hover: a(255, 0.10),
                 subtle_pressed: a(255, 0.065),
-                control: a(60, 0.1),
-                control_hover: a(255, 0.13),
+                control: a(255, 0.15),
+                control_hover: a(255, 0.15),
                 control_stroke: a(190, 0.2),
                 divider: a(255, 0.15),
-                selected: with_alpha(acc, 0.075),
-                selected_hover: with_alpha(acc, 0.09),
-                hover: with_alpha(acc, 0.06),
+                selected: with_alpha(acc, 0.15),
+                selected_hover: with_alpha(acc, 0.2),
+                hover: with_alpha(acc, 0.1),
                 danger: Color32::from_rgb(0xFF, 0x99, 0xA4),
                 danger_bg: Color32::from_rgb(0x44, 0x27, 0x26),
+                chrome: a(255, 0.2),
             }
         } else {
             Self {
                 dark, mica, accent: acc, on_accent,
                 base: Color32::from_rgb(215, 215, 215),
-                layer: if mica { Color32::from_rgba_unmultiplied(215, 215, 215, 200) } else { Color32::from_rgb(0xFB, 0xFB, 0xFB) },
+                layer: if mica { a(255, 0.6) } else { Color32::from_rgb(0xFB, 0xFB, 0xFB) },
                 flyout: Color32::from_rgb(245, 245, 245),
                 text: Color32::from_rgb(0x1A, 0x1A, 0x1A),
-                text_secondary: a(0, 0.606),
+                text_secondary: a(0, 0.6),
                 text_disabled: a(0, 0.36),
                 subtle_hover: a(0, 0.075),
                 subtle_pressed: a(0, 0.05),
-                control: a(215, 0.5),
-                control_hover: a(0xF9, 0.50),
-                control_stroke: a(0, 0.06),
+                control: a(240, 0.85),
+                control_hover: a(225, 0.85),
+                control_stroke: a(0, 0.15),
                 divider: a(0, 0.15),
                 selected: with_alpha(acc, 0.12),
                 selected_hover: with_alpha(acc, 0.15),
                 hover: with_alpha(acc, 0.10),
                 danger: Color32::from_rgb(0xC4, 0x2B, 0x1C),
                 danger_bg: Color32::from_rgb(0xFD, 0xE7, 0xE9),
+                chrome: Color32::TRANSPARENT,
             }
         }
     }

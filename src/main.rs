@@ -13,6 +13,7 @@ use eframe::{
         RichText, Sense, Stroke, StrokeKind, Ui,
     }
 };
+use egui::containers::scroll_area::{DragScroll, ScrollSource};
 use fsops::*;
 use icons::*;
 use indexer::*;
@@ -684,7 +685,7 @@ const SEARCH_THREADS: usize = 4; // raise for more speed, lower for less CPU
 const MAX_RESULTS: usize = 100_000;
 
 pub struct SearchJob {
-    rx: mpsc::Receiver<Vec<Entry>>,
+    rx: Receiver<Vec<Entry>>,
     cancel: Arc<AtomicBool>,
     pub done: bool,
 }
@@ -696,7 +697,7 @@ impl Drop for SearchJob {
 }
 
 //Executes recursive search, called when search field input changes
-fn start_search(root: PathBuf, query: String, show_hidden: bool, fmt: DateFormat, ctx: egui::Context, ) -> SearchJob {
+fn start_search(root: PathBuf, query: String, show_hidden: bool, fmt: DateFormat, ui: egui::Context, ) -> SearchJob {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let c = cancel.clone();
@@ -752,7 +753,7 @@ fn start_search(root: PathBuf, query: String, show_hidden: bool, fmt: DateFormat
                 if tx.send(std::mem::take(&mut batch)).is_err() {
                     return;
                 }
-                ctx.request_repaint();
+                ui.request_repaint();
                 last_flush = Instant::now();
                 if sent >= MAX_RESULTS {
                     break; // fall through so the channel is closed and `done` gets set
@@ -763,7 +764,7 @@ fn start_search(root: PathBuf, query: String, show_hidden: bool, fmt: DateFormat
             let _ = tx.send(batch);
         }
         drop(tx); // disconnect first, so the repaint below sees `done`
-        ctx.request_repaint();
+        ui.request_repaint();
     });
 
     SearchJob { rx, cancel, done: false }
@@ -930,7 +931,7 @@ fn build_props(path: &Path) -> Props {
 // App
 
 struct Explorer {
-    ctx: egui::Context,
+    ui: egui::Context,
     settings: Settings,
     tabs: Vec<Tab>,
     active: usize,
@@ -976,7 +977,7 @@ struct Explorer {
     sidebar_rect: Option<Rect>,
     key_state: Option<device_query::DeviceState>,
     prev_paste_key: Cell<bool>,
-    last_paste: Cell<std::time::Instant>,
+    last_paste: Cell<Instant>,
 
     /// None: the normal single-tab view. Some: up to four tabs tiled in the file area.
     tiles: Option<Tile>,
@@ -999,12 +1000,12 @@ struct Explorer {
 
 impl Explorer {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let ctx = cc.egui_ctx.clone();
-        egui_extras::install_image_loaders(&ctx);
-        install_fonts(&ctx);
+        let ui = cc.egui_ctx.clone();
+        egui_extras::install_image_loaders(&ui);
+        install_fonts(&ui);
 
         let settings = load_settings();
-        ctx.set_theme(match settings.theme {
+        ui.set_theme(match settings.theme {
             ThemeChoice::System => egui::ThemePreference::System,
             ThemeChoice::Light => egui::ThemePreference::Light,
             ThemeChoice::Dark => egui::ThemePreference::Dark,
@@ -1017,8 +1018,8 @@ impl Explorer {
             .clone()
             .filter(|p| p.is_dir())
             .unwrap_or_else(app_dir);
-        let indexer = Indexer::new(ctx.clone(), idx_tx, &index_dir);
-        let watcher = DirWatcher::new(ctx.clone());
+        let indexer = Indexer::new(ui.clone(), idx_tx, &index_dir);
+        let watcher = DirWatcher::new(ui.clone());
 
         let start = START_DIR
             .get()
@@ -1044,7 +1045,7 @@ impl Explorer {
         }
 
         let mut app = Self {
-            ctx: ctx.clone(),
+            ui: ui.clone(),
             settings,
             tabs: vec![Tab::new(1, start)],
             active: 0,
@@ -1088,7 +1089,7 @@ impl Explorer {
             tab_drag: None,
             index_sig: None,
             reindex_force: false,
-            peers: Peers::new(ctx.clone(), &app_dir()),
+            peers: Peers::new(ui.clone(), &app_dir()),
             own_info: None,
             info_stamp: Instant::now(),
             transparency: system_transparency(),
@@ -1097,9 +1098,9 @@ impl Explorer {
             key_state: std::panic::catch_unwind(device_query::DeviceState::new).ok(),
             prev_paste_key: Cell::new(false),
             last_paste: Cell::new(
-                std::time::Instant::now()
-                    .checked_sub(std::time::Duration::from_secs(1))
-                    .unwrap_or_else(std::time::Instant::now),
+                Instant::now()
+                    .checked_sub(Duration::from_secs(1))
+                    .unwrap_or_else(Instant::now),
             ),
         };
         app.load_tab(0);
@@ -1127,7 +1128,7 @@ impl Explorer {
         tab.loading = true;
         tab.error = None;
         let (id, seq, dir) = (tab.id, tab.load_gen, tab.dir.clone());
-        let (tx, ctx) = (self.msg_tx.clone(), self.ctx.clone());
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
             let result = read_listing(&dir, show_hidden, fmt);
             let _ = tx.send(AppMsg::Listing {
@@ -1135,7 +1136,7 @@ impl Explorer {
                 seq,
                 result,
             });
-            ctx.request_repaint();
+            ui.request_repaint();
         });
     }
 
@@ -1162,7 +1163,7 @@ impl Explorer {
         tr.seq += 1;
         tr.loading = true;
         let (id, seq) = (tab.id, tr.seq);
-        let (tx, ctx) = (self.msg_tx.clone(), self.ctx.clone());
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
             let result = trashbin::load(fmt);
             let _ = tx.send(AppMsg::Trash {
@@ -1170,7 +1171,7 @@ impl Explorer {
                 seq,
                 result,
             });
-            ctx.request_repaint();
+            ui.request_repaint();
         });
     }
 
@@ -1473,14 +1474,14 @@ impl Explorer {
     ) {
         self.jobs_running += 1;
         self.job_label = label.to_owned();
-        let (tx, ctx) = (self.msg_tx.clone(), self.ctx.clone());
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
             // A panic in the job must still report back, otherwise the status bar spins forever.
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
                 Err("The operation failed unexpectedly (details in crash.log).".to_owned())
             });
             let _ = tx.send(AppMsg::Job(r));
-            ctx.request_repaint();
+            ui.request_repaint();
         });
     }
 
@@ -1599,17 +1600,17 @@ impl Explorer {
     fn refresh_drives(&mut self) {
         self.drives_inflight = true;
         self.last_drives = Instant::now();
-        let (tx, ctx) = (self.msg_tx.clone(), self.ctx.clone());
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
             let _ = tx.send(AppMsg::Drives(load_drives()));
-            ctx.request_repaint();
+            ui.request_repaint();
         });
     }
 
     /// Starts/cancels the recursive search whenever a tab's search text changes (this also
     /// covers Escape, the clear button and navigation, which all just clear `tab.search`),
     /// and drains results from the running job.
-    fn pump_search(&mut self) {
+    fn pump_search(&mut self, ctx: &egui::Context) {
         let (show_hidden, fmt) = (self.settings.show_hidden, self.settings.date_format);
         for t in &mut self.tabs {
             let q = if t.trash.is_some() {
@@ -1619,7 +1620,7 @@ impl Explorer {
             };
             if q != t.search_query {
                 t.search_query = q;
-                on_search_changed(t, show_hidden, fmt, &self.ctx);
+                on_search_changed(t, show_hidden, fmt, ctx);
             }
             poll_search(t, &self.indexer);
         }
@@ -1797,7 +1798,7 @@ impl Explorer {
         for dir in self.peers.take_inbox() {
             if dir.is_dir() {
                 self.new_tab(dir);
-                self.ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.ui.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
         }
         if self
@@ -1815,7 +1816,7 @@ impl Explorer {
             reindex_force = true; // something below the folder changed: sizes really are stale
         }
         if self.list_debounce.pending() || self.size_debounce.pending() {
-            self.ctx.request_repaint_after(Duration::from_millis(250));
+            self.ui.request_repaint_after(Duration::from_millis(250));
         }
         if reindex {
             let force = reindex_force || std::mem::take(&mut self.reindex_force);
@@ -1826,7 +1827,7 @@ impl Explorer {
         // card reader, so do it rarely and only while the window is in use.
         if self.last_drives.elapsed() > Duration::from_secs(30)
             && !self.drives_inflight
-            && self.ctx.input(|i| i.focused)
+            && self.ui.input(|i| i.focused)
         {
             self.refresh_drives();
         }
@@ -1835,7 +1836,7 @@ impl Explorer {
                 self.indexer.save_if_dirty(&self.index_dir, false);
                 self.last_save = Instant::now();
             } else {
-                self.ctx.request_repaint_after(Duration::from_secs(16));
+                self.ui.request_repaint_after(Duration::from_secs(16));
             }
         }
     }
@@ -1879,9 +1880,9 @@ impl Explorer {
 
     // ------------------------------------------------------------------ shortcuts
 
-    fn collect_shortcuts(&self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    fn collect_shortcuts(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
         use egui::{Key, Modifiers as M};
-        let typing = ctx.wants_keyboard_input();
+        let typing = ui.egui_wants_keyboard_input();
         let modal = self.settings_open
             || self.props.is_some()
             || self.conflict.is_some()
@@ -1898,7 +1899,7 @@ impl Explorer {
         let paste_edge = key_down && !self.prev_paste_key.get();
         self.prev_paste_key.set(key_down);
 
-        ctx.input_mut(|i| {
+        ui.input_mut(|i| {
             if i.consume_key(M::CTRL | M::SHIFT, Key::Tab) {
                 actions.push(Action::StepTab(-1));
             } else if i.consume_key(M::CTRL, Key::Tab) {
@@ -1984,9 +1985,9 @@ impl Explorer {
                 }
             }
             if (ev_paste || (paste_edge && i.focused))
-                && self.last_paste.get().elapsed() > std::time::Duration::from_millis(300)
+                && self.last_paste.get().elapsed() > Duration::from_millis(300)
             {
-                self.last_paste.set(std::time::Instant::now());
+                self.last_paste.set(Instant::now());
                 actions.push(Action::Paste);
             }
             if i.consume_key(M::NONE, Key::Backspace) {
@@ -2034,7 +2035,7 @@ impl Explorer {
             }
             Action::CloseTab(i) => {
                 if self.tabs.len() <= 1 {
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.ui.send_viewport_cmd(egui::ViewportCommand::Close);
                 } else if i < self.tabs.len() {
                     let closed_id = self.tabs[i].id;
                     self.tabs.remove(i);
@@ -2109,7 +2110,7 @@ impl Explorer {
                 tab.addr_focus = true;
             }
             Action::FocusSearch => self
-                .ctx
+                .ui
                 .memory_mut(|m| m.request_focus(Id::new("search_box"))),
             Action::Open(p) => self.open_path(&p),
             Action::Copy(p) => {
@@ -2130,7 +2131,7 @@ impl Explorer {
                     .map(|x| x.display().to_string())
                     .collect::<Vec<_>>()
                     .join("\n");
-                self.ctx.copy_text(text);
+                self.ui.copy_text(text);
             }
             Action::Paste => self.paste(),
             Action::Rename(p) => {
@@ -2213,9 +2214,9 @@ impl Explorer {
                 let mut props = build_props(&p);
                 props.stats_gen = seq;
                 if props.is_dir {
-                    let (tx, ctx, g) = (
+                    let (tx, ui, g) = (
                         self.msg_tx.clone(),
-                        self.ctx.clone(),
+                        self.ui.clone(),
                         Arc::clone(&self.props_gen),
                     );
                     let root = p.clone();
@@ -2223,7 +2224,7 @@ impl Explorer {
                         let stats = folder_stats(&root, &|| g.load(AO::Relaxed) != seq);
                         if g.load(AO::Relaxed) == seq {
                             let _ = tx.send(AppMsg::Stats(seq, stats));
-                            ctx.request_repaint();
+                            ui.request_repaint();
                         }
                     });
                 }
@@ -2748,15 +2749,15 @@ fn drive_card(
     resp.on_hover_text(mount)
 }
 
-fn select_range(ctx: &egui::Context, id: Id, a: usize, b: usize) {
-    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+fn select_range(ui: &mut Ui, id: Id, a: usize, b: usize) {
+    let mut state = egui::TextEdit::load_state(ui, id).unwrap_or_default();
     state
         .cursor
         .set_char_range(Some(egui::text::CCursorRange::two(
             egui::text::CCursor::new(a),
             egui::text::CCursor::new(b),
         )));
-    state.store(ctx, id);
+    state.store(ui, id);
 }
 
 fn crumbs(path: &Path) -> Vec<(String, PathBuf)> {
@@ -2799,7 +2800,7 @@ fn address_bar(
         let id = Id::new(("addr_edit", tab.id));
         let te = egui::TextEdit::singleline(&mut tab.address)
             .id(id)
-            .frame(false)
+            .frame(egui::Frame::NONE)
             .margin(Margin::symmetric(4, 0))
             .desired_width(inner.width())
             .vertical_align(Align::Center)
@@ -2807,7 +2808,7 @@ fn address_bar(
         let resp = ui.put(inner, te);
         if tab.addr_focus {
             resp.request_focus();
-            select_range(ui.ctx(), id, 0, tab.address.chars().count());
+            select_range(ui, id, 0, tab.address.chars().count());
             tab.addr_focus = false;
         }
         ui.painter().line_segment(
@@ -2930,7 +2931,7 @@ fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab, width: f32
     let hint = format!("Search {}", tab.title());
     let te = egui::TextEdit::singleline(&mut tab.search)
         .id(Id::new("search_box"))
-        .frame(false)
+        .frame(egui::Frame::NONE)
         .margin(Margin::symmetric(4, 0))
         .desired_width(te_rect.width())
         .vertical_align(Align::Center)
@@ -2987,7 +2988,7 @@ fn secondary_button(ui: &mut Ui, m: &Metrics, text: &str) -> egui::Response {
 
 /// Fluent-style dialog: rounded flyout surface, optional dimmed scrim. Returns true when closed (X / Esc).
 fn dialog_shell(
-    ctx: &egui::Context,
+    ui: &mut Ui,
     m: &Metrics,
     pal: &Palette,
     id: &str,
@@ -2997,11 +2998,11 @@ fn dialog_shell(
     add: impl FnOnce(&mut Ui),
 ) -> bool {
     if modal {
-        let screen = ctx.screen_rect();
+        let screen = ui.content_rect();
         egui::Area::new(Id::new((id, "scrim")))
             .order(egui::Order::Middle)
             .fixed_pos(screen.min)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
                 ui.painter().rect_filled(
                     rect,
@@ -3019,13 +3020,13 @@ fn dialog_shell(
         .order(egui::Order::Foreground)
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .frame(
-            egui::Frame::window(&ctx.style())
+            egui::Frame::window(&ui.global_style())
                 .fill(pal.flyout)
                 .shadow(popup_shadow(pal.dark))
                 .stroke(Stroke::new(1.0_f32, pal.divider))
                 .inner_margin(Margin::same((m.pad * 2.0) as i8)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             ui.set_width(width);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(title).size(m.font * 1.3).strong());
@@ -3038,7 +3039,7 @@ fn dialog_shell(
             ui.add_space(m.pad);
             add(ui);
         });
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !ctx.wants_keyboard_input() {
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.egui_wants_keyboard_input() {
         closed = true;
     }
     closed
@@ -3115,7 +3116,6 @@ fn band_frame(pal: &Palette, nw: u8, l: f32, r: f32, t: f32, b: f32) -> egui::Fr
 /// Minimize / maximize-restore / close, drawn with the painter so they stay crisp at any scale.
 fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, area: Rect, maximized: bool) {
     let bw = area.width() / 3.0;
-    let ctx = ui.ctx().clone();
     for k in 0..3usize {
         let r = Rect::from_min_size(
             pos2(area.left() + bw * k as f32, area.top()),
@@ -3142,7 +3142,7 @@ fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, area: Rect, maximize
             if close && !maximized {
                 ui.painter().rect_filled(
                     r,
-                    egui::CornerRadius {
+                    CornerRadius {
                         nw: 0,
                         ne: if RADIUS == 0 { RADIUS } else { RADIUS - 4 },
                         sw: 0,
@@ -3192,7 +3192,7 @@ fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, area: Rect, maximize
             }
         }
         if resp.clicked() {
-            ctx.send_viewport_cmd(match k {
+            ui.send_viewport_cmd(match k {
                 0 => egui::ViewportCommand::Minimized(true),
                 1 => egui::ViewportCommand::Maximized(!maximized),
                 _ => egui::ViewportCommand::Close,
@@ -3216,7 +3216,7 @@ fn handle_resize(ctx: &egui::Context, m: &Metrics) {
     let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else {
         return;
     };
-    let r = ctx.screen_rect();
+    let r = ctx.content_rect();
     let (b, c) = (m.s * 5.0, m.s * 12.0);
     let (el, er, et, eb) = (
         pos.x - r.left(),
@@ -3469,7 +3469,7 @@ fn trash_table_ui(
                 *sort_asc = c != 2;
             }
             *needs_sort = true;
-            ui.ctx().request_repaint();
+            ui.request_repaint();
         }
     }
     ui.painter().line_segment(
@@ -3497,11 +3497,9 @@ fn trash_table_ui(
             any_rows,
         ) {
             actions.push(Action::TrashEmpty);
-            ui.close_menu();
         }
         if menu_item(ui, m, pal, Some("refresh"), "Refresh", Some("F5"), true) {
             actions.push(Action::Refresh);
-            ui.close_menu();
         }
     });
 
@@ -3527,7 +3525,10 @@ fn trash_table_ui(
     ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical()
         .id_salt("trash_rows")
-        .drag_to_scroll(false) // dragging selects instead
+        .scroll_source(ScrollSource {
+            drag: DragScroll::Never,
+            ..Default::default()
+        })
         .auto_shrink([false, false])
         .show_rows(ui, row_h, view.len(), |ui, range| {
             let content_top = ui.max_rect().top() - range.start as f32 * row_h;
@@ -3550,9 +3551,9 @@ fn trash_table_ui(
                     } else {
                         Vec::new()
                     };
-                    ui.ctx().data_mut(|d| d.insert_temp(base_id, base));
+                    ui.data_mut(|d| d.insert_temp(base_id, base));
                 }
-                let base: Vec<usize> = ui.ctx().data(|d| d.get_temp(base_id)).unwrap_or_default();
+                let base: Vec<usize> = ui.data(|d| d.get_temp(base_id)).unwrap_or_default();
                 selected.clear();
                 selected.extend(base);
                 if let Some((lo, hi)) = u.span {
@@ -3653,7 +3654,7 @@ fn trash_table_ui(
                 resp.context_menu(|ui| {
                     if menu_item(ui, m, pal, Some("restore"), "Restore", None, true) {
                         actions.push(Action::TrashRestoreSelected);
-                        ui.close_menu();
+                        
                     }
                     if menu_item(
                         ui,
@@ -3665,7 +3666,7 @@ fn trash_table_ui(
                         true,
                     ) {
                         actions.push(Action::TrashPurgeSelected);
-                        ui.close_menu();
+                        
                     }
                 });
             }
@@ -3741,7 +3742,6 @@ fn rubber_band(
     enabled: bool,
     hit: Rect,
 ) -> Option<BandUpdate> {
-    let ctx = ui.ctx().clone();
     let viewport = ui.clip_rect();
     let (pressed, down, pos, latest, dt, mods) = ui.input(|i| {
         (
@@ -3753,13 +3753,13 @@ fn rubber_band(
             i.modifiers,
         )
     });
-    let mut state: Option<Rubber> = ctx.data_mut(|d| d.get_temp(id));
+    let mut state: Option<Rubber> = ui.data_mut(|d| d.get_temp(id));
 
     if pressed && enabled && state.is_none() {
         if let Some(p) = pos {
             let on_scrollbar = viewport.contains(p) && p.x > viewport.right() - m.s * 14.0;
             // layer_id_at() is None over plain panels and Some(..) over dialogs/menus/popups.
-            let covered = ctx.layer_id_at(p).is_some_and(|l| l != ui.layer_id());
+            let covered = ui.layer_id_at(p).is_some_and(|l| l != ui.layer_id());
             // `hit` is the viewport plus the blank margins around it: a drag may start there too.
             if hit.contains(p) && !on_scrollbar && !covered {
                 state = Some(Rubber {
@@ -3773,11 +3773,11 @@ fn rubber_band(
     }
     let mut r = state?;
     if !down {
-        ctx.data_mut(|d| d.remove_temp::<Rubber>(id));
+        ui.data_mut(|d| d.remove_temp::<Rubber>(id));
         return None;
     }
     let Some(p) = latest else {
-        ctx.data_mut(|d| d.insert_temp(id, r));
+        ui.data_mut(|d| d.insert_temp(id, r));
         return None;
     };
 
@@ -3789,7 +3789,7 @@ fn rubber_band(
     }
     let mut out = None;
     if r.active {
-        ctx.request_repaint();
+        ui.request_repaint();
 
         // Auto-scroll while the pointer is above/below the list.
         let dy = if p.y > viewport.bottom() {
@@ -3826,7 +3826,7 @@ fn rubber_band(
             rect: Rect::from_two_pos(origin_screen, p).intersect(viewport),
         });
     }
-    ctx.data_mut(|d| d.insert_temp(id, r));
+    ui.data_mut(|d| d.insert_temp(id, r));
     out
 }
 
@@ -4017,7 +4017,7 @@ fn table_ui(
             let h = ui.interact(hr, Id::new(("resize", tab_id, c)), Sense::drag());
             let hot = h.hovered() || h.dragged();
             if hot {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                ui.set_cursor_icon(egui::CursorIcon::ResizeColumn);
             }
             if h.dragged() {
                 new_cols[k] = (new_cols[k] + sign * h.drag_delta().x / m.s).clamp(50.0, 600.0);
@@ -4055,25 +4055,25 @@ fn table_ui(
     body_resp.context_menu(|ui| {
         if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+N"), true, ) {
             actions.push(Action::NewFolder);
-            ui.close_menu();
+            
         }
         if menu_item(
             ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), can_paste, ) {
             actions.push(Action::Paste);
-            ui.close_menu();
+            
         }
         if menu_item(ui, m, pal, Some("code"), "Open in Terminal", None, true) {
             actions.push(Action::OpenTerminal(dir.clone()));
-            ui.close_menu();
+            
         }
         ui.separator();
         if menu_item(ui, m, pal, Some("refresh"), "Refresh", Some("F5"), true) {
             actions.push(Action::Refresh);
-            ui.close_menu();
+            
         }
         if menu_item(ui, m, pal, Some("info"), "Properties", None, true) {
             actions.push(Action::Properties(dir.clone()));
-            ui.close_menu();
+            
         }
     });
 
@@ -4103,7 +4103,10 @@ fn table_ui(
     ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical()
         .id_salt(("rows", tab_id, dir.clone()))
-        .drag_to_scroll(false) // dragging selects instead
+        .scroll_source(ScrollSource {
+            drag: DragScroll::Never,
+            ..Default::default()
+        })
         .auto_shrink([false, false])
         // two extra blank rows below the list: always some empty space to start a drag in
         .show_rows(ui, row_h, view.len() + 2, |ui, range| {
@@ -4126,9 +4129,9 @@ fn table_ui(
                     } else {
                         Vec::new()
                     };
-                    ui.ctx().data_mut(|d| d.insert_temp(base_id, base));
+                    ui.data_mut(|d| d.insert_temp(base_id, base));
                 }
-                let base: Vec<PathBuf> = ui.ctx().data(|d| d.get_temp(base_id)).unwrap_or_default();
+                let base: Vec<PathBuf> = ui.data(|d| d.get_temp(base_id)).unwrap_or_default();
                 selected.clear();
                 selected.extend(base);
                 if let Some((lo, hi)) = u.span {
@@ -4210,9 +4213,9 @@ fn table_ui(
                                 _ => total_chars,
                             }
                         };
-                        select_range(ui.ctx(), id, 0, stem);
+                        select_range(ui, id, 0, stem);
                         rs.focus_pending = false;
-                        ui.ctx().request_repaint();
+                        ui.request_repaint();
                     } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         actions.push(Action::CancelRename);
                     } else if tr.lost_focus() {
@@ -4323,30 +4326,30 @@ fn table_ui(
                     };
                     if menu_item(ui, m, pal, Some("external"), "Open", Some("Enter"), true) {
                         actions.push(Action::Open(p.clone()));
-                        ui.close_menu();
+                        
                     }
                     if e.is_dir
                         && menu_item(ui, m, pal, Some("new_tab"), "Open in new tab", None, true)
                     {
                         actions.push(Action::NewTabAt(p.clone()));
-                        ui.close_menu();
+                        
                     }
                     ui.separator();
                     if menu_item(ui, m, pal, Some("cut"), "Cut", Some("Ctrl+X"), true) {
                         actions.push(Action::Cut(targets.clone()));
-                        ui.close_menu();
+                        
                     }
                     if menu_item(ui, m, pal, Some("copy"), "Copy", Some("Ctrl+C"), true) {
                         actions.push(Action::Copy(targets.clone()));
-                        ui.close_menu();
+                        
                     }
                     if menu_item(ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), true) {
                         actions.push(Action::Paste);
-                        ui.close_menu();
+                        
                     }
                     if menu_item(ui, m, pal, Some("link"), "Copy path", None, true) {
                         actions.push(Action::CopyPath(targets.clone()));
-                        ui.close_menu();
+                        
                     }
                     if menu_item(
                         ui,
@@ -4358,17 +4361,17 @@ fn table_ui(
                         targets.len() == 1,
                     ) {
                         actions.push(Action::Rename(p.clone()));
-                        ui.close_menu();
+                        
                     }
                     if menu_item(ui, m, pal, Some("delete"), "Delete", Some("Del"), true) {
                         actions.push(Action::Delete(targets.clone()));
-                        ui.close_menu();
+                        
                     }
                     if has_peazip {
                         ui.separator();
                         if menu_item(ui, m, pal, Some("archive"), "Open with PeaZip", None, true) {
                             actions.push(Action::PeaOpen(p.clone()));
-                            ui.close_menu();
+                            
                         }
                         if menu_item(
                             ui,
@@ -4380,7 +4383,7 @@ fn table_ui(
                             true,
                         ) {
                             actions.push(Action::PeaAdd(p.clone()));
-                            ui.close_menu();
+                            
                         }
                     }
                     ui.separator();
@@ -4394,7 +4397,7 @@ fn table_ui(
                         true,
                     ) {
                         actions.push(Action::OpenContaining(p.clone()));
-                        ui.close_menu();
+                        
                     }
                     if menu_item(
                         ui,
@@ -4406,7 +4409,7 @@ fn table_ui(
                         true,
                     ) {
                         actions.push(Action::Properties(p.clone()));
-                        ui.close_menu();
+                        
                     }
                 });
             }
@@ -4537,7 +4540,7 @@ fn layout_tiles(
             let resp = ui.interact(handle, id, Sense::drag());
             let hot = resp.hovered() || resp.dragged();
             if hot {
-                ui.ctx().set_cursor_icon(if *side_by_side {
+                ui.set_cursor_icon(if *side_by_side {
                     egui::CursorIcon::ResizeHorizontal
                 } else {
                     egui::CursorIcon::ResizeVertical
@@ -4572,12 +4575,12 @@ fn layout_tiles(
 
 impl Explorer {
     /// The title bar: tabs on the left, draggable empty space, caption buttons on the right.
-    fn ui_tabs(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    fn ui_tabs(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
         let active = self.active;
         // 1.0 while the first tab is selected: the band below then has a square corner and the tab's wing meets the window edge.
         self.first_anim =
-            ctx.animate_bool_with_time(Id::new("first_tab_active"), active == 0, 0.15);
+            ui.animate_bool_with_time(Id::new("first_tab_active"), active == 0, 0.15);
         let info: Vec<(u64, String, String, &'static str)> = self
             .tabs
             .iter()
@@ -4589,7 +4592,7 @@ impl Explorer {
                 }
             })
             .collect();
-        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
         // Tabs that are currently shown in a tile get a thin accent underline.
         let vis: Vec<u64> = {
             let mut v = Vec::new();
@@ -4604,18 +4607,18 @@ impl Explorer {
         let r_tab = m.radius + 2;
         let wing = r_tab as f32;
         let radius = if maximized { 0 } else { RADIUS };
-        egui::TopBottomPanel::top("tabs")
+        egui::Panel::top("tabs")
             .show_separator_line(false)
-            .exact_height(bar_h)
+            .exact_size(bar_h)
             .frame(
-                bar_frame(&pal, 0.0, 0.0, 0.0, 0.0).corner_radius(egui::CornerRadius {
+                bar_frame(&pal, 0.0, 0.0, 0.0, 0.0).corner_radius(CornerRadius {
                     nw: radius,
                     ne: radius,
                     sw: 0,
                     se: 0,
                 }),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 let full = ui.max_rect();
                 let caption =
                     Rect::from_min_max(pos2(full.right() - caption_w, full.top()), full.max);
@@ -4625,10 +4628,10 @@ impl Explorer {
                 let drag =
                     ui.interact(drag_rect, Id::new("titlebar_drag"), Sense::click_and_drag());
                 if drag.drag_started_by(egui::PointerButton::Primary) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    ui.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
                 if drag.double_clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                    ui.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
                 }
 
                 // The first tab is inset by exactly one wing radius so its left wing ends at the window edge.
@@ -4653,7 +4656,7 @@ impl Explorer {
                             if resp.drag_started_by(egui::PointerButton::Primary) {
                                 drag_start = Some(*id);
                             }
-                            let k = ctx.animate_bool_with_time(
+                            let k = ui.animate_bool_with_time(
                                 Id::new(("tab_wing", *id)),
                                 is_active,
                                 0.12,
@@ -4787,21 +4790,21 @@ impl Explorer {
         }
     }
 
-    fn ui_sidebar(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    fn ui_sidebar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
         let cur = self.tabs[self.active].dir.clone();
         let trash_active = self.tabs[self.active].trash.is_some();
         let (quick, drives) = (&self.quick, &self.drives);
-        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
         let radius = if maximized { 0 } else { RADIUS };
-        let panel = egui::SidePanel::left("sidebar")
+        let panel = egui::Panel::left("sidebar")
             .resizable(true)
-            .default_width(m.s * 250.0)
-            .width_range(m.s * 180.0..=m.s * 440.0)
+            .default_size(m.s * 250.0)
+            .size_range(m.s * 180.0..=m.s * 440.0)
             .show_separator_line(false)
             .frame(
                 bar_frame(&pal, m.pad * 0.6, m.pad * 0.6, m.pad * 0.4, m.pad * 0.4).corner_radius(
-                    egui::CornerRadius {
+                    CornerRadius {
                         nw: 0,
                         ne: 0,
                         sw: radius,
@@ -4809,7 +4812,7 @@ impl Explorer {
                     },
                 ),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 // Bottom-up: the Recycle Bin is pinned, the rest scrolls only when it has to.
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     if nav_item(ui, &m, &pal, "recycle_bin", "Recycle Bin", trash_active).clicked()
@@ -4869,7 +4872,7 @@ impl Explorer {
         self.sidebar_rect = Some(panel.response.rect);
     }
 
-    fn ui_nav(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    fn ui_nav(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
         let nw = (((m.radius + 2) as f32) * (1.0 - self.first_anim)).round() as u8;
         let tab = &mut self.tabs[self.active];
@@ -4878,10 +4881,10 @@ impl Explorer {
             !tab.fwd.is_empty(),
             tab.trash.is_none() && tab.dir.parent().is_some(),
         );
-        egui::TopBottomPanel::top("nav")
+        egui::Panel::top("nav")
             .show_separator_line(false)
             .frame(band_frame(&pal, nw, m.pad, m.pad, m.pad * 0.8, m.pad * 0.2))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = m.s * 2.0;
                     if icon_button(ui, &m, &pal, "back", "Back (Alt+←)", can_back, false).clicked()
@@ -4914,7 +4917,7 @@ impl Explorer {
             });
     }
 
-    fn ui_command(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    fn ui_command(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
         let (in_trash, trash_sel, trash_any) = match &self.tabs[self.active].trash {
             Some(t) => (true, t.selected.len(), !t.rows.is_empty()),
@@ -4926,7 +4929,7 @@ impl Explorer {
             self.settings.show_hidden,
             self.settings_open,
         );
-        egui::TopBottomPanel::top("command")
+        egui::Panel::top("command")
             .show_separator_line(false)
             .frame(layer_frame(
                 &pal,
@@ -4937,7 +4940,7 @@ impl Explorer {
                 m.pad * 0.3,
                 false,
             ))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = m.s * 2.0;
                     if in_trash {
@@ -5075,10 +5078,10 @@ impl Explorer {
             });
     }
 
-    fn ui_status(&mut self, ctx: &egui::Context) {
+    fn ui_status(&mut self, ui: &mut Ui) {
         let (m, pal) = (self.m, self.pal);
         let tab = &self.tabs[self.active];
-        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
         let radius = if maximized { 0 } else { RADIUS };
         let mut text = format!(
             "{} item{}",
@@ -5131,7 +5134,7 @@ impl Explorer {
             };
             format!("{}: {}", if *cut { "Cut" } else { "Copied" }, what)
         });
-        egui::TopBottomPanel::bottom("status")
+        egui::Panel::bottom("status")
             .show_separator_line(false)
             .frame(
                 layer_frame(
@@ -5143,14 +5146,14 @@ impl Explorer {
                     m.pad * 0.4,
                     false,
                 )
-                .corner_radius(egui::CornerRadius {
+                .corner_radius(CornerRadius {
                     nw: 0,
                     ne: 0,
                     sw: 0,
                     se: radius,
                 }),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(text)
@@ -5178,7 +5181,7 @@ impl Explorer {
             });
     }
 
-    fn ui_central(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    fn ui_central(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         self.fix_tiles();
         let (m, pal) = (self.m, self.pal);
         let can_paste = get_clipboard().is_some();
@@ -5199,7 +5202,7 @@ impl Explorer {
                 let cols = &mut self.settings.col_widths;
                 let tab = &mut self.tabs[active];
                 let tab_id = tab.id;
-                egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(frame).show(ui, |ui| {
                     let rect = ui.max_rect();
                     panes.push((tab_id, rect));
                     tab_body(
@@ -5219,11 +5222,11 @@ impl Explorer {
             Some(t) => {
                 let tabs = &mut self.tabs;
                 let cols = &mut self.settings.col_widths;
-                egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(frame).show(ui, |ui| {
                     let full = ui.max_rect();
                     let mut rects: Vec<(u64, Rect)> = Vec::new();
                     layout_tiles(ui, t, full, &m, &pal, &mut rects);
-                    let press = ctx.input(|i| {
+                    let press = ui.input(|i| {
                         if i.pointer.any_pressed() {
                             i.pointer.interact_pos()
                         } else {
@@ -5239,7 +5242,7 @@ impl Explorer {
                         let is_active = idx == active;
                         // Clicking anywhere in a pane focuses it (but not through a menu or dialog on top of it).
                         if let Some(p) = press {
-                            let covered = ctx.layer_id_at(p).is_some_and(|l| l != ui.layer_id());
+                            let covered = ui.layer_id_at(p).is_some_and(|l| l != ui.layer_id());
                             if !is_active && !covered && rect.contains(p) {
                                 focus = Some(idx);
                             }
@@ -5327,7 +5330,7 @@ impl Explorer {
                 self.load_tab(i); // the pane may have been out of date: only the focused folder is watched
             }
         }
-        self.tab_drag_overlay(ctx, &panes);
+        self.tab_drag_overlay(ui, &panes);
     }
 
     /// True when the OS cursor is outside this window (only known on Windows).
@@ -5350,7 +5353,7 @@ impl Explorer {
             return;
         };
         let only = self.tabs.len() <= 1;
-        let everything = self.ctx.input(|i| i.modifiers.shift);
+        let everything = self.ui.input(|i| i.modifiers.shift);
         match self.peers.window_at(cx, cy) {
             Some(pid) => {
                 if only || everything {
@@ -5364,7 +5367,7 @@ impl Explorer {
                         .collect();
                     dirs.push(self.tabs[ti].dir.clone());
                     if dirs.iter().all(|d| self.peers.send_tab(pid, d)) {
-                        self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        self.ui.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 } else {
                     let dir = self.tabs[ti].dir.clone();
@@ -5378,7 +5381,7 @@ impl Explorer {
                     return; // the only tab already is a window of its own
                 }
                 let dir = self.tabs[ti].dir.clone();
-                let ppp = self.ctx.pixels_per_point().max(0.1);
+                let ppp = self.ui.pixels_per_point().max(0.1);
                 spawn_window(
                     &dir,
                     Some(((cx / ppp - 80.0).max(0.0), (cy / ppp - 20.0).max(0.0))),
@@ -5434,11 +5437,11 @@ impl Explorer {
 
     /// While a tab is being dragged: shows where it would land (clearly, in the accent colour) and
     /// performs the drop on release.
-    fn tab_drag_overlay(&mut self, ctx: &egui::Context, panes: &[(u64, Rect)]) {
+    fn tab_drag_overlay(&mut self, ui: &mut Ui, panes: &[(u64, Rect)]) {
         let Some(dragged) = self.tab_drag else {
             return;
         };
-        let (pos, down, released) = ctx.input(|i| {
+        let (pos, down, released) = ui.input(|i| {
             (
                 i.pointer.latest_pos(),
                 i.pointer.primary_down(),
@@ -5446,10 +5449,10 @@ impl Explorer {
             )
         });
         let (m, pal) = (self.m, self.pal);
-        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-        ctx.request_repaint();
+        ui.set_cursor_icon(egui::CursorIcon::Grabbing);
+        ui.request_repaint();
         let outside = self.cursor_outside_window() == Some(true);
-        let overlay = ctx.layer_painter(egui::LayerId::new(
+        let overlay = ui.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
             Id::new("tile_drop_preview"),
         ));
@@ -5472,7 +5475,7 @@ impl Explorer {
             } else {
                 "Drop on another SlopExplorer window to merge"
             };
-            let screen = ctx.screen_rect();
+            let screen = ui.content_rect();
             overlay.rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(110));
             let band = Rect::from_center_size(
                 screen.center_bottom() - vec2(0.0, m.row_h * 2.0),
@@ -5535,7 +5538,7 @@ impl Explorer {
                 .find(|t| t.id == dragged)
                 .map(|t| t.title())
                 .unwrap_or_default();
-            let tip = ctx.layer_painter(egui::LayerId::new(
+            let tip = ui.layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
                 Id::new("tile_drag_ghost"),
             ));
@@ -5562,7 +5565,7 @@ impl Explorer {
 
     // ------------------------------------------------------------------ dialogs
 
-    fn ui_settings(&mut self, ctx: &egui::Context) {
+    fn ui_settings(&mut self, ui: &mut Ui) {
         if !self.settings_open {
             return;
         }
@@ -5575,7 +5578,7 @@ impl Explorer {
         let index_dir = self.index_dir.display().to_string();
         let cache_len = self.indexer.len();
         let closed = dialog_shell(
-            ctx,
+            ui,
             &m,
             &pal,
             "settings",
@@ -5663,7 +5666,7 @@ impl Explorer {
         self.font_edit = font_edit;
         let reload = s.show_hidden != old.show_hidden || s.date_format != old.date_format;
         if s.theme != old.theme {
-            ctx.set_theme(theme_pref(s.theme));
+            ui.set_theme(theme_pref(s.theme));
         }
         self.settings = s;
         self.settings_dirty = true;
@@ -5702,7 +5705,7 @@ impl Explorer {
         }
     }
 
-    fn ui_props(&mut self, ctx: &egui::Context) {
+    fn ui_props(&mut self, ui: &mut Ui) {
         let Some(mut p) = self.props.take() else {
             return;
         };
@@ -5712,7 +5715,7 @@ impl Explorer {
         let mut readonly = p.readonly;
         let (mut copy_path, mut show_in_folder) = (false, false);
         let closed = dialog_shell(
-            ctx,
+            ui,
             &m,
             &pal,
             "props",
@@ -5833,7 +5836,7 @@ impl Explorer {
             }
         }
         if copy_path {
-            ctx.copy_text(p.path.display().to_string());
+            ui.copy_text(p.path.display().to_string());
         }
         if show_in_folder {
             self.apply(Action::OpenContaining(p.path.clone()));
@@ -5845,12 +5848,12 @@ impl Explorer {
         }
     }
 
-    fn ui_confirm(&mut self, ctx: &egui::Context) {
+    fn ui_confirm(&mut self, ui: &mut Ui) {
         let Some(c) = self.confirm.take() else { return };
         let (m, pal) = (self.m, self.pal);
         let mut choice = 0;
         let closed = dialog_shell(
-            ctx,
+            ui,
             &m,
             &pal,
             "confirm",
@@ -5884,7 +5887,7 @@ impl Explorer {
 
     /// Asks, one clashing item at a time (like Explorer), whether to replace it, keep both with a
     /// "(n)" suffix, or skip it. "Do this for all" answers the remaining ones the same way.
-    fn ui_conflict(&mut self, ctx: &egui::Context) {
+    fn ui_conflict(&mut self, ui: &mut Ui) {
         let Some(mut c) = self.conflict.take() else {
             return;
         };
@@ -5917,7 +5920,7 @@ impl Explorer {
         let mut all = c.apply_all;
         let mut choice = 0;
         let closed = dialog_shell(
-            ctx,
+            ui,
             &m,
             &pal,
             "conflict",
@@ -6013,41 +6016,71 @@ impl Explorer {
 // ==============================================================================================
 
 impl eframe::App for Explorer {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0] // every panel paints its own background; Mica shows through the transparent parts
-    }
-
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn logic(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &mut eframe::Frame,
+    ) {
+        // System/window state and background processing.
         self.sync_system(ctx, frame);
         self.track_window(ctx);
         handle_resize(ctx, &self.m);
+
         self.pump_messages();
-        self.pump_search();
-        let rect = ctx.screen_rect();
-        let painter = ctx.layer_painter(egui::LayerId::background());
-        if self.settings.use_mica {
-            self.mica = true;
-        }else {
-            self.mica = false;
+        self.pump_search(ctx);
+
+        // Keep the Mica state synchronized with settings.
+        self.mica = self.settings.use_mica;
+
+        // Handle closing before the UI is drawn.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            // Vanish first, then save.
+            hide_window(frame);
+            save_settings(&self.settings);
+            self.peers.shutdown();
+            self.indexer.save_if_dirty(&self.index_dir, true);
+
+            // The OS cleans up at once.
+            terminate_now();
         }
-        
-        if self.mica{
-            painter.rect_filled(rect, 8.0, Color32::from_rgba_unmultiplied(120, 120, 120, 10));
-        }else {
+    }
+
+    fn ui(
+        &mut self,
+        ui: &mut Ui,
+        _frame: &mut eframe::Frame,
+    ) {
+        // Background painting.
+        let rect = ui.content_rect();
+        let painter = ui.layer_painter(egui::LayerId::background());
+
+        if self.mica {
+            painter.rect_filled(
+                rect,
+                8.0,
+                self.pal.chrome,
+            );
+        } else {
             painter.rect_filled(rect, 8.0, self.pal.layer);
         }
-        let mut actions: Vec<Action> = Vec::new();
-        self.collect_shortcuts(ctx, &mut actions);
 
-        self.ui_tabs(ctx, &mut actions);
-        self.ui_nav(ctx, &mut actions);
-        self.ui_command(ctx, &mut actions);
-        self.ui_sidebar(ctx, &mut actions);
-        self.ui_status(ctx);
-        self.ui_central(ctx, &mut actions);
-        // Rounded inner corner where the band above meets the file view, to the right of the sidebar.
+        // Collect actions triggered by the UI and shortcuts.
+        let mut actions: Vec<Action> = Vec::new();
+        self.collect_shortcuts(ui, &mut actions);
+
+        // Draw the interface.
+        self.ui_tabs(ui, &mut actions);
+        self.ui_nav(ui, &mut actions);
+        self.ui_command(ui, &mut actions);
+        self.ui_sidebar(ui, &mut actions);
+        self.ui_status(ui);
+        self.ui_central(ui, &mut actions);
+
+        // Rounded inner corner where the band above meets the file
+        // view, to the right of the sidebar.
         if let Some(r) = self.sidebar_rect {
-            let painter = ctx.layer_painter(egui::LayerId::background());
+            let painter = ui.layer_painter(egui::LayerId::background());
+
             corner_fillet(
                 &painter,
                 pos2(r.right(), r.top()),
@@ -6057,31 +6090,36 @@ impl eframe::App for Explorer {
                 self.pal.layer,
             );
         }
-        self.ui_settings(ctx);
-        self.ui_props(ctx);
-        self.ui_conflict(ctx);
-        self.ui_confirm(ctx);
 
-        for a in actions {
-            self.apply(a);
+        self.ui_settings(ui);
+        self.ui_props(ui);
+        self.ui_conflict(ui);
+        self.ui_confirm(ui);
+
+        // Apply actions after rendering, as in your original code.
+        for action in actions {
+            self.apply(action);
         }
 
-        let title = format!("{} – SlopExplorer", self.tabs[self.active].title());
+        // Update the title after applying actions, so tab changes
+        // can update the title in the same UI pass.
+        let title = format!(
+            "{} – SlopExplorer",
+            self.tabs[self.active].title()
+        );
+
         if title != self.last_title {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            ui.ctx().send_viewport_cmd(
+                egui::ViewportCommand::Title(title.clone()),
+            );
             self.last_title = title;
         }
+    }
 
-        if ctx.input(|i| i.viewport().close_requested()) {
-            // Vanish first, then save: the window is gone the instant the button is pressed.
-            hide_window(frame);
-            save_settings(&self.settings);
-            self.peers.shutdown();
-            self.indexer.save_if_dirty(&self.index_dir, true);
-            // Skip the normal teardown (joining threads, destroying the GL context, DLL detach in
-            // GPU drivers): it is slow and can hang a transparent window. The OS cleans up at once.
-            terminate_now();
-        }
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Every panel paints its own background; Mica shows through
+        // the transparent parts.
+        [0.0, 0.0, 0.0, 0.0]
     }
 }
 
@@ -6173,6 +6211,7 @@ fn main() -> eframe::Result<()> {
     }
     let options = eframe::NativeOptions {
         viewport,
+        renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
 

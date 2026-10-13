@@ -1,6 +1,6 @@
 [package]
 name = "SlopExplorer"
-version = "0.2.3"
+version = "0.2.5"
 edition = "2021"
 
 [target.'cfg(windows)'.dependencies]
@@ -11,8 +11,8 @@ winreg = "0.55"
 device_query = "4"
 clipboard-rs = "0.3"
 url = "2"
-eframe = "0.31.1"
-egui_extras = { version = "0.31.1", features = ["svg"] }
+eframe = { version = "0.36", features = ["glow"] }
+egui_extras = { version = "0.36", features = ["svg"] }
 dirs = "7"
 dunce = "1"
 open = "5"
