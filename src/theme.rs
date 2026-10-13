@@ -219,7 +219,7 @@ impl Palette {
             Self {
                 dark, mica, accent: acc, on_accent,
                 base: Color32::from_rgb(60, 60, 60),
-                layer: if mica { a(80, 0.75) } else { Color32::from_rgb(0x28, 0x28, 0x28) },
+                layer: if mica { a(40, 0.75) } else { Color32::from_rgb(40, 40, 40) },
                 flyout: Color32::from_rgb(80, 80, 80),
                 text: Color32::WHITE,
                 text_secondary: a(255, 0.785),
@@ -235,14 +235,14 @@ impl Palette {
                 hover: with_alpha(acc, 0.1),
                 danger: Color32::from_rgb(0xFF, 0x99, 0xA4),
                 danger_bg: Color32::from_rgb(0x44, 0x27, 0x26),
-                chrome: a(255, 0.2),
+                chrome: a(255, 0.1),
             }
         } else {
             Self {
                 dark, mica, accent: acc, on_accent,
                 base: Color32::from_rgb(215, 215, 215),
                 layer: if mica { a(255, 0.6) } else { Color32::from_rgb(0xFB, 0xFB, 0xFB) },
-                flyout: Color32::from_rgb(245, 245, 245),
+                flyout: Color32::from_rgb(215, 215, 215),
                 text: Color32::from_rgb(0x1A, 0x1A, 0x1A),
                 text_secondary: a(0, 0.6),
                 text_disabled: a(0, 0.36),

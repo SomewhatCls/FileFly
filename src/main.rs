@@ -701,7 +701,7 @@ fn read_listing(dir: &Path, show_hidden: bool, fmt: DateFormat) -> Result<Vec<En
     Ok(out)
 }
 
-const SEARCH_THREADS: usize = 4; // raise for more speed, lower for less CPU
+const SEARCH_THREADS: usize = 64; // raise for more speed, lower for less CPU
 const MAX_RESULTS: usize = 100_000;
 
 pub struct SearchJob {
