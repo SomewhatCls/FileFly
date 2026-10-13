@@ -665,15 +665,14 @@ impl Debounce {
 }
 
 // ==============================================================================================
-// Listing
-
+// File Listing for dir
 fn read_listing(dir: &Path, show_hidden: bool, fmt: DateFormat) -> Result<Vec<Entry>, String> {
     let rd = fs::read_dir(dir).map_err(|e| format!("Could not read this folder: {e}"))?;
     let mut out = Vec::with_capacity(256);
     for item in rd.flatten() {
         let Ok(md) = item.metadata() else { continue };
         let name = item.file_name().to_string_lossy().into_owned();
-        if !show_hidden && is_hidden_entry(&name, &md) {
+        if !show_hidden && (is_hidden_entry(&name, &md)) {
             continue;
         }
         out.push(Entry::from_path(name, item.path(), &md, fmt));
@@ -696,6 +695,7 @@ impl Drop for SearchJob {
     }
 }
 
+//Executes recursive search, called when search field input changes
 fn start_search(root: PathBuf, query: String, show_hidden: bool, fmt: DateFormat, ctx: egui::Context, ) -> SearchJob {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -715,7 +715,10 @@ fn start_search(root: PathBuf, query: String, show_hidden: bool, fmt: DateFormat
                 if !show_hidden {
                     // don't walk into dot-folders (.git etc.) at all
                     children.retain(|c| match c {
-                        Ok(d) => !d.file_name().to_string_lossy().starts_with('.'),
+                        Ok(dir) => !dir.file_name().to_string_lossy().starts_with('.') ,
+                        //This is overtly aggressive since it targets all system folders, including Program Files etc.
+                        //leading to root search being impossible.
+                        //Ok(dir) => !is_hidden_entry(&dir.file_name().to_string_lossy(), &dir.metadata().unwrap()),
                         Err(_) => false,
                     });
                 }
@@ -766,6 +769,7 @@ fn start_search(root: PathBuf, query: String, show_hidden: bool, fmt: DateFormat
     SearchJob { rx, cancel, done: false }
 }
 
+//Restarts search when input in Search field changes.
 fn on_search_changed(tab: &mut Tab, show_hidden: bool, fmt: DateFormat, ctx: &egui::Context) {
     tab.search_job = None; // dropping the old job cancels its walk
     tab.search_results.clear();
