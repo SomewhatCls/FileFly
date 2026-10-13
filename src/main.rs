@@ -300,6 +300,7 @@ enum ThemeChoice {
 #[serde(default)]
 struct Settings {
     font_size: f32,
+    use_mica: bool,
     follow_text_scale: bool,
     use_system_accent: bool,
     custom_accent: [u8; 3],
@@ -328,6 +329,7 @@ impl Default for Settings {
             col_widths: [150.0, 110.0, 90.0],
             window_size: None,
             maximized: false,
+            use_mica: true,
         }
     }
 }
@@ -5618,6 +5620,10 @@ impl Explorer {
                         ui.color_edit_button_srgb(&mut s.custom_accent);
                     }
                 });
+                ui.checkbox(
+                    &mut s.use_mica,
+                    "Use Mica transparency effect (Windows 11)",
+                );
                 head(ui, "Files");
                 ui.checkbox(&mut s.show_hidden, "Show hidden items");
                 ui.label("Date format");
@@ -6015,6 +6021,11 @@ impl eframe::App for Explorer {
         self.pump_search();
         let rect = ctx.screen_rect();
         let painter = ctx.layer_painter(egui::LayerId::background());
+        if self.settings.use_mica {
+            self.mica = true;
+        }else {
+            self.mica = false;
+        }
         
         if self.mica{
             painter.rect_filled(rect, 8.0, Color32::from_rgba_unmultiplied(120, 120, 120, 10));
