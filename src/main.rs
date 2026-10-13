@@ -6058,7 +6058,7 @@ impl eframe::App for Explorer {
             painter.rect_filled(
                 rect,
                 8.0,
-                Color32::from_rgba_unmultiplied(120, 120, 120, 10),
+                self.pal.chrome,
             );
         } else {
             painter.rect_filled(rect, 8.0, self.pal.layer);
