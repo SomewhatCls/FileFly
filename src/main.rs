@@ -6029,8 +6029,12 @@ impl eframe::App for Explorer {
         self.pump_messages();
         self.pump_search(ctx);
 
-        // Keep the Mica state synchronized with settings.
-        self.mica = self.settings.use_mica;
+        // Keep the Mica state synchronized with settings and system state.
+        if system_transparency() {
+            self.mica = self.settings.use_mica;
+        }else{
+            self.mica = false;
+        }
 
         // Handle closing before the UI is drawn.
         if ctx.input(|i| i.viewport().close_requested()) {
