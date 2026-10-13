@@ -1,6 +1,6 @@
 [package]
-name = "SlopExplorer"
-version = "0.2.5"
+name = "FileFly"
+version = "0.2.6"
 edition = "2021"
 
 [target.'cfg(windows)'.dependencies]
@@ -32,4 +32,4 @@ winres = "0.1"
 
 [package.metadata.appimage]
 icon = "assets/logo.png"
-desktop_entry = "other/SlopExplorer.desktop"
+desktop_entry = "other/FileFly.desktop"

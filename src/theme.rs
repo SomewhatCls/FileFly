@@ -242,7 +242,7 @@ impl Palette {
                 dark, mica, accent: acc, on_accent,
                 base: Color32::from_rgb(215, 215, 215),
                 layer: if mica { a(255, 0.6) } else { Color32::from_rgb(0xFB, 0xFB, 0xFB) },
-                flyout: Color32::from_rgb(215, 215, 215),
+                flyout: Color32::from_rgb(230, 230, 230),
                 text: Color32::from_rgb(0x1A, 0x1A, 0x1A),
                 text_secondary: a(0, 0.6),
                 text_disabled: a(0, 0.36),
@@ -373,6 +373,7 @@ fn visuals(p: &Palette, m: &Metrics) -> Visuals {
     v.selection.stroke = Stroke::new(1.0_f32, p.accent);
     v.hyperlink_color = p.accent;
     v.override_text_color = None;
+    v.slider_trailing_fill = true;
 
     let w = &mut v.widgets;
     w.noninteractive.bg_fill = Color32::TRANSPARENT;

@@ -360,7 +360,7 @@ fn app_dir() -> PathBuf {
         .or_else(dirs::data_dir)
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("SlopExplorer")
+        .join("FileFly")
 }
 
 fn load_settings() -> Settings {
@@ -1008,14 +1008,14 @@ struct Explorer {
     index_sig: Option<(u64, usize)>,
     reindex_force: bool,
 
-    /// Other SlopExplorer windows (tab hand-over).
+    /// Other FileFly windows (tab hand-over).
     peers: Peers,
     own_info: Option<WinInfo>,
     info_stamp: Instant,
     /// Windows transparency effects available (off in Battery Saver / when disabled in Settings).
     transparency: bool,
     backdrop_transp: Option<bool>,
-    /// (when checked, whether another SlopExplorer window is under the pointer) while dragging a tab.
+    /// (when checked, whether another FileFly window is under the pointer) while dragging a tab.
     peer_under: (Instant, bool),
 }
 
@@ -5419,7 +5419,7 @@ impl Explorer {
         Some(!(cx >= o.rect[0] && cx < o.rect[2] && cy >= o.rect[1] && cy < o.rect[3]))
     }
 
-    /// A tab was released outside the window: open it in another SlopExplorer window under the
+    /// A tab was released outside the window: open it in another FileFly window under the
     /// pointer, or in a new window of its own.
     fn detach_tab(&mut self, dragged: u64) {
         let Some(ti) = self.tabs.iter().position(|t| t.id == dragged) else {
@@ -5552,7 +5552,7 @@ impl Explorer {
             } else if self.tabs.len() > 1 {
                 "Release to open this tab in its own window"
             } else {
-                "Drop on another SlopExplorer window to merge"
+                "Drop on another FileFly window to merge"
             };
             let screen = ui.content_rect();
             overlay.rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(110));
@@ -6187,7 +6187,7 @@ impl eframe::App for Explorer {
         // Update the title after applying actions, so tab changes
         // can update the title in the same UI pass.
         let title = format!(
-            "{} – SlopExplorer",
+            "{} – FileFly",
             self.tabs[self.active].title()
         );
 
@@ -6209,7 +6209,7 @@ impl eframe::App for Explorer {
 /// Folder a window opened by "drag a tab out" starts in.
 static START_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// Starts another SlopExplorer window (its own process) showing `dir`.
+/// Starts another FileFly window (its own process) showing `dir`.
 fn spawn_window(dir: &Path, pos: Option<(f32, f32)>) {
     if let Ok(exe) = std::env::current_exe() {
         let mut c = std::process::Command::new(exe);
@@ -6299,7 +6299,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "SlopExplorer",
+        "FileFly",
         options,
         Box::new(|cc| Ok(Box::new(Explorer::new(cc)))),
     )
