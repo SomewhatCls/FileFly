@@ -1,7 +1,6 @@
 Cargo.lock
 target
 .idea
-*.iss
 installer
 .backup
 *.AppImage
