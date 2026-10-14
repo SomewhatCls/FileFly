@@ -725,6 +725,7 @@ fn start_search(roots: Vec<PathBuf>, query: String, show_hidden: bool, fmt: Date
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let c = cancel.clone();
+    let file_ending_search = if query.starts_with("*.") {true} else {false};
 
     std::thread::spawn(move || {
         let mut batch: Vec<Entry> = Vec::new();
@@ -762,8 +763,11 @@ fn start_search(roots: Vec<PathBuf>, query: String, show_hidden: bool, fmt: Date
                     continue;
                 }
                 let name = de.file_name().to_string_lossy().into_owned();
-                if !name.to_lowercase().contains(&query) {
-                    continue;
+                //Check if object name contains query, or if searching for file extensions with
+                //*.ext syntax, check if file has ending.
+                if !name.to_lowercase().contains(&query) && !file_ending_search ||
+                    file_ending_search && !name.to_lowercase().ends_with(&query[1..]) {
+                        continue;
                 }
                 // only matches pay for a metadata call
                 let Ok(md) = de.metadata() else { continue };
