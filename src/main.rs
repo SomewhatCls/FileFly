@@ -624,6 +624,7 @@ enum AppMsg {
 // Drag-to-copy: drag files out of the list onto a folder, a pane or the sidebar, or out of the window.
 
 /// 1x1 transparent PNG used as the OS drag preview (the in-window ghost is drawn by egui itself).
+#[cfg(target_os = "windows")]
 const DRAG_PREVIEW_PNG: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0xFC, 0xCF, 0xC0, 0x50, 0x0F, 0x00, 0x04, 0x85, 0x01, 0x80, 0x84, 0xA9, 0x8C, 0x21, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
 
 /// State of one item drag. Lives in egui's temp data under `item_drag_id()` so the file table, the
@@ -5798,7 +5799,7 @@ impl Explorer {
     /// the pointer has moved a few pixels. Releasing over a folder row, a sidebar entry or another
     /// pane copies the dragged items there; leaving the window hands them to the OS as a file drag,
     /// so any other program (or FileFly window) can take them.
-    fn drive_item_drag(&mut self, ui: &mut Ui, frame: &eframe::Frame, actions: &mut Vec<Action>) {
+    fn drive_item_drag(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let id = item_drag_id();
         let ctx = ui.ctx().clone();
         let (down, released, pressed, latest, esc) = ui.input(|i| {
@@ -5967,7 +5968,7 @@ impl Explorer {
         ctx.data_mut(|d| d.insert_temp(id, st)); // `target` was taken above: recomputed next frame
     }
 
-    /// Starts a real OS file drag (OLE on Windows). Blocks until the user drops or cancels.
+    /// Starts a real OS file drag on Windows. Blocks until the user drops or cancels.
     #[cfg(target_os = "windows")]
     fn start_os_drag(&mut self, frame: &eframe::Frame, paths: Vec<PathBuf>) {
         let paths: Vec<PathBuf> = paths.into_iter().filter(|p| p.exists()).collect();
@@ -6518,7 +6519,7 @@ impl eframe::App for Explorer {
     fn ui(
         &mut self,
         ui: &mut Ui,
-        frame: &mut eframe::Frame,
+        frame: &mut eframe::Frame
     ) {
         // Background painting.
         let rect = ui.content_rect();
@@ -6545,7 +6546,7 @@ impl eframe::App for Explorer {
         self.ui_sidebar(ui, &mut actions);
         self.ui_status(ui);
         self.ui_central(ui, &mut actions);
-        self.drive_item_drag(ui, frame, &mut actions);
+        self.drive_item_drag(ui, &mut actions);
         self.handle_dropped_files(ui);
 
         // Rounded inner corner where the band above meets the file
