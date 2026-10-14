@@ -1,16 +1,18 @@
 use eframe::egui::{self, vec2, Color32, Pos2, Rect, Ui};
 use file_icon_provider::get_file_icon;
-use std::{collections::HashMap, path::Path};
-
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use crate::Entry;
 
-use std::cell::RefCell;
-
-thread_local! {
-    static ICON_CACHE: RefCell<IconCache> = RefCell::new(IconCache::default());
-}
-
+//Consts for Worker thread metrics and icon size
 const ICON_SIZE: u16 = 32;
+const THREADS: usize = 4;
+const MAX_SLOTS: usize = 1024;
+const UPLOADS_PER_FRAME: usize = 32;
+const KEEP_FRAMES: u64 = 120;
 
 /// Extensions whose icon depends on the individual file, not just the type.
 #[cfg(windows)]
@@ -30,48 +32,151 @@ pub fn make_icon_key(is_dir: bool, ext: Option<&str>, path: &Path) -> String {
     }
 }
 
-///Lookup Table for streaming of certain images for certain entries.
-#[derive(Default)]
+struct Job {
+    key: String,
+    path: PathBuf,
+}
+
+struct Done {
+    key: String,
+    img: Option<egui::ColorImage>,
+}
+
+struct Queue {
+    jobs: Mutex<VecDeque<Job>>,
+    cv: Condvar,
+    closed: AtomicBool,
+}
+
+struct Slot {
+    tex: Option<egui::TextureHandle>, // None = platform has no icon, use built-in
+    last_used: u64,
+}
+
 pub struct IconCache {
-    map: HashMap<String, Option<egui::TextureHandle>>,
+    ctx: egui::Context,
+    queue: Arc<Queue>,
+    rx: mpsc::Receiver<Done>,
+    slots: HashMap<String, Slot>,
+    pending: HashSet<String>, // queued or in flight
+    frame: u64,
+}
+
+fn load_icon(path: &Path) -> Option<egui::ColorImage> {
+    let icon = get_file_icon(path, ICON_SIZE).ok()?;
+    if icon.width == 0 || icon.height == 0 {
+        return None;
+    }
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        [icon.width as usize, icon.height as usize],
+        &icon.pixels,
+    ))
 }
 
 impl IconCache {
-    ///gets and caches icons for files shown.
-    /// uses get_file_icon() from file_icon_provider crate.
-    /// If an icon is found, a key is created to associate the entry with a specific texture
-    /// in the lookup table.
-    /// None means the platform couldn't supply an icon; the caller draws the built-in one.
-    pub fn get(&mut self, ctx: &egui::Context, key: &str, path: &Path) -> Option<&egui::TextureHandle> {
-        if !self.map.contains_key(key) {
-            let tex = (|| {
-                let icon = get_file_icon(path, ICON_SIZE).ok()?;
-                if icon.width == 0 || icon.height == 0 {
-                    return None;
-                }
-                let img = egui::ColorImage::from_rgba_unmultiplied(
-                    [icon.width as usize, icon.height as usize],
-                    &icon.pixels,
-                );
-                Some(ctx.load_texture(format!("icon:{key}"), img, egui::TextureOptions::LINEAR))
-            })();
-            self.map.insert(key.to_owned(), tex);
+    pub fn new(ctx: &egui::Context) -> Self {
+        let queue = Arc::new(Queue {
+            jobs: Mutex::new(VecDeque::new()),
+            cv: Condvar::new(),
+            closed: AtomicBool::new(false),
+        });
+        let (tx, rx) = mpsc::channel();
+
+        for i in 0..THREADS {
+            let (q, tx, ctx) = (queue.clone(), tx.clone(), ctx.clone());
+            std::thread::Builder::new()
+                .name(format!("icon-worker-{i}"))
+                .spawn(move || loop {
+                    let job = {
+                        let mut g = q.jobs.lock().unwrap();
+                        loop {
+                            if q.closed.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            if let Some(j) = g.pop_front() {
+                                break j;
+                            }
+                            g = q.cv.wait(g).unwrap();
+                        }
+                    };
+                    let img = load_icon(&job.path);
+                    if tx.send(Done { key: job.key, img }).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
+                })
+                .expect("spawn icon worker");
         }
-        self.map.get(key).and_then(|t| t.as_ref())
+
+        Self { ctx: ctx.clone(), queue, rx, slots: HashMap::new(), pending: HashSet::new(), frame: 0 }
+    }
+
+    /// Call once at the top of every frame.
+    pub fn begin_frame(&mut self) {
+        self.frame += 1;
+
+        // Drop jobs that haven't started: whatever is still visible re-queues itself this frame.
+        {
+            let mut jobs = self.queue.jobs.lock().unwrap();
+            for j in jobs.drain(..) {
+                self.pending.remove(&j.key);
+            }
+        }
+
+        // Turn finished icons into textures, a few per frame.
+        for _ in 0..UPLOADS_PER_FRAME {
+            let Ok(d) = self.rx.try_recv() else { return self.evict() };
+            self.pending.remove(&d.key);
+            let tex = d.img.map(|img| {
+                self.ctx.load_texture(format!("icon:{}", d.key), img, egui::TextureOptions::LINEAR)
+            });
+            self.slots.insert(d.key, Slot { tex, last_used: self.frame });
+        }
+        self.ctx.request_repaint(); // more results may be waiting
+        self.evict();
+    }
+
+    fn evict(&mut self) {
+        if self.slots.len() > MAX_SLOTS {
+            let cutoff = self.frame.saturating_sub(KEEP_FRAMES);
+            self.slots.retain(|_, s| s.last_used >= cutoff); // dropping the handle frees the texture
+        }
+    }
+
+    /// Never blocks. None = not ready yet or no platform icon -> caller draws the built-in one.
+    pub fn get(&mut self, key: &str, path: &Path) -> Option<egui::TextureHandle> {
+        if let Some(slot) = self.slots.get_mut(key) {
+            slot.last_used = self.frame;
+            return slot.tex.clone();
+        }
+        if self.pending.insert(key.to_owned()) {
+            self.queue.jobs.lock().unwrap().push_back(Job { key: key.to_owned(), path: path.to_owned() });
+            self.queue.cv.notify_one();
+        }
+        None
     }
 }
 
-/// Built-in SVG icon (moved here from main.rs, so delete it there).
-pub fn draw_icon(ui: &Ui, center: Pos2, size: f32, name: &str, tint: Color32) {
-    egui::Image::new(icon_source(name))
-        .tint(tint)
-        .paint_at(ui, Rect::from_center_size(center, vec2(size, size)));
+impl Drop for IconCache {
+    fn drop(&mut self) {
+        self.queue.closed.store(true, Ordering::Relaxed);
+        self.queue.cv.notify_all();
+    }
 }
 
-/// Platform icon if available, otherwise the built-in one.
+thread_local! {
+    static ICON_CACHE: RefCell<Option<IconCache>> = const { RefCell::new(None) };
+}
+
+pub fn icons_begin_frame(ctx: &egui::Context) {
+    ICON_CACHE.with(|c| c.borrow_mut().get_or_insert_with(|| IconCache::new(ctx)).begin_frame());
+}
+
 pub fn draw_system_icon(ui: &Ui, center: Pos2, size: f32, e: &Entry, tint: Color32) {
     let ctx = ui.ctx().clone();
-    let tex = ICON_CACHE.with(|c| c.borrow_mut().get(&ctx, &e.icon_key, &e.path).cloned());
+    let tex = ICON_CACHE.with(|c| {
+        c.borrow_mut().get_or_insert_with(|| IconCache::new(&ctx)).get(&e.icon_key, &e.path)
+    });
     match tex {
         Some(tex) => {
             let sized = egui::load::SizedTexture::new(tex.id(), vec2(size, size));
@@ -81,6 +186,13 @@ pub fn draw_system_icon(ui: &Ui, center: Pos2, size: f32, e: &Entry, tint: Color
         }
         None => draw_icon(ui, center, size, &e.icon_key, tint),
     }
+}
+
+/// Built-in SVG icon (moved here from main.rs, so delete it there).
+pub fn draw_icon(ui: &Ui, center: Pos2, size: f32, name: &str, tint: Color32) {
+    egui::Image::new(icon_source(name))
+        .tint(tint)
+        .paint_at(ui, Rect::from_center_size(center, vec2(size, size)));
 }
 
 /// Looks up an embedded SVG by name. Unknown names fall back to the generic file icon.
