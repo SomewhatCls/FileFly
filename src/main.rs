@@ -4985,7 +4985,10 @@ impl Explorer {
                             } else if resp.clicked() {
                                 actions.push(Action::SwitchTab(i));
                             }
-                            resp.on_hover_text(full_path);
+                            if !close.clone().hovered() {
+                                resp.on_hover_text(full_path);
+                            }
+                            close.on_hover_text("Close tab (Ctrl+W)");
                         }
                         if icon_button(ui, &m, &pal, "plus", "New tab (Ctrl+T)", true, false)
                             .clicked()
@@ -5799,7 +5802,7 @@ impl Explorer {
     /// the pointer has moved a few pixels. Releasing over a folder row, a sidebar entry or another
     /// pane copies the dragged items there; leaving the window hands them to the OS as a file drag,
     /// so any other program (or FileFly window) can take them.
-    fn drive_item_drag(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+    fn drive_item_drag(&mut self, frame: &eframe::Frame, ui: &mut Ui, actions: &mut Vec<Action>) {
         let id = item_drag_id();
         let ctx = ui.ctx().clone();
         let (down, released, pressed, latest, esc) = ui.input(|i| {
@@ -6546,7 +6549,7 @@ impl eframe::App for Explorer {
         self.ui_sidebar(ui, &mut actions);
         self.ui_status(ui);
         self.ui_central(ui, &mut actions);
-        self.drive_item_drag(ui, &mut actions);
+        self.drive_item_drag(frame, ui, &mut actions);
         self.handle_dropped_files(ui);
 
         // Rounded inner corner where the band above meets the file
