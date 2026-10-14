@@ -8,6 +8,7 @@ window-vibrancy = "0.6"
 winreg = "0.55"
 
 [dependencies]
+file_icon_provider = "1"
 device_query = "4"
 clipboard-rs = "0.3"
 url = "2"

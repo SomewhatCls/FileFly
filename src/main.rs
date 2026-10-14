@@ -52,7 +52,7 @@ struct Entry {
     modified: Option<SystemTime>,
     date_text: String,
     type_text: String,
-    icon: &'static str,
+    icon_key: String,
     dir_size: Option<u64>,
 }
 
@@ -74,14 +74,18 @@ impl Entry {
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase());
-        let (type_text, icon) = if is_dir {
-            ("File folder".to_owned(), "folder")
+
+        let type_text = if is_dir {
+            "File folder".to_owned()
         } else {
             match &ext {
-                Some(e) => (format!("{} file", e.to_uppercase()), icon_for_extension(e)),
-                None => ("File".to_owned(), "file"),
+                Some(e) => format!("{} file", e.to_uppercase()),
+                None => "File".to_owned(),
             }
         };
+
+        let icon_key = make_icon_key(is_dir, ext.as_deref(), &path);
+
         Self {
             name_lc: name.to_lowercase(),
             name,
@@ -92,7 +96,7 @@ impl Entry {
             modified,
             date_text: format_date(modified, fmt, false),
             type_text,
-            icon,
+            icon_key,
             dir_size: None,
         }
     }
@@ -4254,11 +4258,11 @@ fn table_ui(
                 } else {
                     pal.text_secondary
                 };
-                draw_icon(
+                draw_system_icon(
                     ui,
                     pos2(rect.left() + m.pad + m.icon / 2.0, rect.center().y),
                     m.icon,
-                    e.icon,
+                    e,
                     tint,
                 );
 

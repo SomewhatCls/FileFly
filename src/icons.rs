@@ -1,6 +1,90 @@
-use eframe::egui;
+use eframe::egui::{self, vec2, Color32, Pos2, Rect, Ui};
+use file_icon_provider::get_file_icon;
+use std::{collections::HashMap, path::Path};
+
+use crate::Entry;
+
+use std::cell::RefCell;
+
+thread_local! {
+    static ICON_CACHE: RefCell<IconCache> = RefCell::new(IconCache::default());
+}
+
+const ICON_SIZE: u16 = 32;
+
+/// Extensions whose icon depends on the individual file, not just the type.
+#[cfg(windows)]
+const PER_FILE_EXTS: &[&str] = &["exe", "lnk", "ico", "url", "msi", "scr", "cur"];
+#[cfg(not(windows))]
+const PER_FILE_EXTS: &[&str] = &["desktop", "appimage", "ico"];
+
+/// Cache key for a platform icon: one per extension, or one per path for per-file icons like .exe on Windows.
+pub fn make_icon_key(is_dir: bool, ext: Option<&str>, path: &Path) -> String {
+    if is_dir {
+        return "<dir>".into();
+    }
+    match ext {
+        Some(e) if PER_FILE_EXTS.contains(&e) => path.to_string_lossy().into_owned(),
+        Some(e) => format!(".{e}"),
+        None => "<file>".into(),
+    }
+}
+
+///Lookup Table for streaming of certain images for certain entries.
+#[derive(Default)]
+pub struct IconCache {
+    map: HashMap<String, Option<egui::TextureHandle>>,
+}
+
+impl IconCache {
+    ///gets and caches icons for files shown.
+    /// uses get_file_icon() from file_icon_provider crate.
+    /// If an icon is found, a key is created to associate the entry with a specific texture
+    /// in the lookup table.
+    /// None means the platform couldn't supply an icon; the caller draws the built-in one.
+    pub fn get(&mut self, ctx: &egui::Context, key: &str, path: &Path) -> Option<&egui::TextureHandle> {
+        if !self.map.contains_key(key) {
+            let tex = (|| {
+                let icon = get_file_icon(path, ICON_SIZE).ok()?;
+                if icon.width == 0 || icon.height == 0 {
+                    return None;
+                }
+                let img = egui::ColorImage::from_rgba_unmultiplied(
+                    [icon.width as usize, icon.height as usize],
+                    &icon.pixels,
+                );
+                Some(ctx.load_texture(format!("icon:{key}"), img, egui::TextureOptions::LINEAR))
+            })();
+            self.map.insert(key.to_owned(), tex);
+        }
+        self.map.get(key).and_then(|t| t.as_ref())
+    }
+}
+
+/// Built-in SVG icon (moved here from main.rs, so delete it there).
+pub fn draw_icon(ui: &Ui, center: Pos2, size: f32, name: &str, tint: Color32) {
+    egui::Image::new(icon_source(name))
+        .tint(tint)
+        .paint_at(ui, Rect::from_center_size(center, vec2(size, size)));
+}
+
+/// Platform icon if available, otherwise the built-in one.
+pub fn draw_system_icon(ui: &Ui, center: Pos2, size: f32, e: &Entry, tint: Color32) {
+    let ctx = ui.ctx().clone();
+    let tex = ICON_CACHE.with(|c| c.borrow_mut().get(&ctx, &e.icon_key, &e.path).cloned());
+    match tex {
+        Some(tex) => {
+            let sized = egui::load::SizedTexture::new(tex.id(), vec2(size, size));
+            egui::Image::new(sized)
+                .tint(Color32::from_white_alpha(tint.a()))
+                .paint_at(ui, Rect::from_center_size(center, vec2(size, size)));
+        }
+        None => draw_icon(ui, center, size, &e.icon_key, tint),
+    }
+}
 
 /// Looks up an embedded SVG by name. Unknown names fall back to the generic file icon.
+/// DEPRECATED: FileFly will now always prefer OS provided icons over its default fallbacks listed below.
 pub fn icon_source(name: &str) -> egui::ImageSource<'static> {
     match name {
         "app" => egui::include_image!("../assets/app.svg"),
