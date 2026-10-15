@@ -34,6 +34,7 @@ use std::{
 };
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use eframe::egui::TextBuffer;
 use sysinfo::Disks;
 use theme::*;
 use jwalk::{Parallelism, WalkDir};
@@ -6343,12 +6344,13 @@ impl Explorer {
         let mut threads = old.search_threads;
         let index_dir = self.index_dir.display().to_string();
         let cache_len = self.indexer.len();
+        //String literals are read only so use format
         let closed = dialog_shell(
             ui,
             &m,
             &pal,
             "settings",
-            "Settings",
+            &format!("Settings - FileFly v{}", env!("CARGO_PKG_VERSION")),
             false,
             m.s * 440.0,
             |ui| {
