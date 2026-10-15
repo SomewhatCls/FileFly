@@ -37,7 +37,6 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use sysinfo::Disks;
 use theme::*;
 use jwalk::{Parallelism, WalkDir};
-use crate::trashbin::load;
 // ==============================================================================================
 // Data
 
