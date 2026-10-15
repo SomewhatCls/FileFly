@@ -1,4 +1,4 @@
-//! Talks to the other SlopExplore windows. Every window is its own process; they find each other
+//! Talks to the other FileFly windows. Every window is its own process; they find each other
 //! through small files in the app folder:
 //!   windows/<pid>.txt   - the window's screen rectangle (refreshed every couple of seconds)
 //!   inbox/<pid>/*.txt   - folders other windows have handed over (one path per file)
@@ -19,6 +19,32 @@ pub fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// A path as bytes for the hand-over files. On Unix these are the exact bytes of the name;
+/// elsewhere the path goes through (lossy) UTF-8.
+fn path_to_bytes(p: &Path) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        p.as_os_str().as_bytes().to_vec()
+    }
+    #[cfg(not(unix))]
+    {
+        p.to_string_lossy().into_owned().into_bytes()
+    }
+}
+
+fn path_from_bytes(b: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        PathBuf::from(std::ffi::OsStr::from_bytes(b))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(b).into_owned())
+    }
 }
 
 /// Where a window is on screen, in physical pixels, and when it last had the focus.
@@ -86,10 +112,11 @@ impl Peers {
                         .collect();
                     files.sort();
                     for p in files {
-                        if let Ok(text) = fs::read_to_string(&p) {
-                            if let Some(line) = text.lines().next() {
+                        // Read as bytes: a folder name need not be valid UTF-8.
+                        if let Ok(bytes) = fs::read(&p) {
+                            if !bytes.is_empty() {
                                 if let Ok(mut v) = inbox.lock() {
-                                    v.push(PathBuf::from(line.trim()));
+                                    v.push(path_from_bytes(&bytes));
                                     got = true;
                                 }
                             }
@@ -119,7 +146,7 @@ impl Peers {
             .unwrap_or_default()
     }
 
-    /// The other SlopExplore window (if any) under the given screen point; the most recently
+    /// The other FileFly window (if any) under the given screen point; the most recently
     /// focused one wins when windows overlap.
     pub fn window_at(&self, x: f32, y: f32) -> Option<u32> {
         let now = now_ms() as f64;
@@ -178,7 +205,7 @@ impl Peers {
             self.pid
         );
         let tmp = d.join(format!("{stem}.tmp"));
-        if fs::write(&tmp, dir.display().to_string()).is_err() {
+        if fs::write(&tmp, path_to_bytes(dir)).is_err() {
             return false;
         }
         fs::rename(&tmp, d.join(format!("{stem}.txt"))).is_ok()
@@ -201,7 +228,7 @@ pub fn cursor_screen_pos() -> Option<(f32, f32)> {
         y: i32,
     }
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetCursorPos(p: *mut Pt) -> i32;
     }
     let mut p = Pt { x: 0, y: 0 };

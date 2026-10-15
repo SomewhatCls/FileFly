@@ -181,7 +181,9 @@ impl Indexer {
                 let cutoff = now_secs().saturating_sub(PRUNE_SECS);
                 c.iter()
                     .filter(|(_, v)| v.scanned_at >= cutoff)
-                    .map(|(k, v)| (k.to_string_lossy().into_owned(), v.clone()))
+                    // A path that is not valid Unicode can't be stored faithfully (a lossy key
+                    // could collide with another folder's), so it is simply not cached on disk.
+                    .filter_map(|(k, v)| k.to_str().map(|k| (k.to_owned(), v.clone())))
                     .collect()
             }
             Err(_) => return,
@@ -309,7 +311,7 @@ fn scan(root: &Path, root_stamp: u128, cache: &Cache, generation: &AtomicU64, my
 fn lower_priority() {
     // THREAD_MODE_BACKGROUND_BEGIN lowers CPU *and* I/O priority of this thread.
     #[link(name = "kernel32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetCurrentThread() -> isize;
         fn SetThreadPriority(h: isize, p: i32) -> i32;
     }
