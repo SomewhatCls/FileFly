@@ -37,7 +37,6 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use sysinfo::Disks;
 use theme::*;
 use jwalk::{Parallelism, WalkDir};
-
 // ==============================================================================================
 // Data
 
@@ -332,6 +331,8 @@ struct Settings {
     theme: ThemeChoice,
     show_hidden: bool,
     date_format: DateFormat,
+    search_threads: usize,
+    max_search_results: usize,
     index_dir: Option<PathBuf>,
     /// Widths (at 14 pt text) of Date modified, Type, Size.
     col_widths: [f32; 3],
@@ -350,6 +351,8 @@ impl Default for Settings {
             theme: ThemeChoice::System,
             show_hidden: false,
             date_format: DateFormat::default(),
+            search_threads: 4_usize,
+            max_search_results: 100_000_usize,
             index_dir: None,
             col_widths: [150.0, 110.0, 90.0],
             window_size: None,
@@ -774,9 +777,6 @@ fn read_listing(dir: &Path, show_hidden: bool, fmt: DateFormat) -> Result<Vec<En
     Ok(out)
 }
 
-const SEARCH_THREADS: usize = 4; // raise for more speed, lower for less CPU
-const MAX_RESULTS: usize = 100_000;
-
 pub struct SearchJob {
     rx: Receiver<Vec<Entry>>,
     cancel: Arc<AtomicBool>,
@@ -795,6 +795,8 @@ fn start_search(roots: Vec<PathBuf>, query: String, show_hidden: bool, fmt: Date
     let cancel = Arc::new(AtomicBool::new(false));
     let c = cancel.clone();
     let file_ending_search = if query.starts_with("*.") {true} else {false};
+    let max_results = load_settings().max_search_results;
+    let threads = load_settings().search_threads;
 
     std::thread::spawn(move || {
         let mut batch: Vec<Entry> = Vec::new();
@@ -805,7 +807,7 @@ fn start_search(roots: Vec<PathBuf>, query: String, show_hidden: bool, fmt: Date
             let walker = WalkDir::new(&root)
                 .skip_hidden(false)
                 .follow_links(false)
-                .parallelism(Parallelism::RayonNewPool(SEARCH_THREADS))
+                .parallelism(Parallelism::RayonNewPool(threads))
                 .process_read_dir(move |_, _, _, children| {
                     if c_walk.load(AtomicOrdering::Relaxed) {
                         children.clear(); // stop descending
@@ -852,7 +854,7 @@ fn start_search(roots: Vec<PathBuf>, query: String, show_hidden: bool, fmt: Date
                     }
                     ui.request_repaint();
                     last_flush = Instant::now();
-                    if sent >= MAX_RESULTS {
+                    if sent >= max_results {
                         break; // fall through so the channel is closed and `done` gets set
                     }
                 }
@@ -6051,6 +6053,8 @@ impl Explorer {
         let (mut rescan, mut choose, mut delete_index) = (false, false, false);
         let mut font = self.font_edit.unwrap_or(s.font_size);
         let mut font_edit = self.font_edit;
+        let mut max_results = old.max_search_results;
+        let mut threads = old.search_threads;
         let index_dir = self.index_dir.display().to_string();
         let cache_len = self.indexer.len();
         let closed = dialog_shell(
@@ -6113,6 +6117,25 @@ impl Explorer {
                 ui.horizontal_wrapped(|ui| {
                     for f in [DateFormat::European, DateFormat::Iso, DateFormat::American] {
                         ui.radio_value(&mut s.date_format, f, f.label());
+                    }
+                });
+                head(ui, "Experimental");
+                ui.horizontal(|ui| {
+                    ui.label("max search results (default=100_000)");
+                    let resp = ui.add(
+                        egui::Slider::new(&mut max_results, 1_usize..=1_000_000_usize)
+                    );
+                    if resp.dragged() {
+                        s.max_search_results = max_results;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("search threads (default=4)");
+                    let resp = ui.add(
+                        egui::Slider::new(&mut threads, 1_usize..=64_usize)
+                    );
+                    if resp.dragged() {
+                        s.search_threads = threads;
                     }
                 });
                 head(ui, "Folder sizes");
