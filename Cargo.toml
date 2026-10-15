@@ -1,6 +1,6 @@
 [package]
 name = "FileFly"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 
 [target.'cfg(windows)'.dependencies]
@@ -15,6 +15,7 @@ url = "2"
 eframe = { version = "0.36", features = ["glow"] }
 egui_extras = { version = "0.36", features = ["svg"] }
 dirs = "7"
+drag = "2"
 dunce = "1"
 open = "5"
 rfd = "0.17"
