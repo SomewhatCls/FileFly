@@ -27,9 +27,9 @@ DisableProgramGroupPage=yes
 ; Remove the following line to run in administrative install mode (install for all users).
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-OutputDir=\\wsl.localhost\Ubuntu\home\linus\dev\FileFly\installer
+OutputDir=installer
 OutputBaseFilename=FileFlyInstaller
-SetupIconFile=\\wsl.localhost\Ubuntu\home\linus\dev\FileFly\assets\logo.ico
+SetupIconFile=assets\logo.ico
 SolidCompression=yes
 WizardStyle=modern dynamic windows11
 
@@ -40,7 +40,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "\\wsl.localhost\Ubuntu\home\linus\dev\FileFly\target\x86_64-pc-windows-msvc\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "target\x86_64-pc-windows-msvc\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
