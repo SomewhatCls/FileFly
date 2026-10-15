@@ -3076,7 +3076,16 @@ fn address_bar(
             .desired_width(inner.width())
             .vertical_align(Align::Center)
             .hint_text("Type a folder path and press Enter");
-        let resp = ui.put(inner, te);
+
+        //Layout shift fix: Using a child instead of put prevents
+        //the manipulation of other values such as margins which were affected
+        //by the inner puts smaller size.
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(inner)
+                .layout(egui::Layout::left_to_right(Align::Center)),
+        );
+        let resp = child.add(te);
         if tab.addr_focus {
             resp.request_focus();
             select_range(ui, id, 0, tab.address.chars().count());
