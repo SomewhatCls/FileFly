@@ -1,11 +1,11 @@
 [package]
 name = "FileFly"
-version = "0.2.8"
-edition = "2021"
+version = "0.2.9"
+edition = "2024"
 
 [target.'cfg(windows)'.dependencies]
-window-vibrancy = "0.6"
-winreg = "0.55"
+window-vibrancy = "0.8"
+winreg = "0.56"
 
 [dependencies]
 file_icon_provider = "1"

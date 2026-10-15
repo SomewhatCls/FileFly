@@ -1,14 +1,10 @@
 //! Fluent 2 / Windows 11 look: colour tokens, accent colour, Mica backdrop, DPI-aware metrics.
-#[cfg(target_os = "windows")]
 use eframe::egui::{
-    FontDefinitions, FontData
-};
-
-use eframe::egui::{
-    self, style::ScrollStyle, Color32, CornerRadius, FontId, Stroke, FontFamily, TextStyle, Theme, Visuals
+    self, style::ScrollStyle, Color32, CornerRadius, FontId, Stroke, FontFamily, TextStyle, Theme, Visuals, FontDefinitions, FontData
 };
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 // ----------------------------------------------------------------------------------------------
 // Accent colour (Windows "Accent color" setting)
 
@@ -92,7 +88,7 @@ pub fn system_transparency() -> bool {
         full_life_time: u32,
     }
     #[link(name = "kernel32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetSystemPowerStatus(s: *mut PowerStatus) -> i32;
     }
     let enabled = RegKey::predef(HKEY_CURRENT_USER)
@@ -122,7 +118,7 @@ pub fn system_transparency() -> bool {
 pub fn hide_window(window: &impl raw_window_handle::HasWindowHandle) {
     use raw_window_handle::RawWindowHandle;
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
     }
     if let Ok(handle) = window.window_handle() {
@@ -141,7 +137,7 @@ pub fn hide_window(_window: &impl raw_window_handle::HasWindowHandle) {}
 #[cfg(windows)]
 pub fn terminate_now() -> ! {
     #[link(name = "kernel32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetCurrentProcess() -> isize;
         fn TerminateProcess(h: isize, code: u32) -> i32;
     }
@@ -301,19 +297,163 @@ impl Metrics {
 // ----------------------------------------------------------------------------------------------
 // Fonts + style
 
-pub fn install_fonts(ctx: &egui::Context) {
+// ----------------------------------------------------------------------------------------------
+// Fonts
+//
+// The bundled fonts cover Latin (plus Greek/Cyrillic). Other scripts need a system font, but
+// those are big (CJK fonts are 10-20 MB each and egui keeps a copy), so a font is loaded only
+// once a name that needs it has actually been seen, and only the first font found per script.
+
+pub const SC_HAN: u32 = 1; // Chinese characters, kana, CJK punctuation, full-width forms
+pub const SC_HANGUL: u32 = 2;
+pub const SC_ARABIC: u32 = 4;
+pub const SC_HEBREW: u32 = 8;
+pub const SC_THAI: u32 = 16;
+pub const SC_INDIC: u32 = 32;
+
+static SCRIPTS_SEEN: AtomicU32 = AtomicU32::new(0);
+static SCRIPTS_LOADED: AtomicU32 = AtomicU32::new(0);
+
+fn script_bit(c: char) -> u32 {
+    match c as u32 {
+        0..=0x58F => 0,
+        0x590..=0x5FF => SC_HEBREW,
+        0x600..=0x6FF | 0x750..=0x77F | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF => SC_ARABIC,
+        0x900..=0xDFF => SC_INDIC,
+        0xE00..=0xEFF => SC_THAI,
+        0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7AF => SC_HANGUL,
+        0x2E80..=0x303F
+        | 0x3040..=0x30FF
+        | 0x31F0..=0x31FF
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xF900..=0xFAFF
+        | 0xFF00..=0xFFEF
+        | 0x20000..=0x2FFFF => SC_HAN,
+        _ => 0,
+    }
+}
+
+/// Records which scripts `text` needs. Pure ASCII (nearly all names) returns at once.
+pub fn note_name(text: &str) {
+    if text.is_ascii() {
+        return;
+    }
+    let mut bits = 0;
+    for c in text.chars() {
+        bits |= script_bit(c);
+    }
+    if bits != 0 {
+        SCRIPTS_SEEN.fetch_or(bits, AtomicOrdering::Relaxed);
+    }
+}
+
+/// One script's candidate fonts: the first file that exists is used. `(file, face index in a .ttc)`.
+struct FontGroup {
+    bits: u32,
+    files: &'static [(&'static str, u32)],
+}
+
+#[cfg(windows)]
+const GROUPS: &[FontGroup] = &[
+    // (Segoe UI, always the primary font here, already covers Arabic and Hebrew.)
+    FontGroup { bits: SC_HAN, files: &[("msyh.ttc", 0), ("msjh.ttc", 0), ("YuGothR.ttc", 0), ("meiryo.ttc", 0), ("simsun.ttc", 0)] },
+    FontGroup { bits: SC_HANGUL, files: &[("malgun.ttf", 0)] },
+    FontGroup { bits: SC_INDIC, files: &[("Nirmala.ttf", 0), ("Nirmala.ttc", 0)] },
+    FontGroup { bits: SC_THAI, files: &[("leelawui.ttf", 0)] },
+];
+#[cfg(target_os = "macos")]
+const GROUPS: &[FontGroup] = &[
+    FontGroup { bits: SC_HAN, files: &[("/System/Library/Fonts/PingFang.ttc", 0), ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0)] },
+    FontGroup { bits: SC_HANGUL, files: &[("/System/Library/Fonts/AppleSDGothicNeo.ttc", 0)] },
+    FontGroup { bits: SC_ARABIC | SC_HEBREW, files: &[("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0)] },
+    FontGroup { bits: SC_INDIC, files: &[("/System/Library/Fonts/Supplemental/Devanagari Sangam MN.ttc", 0)] },
+    FontGroup { bits: SC_THAI, files: &[("/System/Library/Fonts/Supplemental/Thonburi.ttc", 0)] },
+];
+#[cfg(all(unix, not(target_os = "macos")))]
+const GROUPS: &[FontGroup] = &[
+    FontGroup { bits: SC_HAN | SC_HANGUL, files: &[
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
+        ("/usr/share/fonts/truetype/unifont/unifont.ttf", 0),
+    ] },
+    FontGroup { bits: SC_ARABIC, files: &[
+        ("/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+        ("/usr/share/fonts/TTF/DejaVuSans.ttf", 0),
+    ] },
+    FontGroup { bits: SC_HEBREW, files: &[
+        ("/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+        ("/usr/share/fonts/TTF/DejaVuSans.ttf", 0),
+    ] },
+    FontGroup { bits: SC_THAI, files: &[("/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf", 0)] },
+    FontGroup { bits: SC_INDIC, files: &[("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf", 0)] },
+];
+
+/// Builds the font set: the primary font (Segoe UI on Windows) plus a fallback for each script
+/// in `scripts`.
+fn install_fonts_for(ctx: &egui::Context, scripts: u32) {
     #[cfg(windows)]
-    {
-        let dir = std::env::var_os("WINDIR").map(std::path::PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
-        if let Ok(bytes) = std::fs::read(dir.join("Fonts").join("segoeui.ttf")) {
-            let mut fonts = FontDefinitions::default();
-            fonts.font_data.insert("segoe".to_owned(), FontData::from_owned(bytes).into());
-            fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "segoe".to_owned());
-            ctx.set_fonts(fonts);
+    let base: std::path::PathBuf = std::env::var_os("WINDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "C:\\Windows".into())
+        .join("Fonts");
+    #[cfg(not(windows))]
+    let base = std::path::PathBuf::new(); // entries are absolute; `join` keeps them as is
+
+    let mut fonts = FontDefinitions::default();
+    let mut changed = false;
+
+    // Segoe UI stays the primary UI font on Windows, as before.
+    #[cfg(windows)]
+    if let Ok(bytes) = std::fs::read(base.join("segoeui.ttf")) {
+        fonts.font_data.insert("segoe".to_owned(), FontData::from_owned(bytes).into());
+        fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "segoe".to_owned());
+        changed = true;
+    }
+
+    // Fallbacks go after the existing fonts, so they only supply glyphs those lack.
+    let mut loaded: Vec<&str> = Vec::new(); // a file shared by two scripts is loaded once
+    for g in GROUPS.iter().filter(|g| scripts & g.bits != 0) {
+        for (file, face) in g.files {
+            if loaded.contains(file) {
+                break;
+            }
+            let Ok(bytes) = std::fs::read(base.join(file)) else { continue };
+            let mut data = FontData::from_owned(bytes);
+            data.index = *face;
+            let key = format!("fallback-{file}");
+            fonts.font_data.insert(key.clone(), data.into());
+            for family in [FontFamily::Proportional, FontFamily::Monospace] {
+                fonts.families.entry(family).or_default().push(key.clone());
+            }
+            loaded.push(*file);
+            changed = true;
+            break;
         }
     }
-    #[cfg(not(windows))]
-    let _ = ctx;
+
+    if changed {
+        ctx.set_fonts(fonts);
+    }
+}
+
+/// Initial fonts: just the primary font. Fallbacks follow on demand (`sync_fonts`).
+pub fn install_fonts(ctx: &egui::Context) {
+    install_fonts_for(ctx, 0);
+}
+
+/// Call once per frame: loads the fallback font for any newly seen script.
+pub fn sync_fonts(ctx: &egui::Context) {
+    let seen = SCRIPTS_SEEN.load(AtomicOrdering::Relaxed);
+    if seen & !SCRIPTS_LOADED.load(AtomicOrdering::Relaxed) == 0 {
+        return;
+    }
+    SCRIPTS_LOADED.store(seen, AtomicOrdering::Relaxed);
+    install_fonts_for(ctx, seen);
 }
 
 pub fn apply_style(ctx: &egui::Context, m: &Metrics, accent: Accent) {
@@ -413,7 +553,7 @@ pub fn style_frameless(window: &impl raw_window_handle::HasWindowHandle) {
         bottom: i32,
     }
     #[link(name = "dwmapi")]
-    extern "system" {
+    unsafe extern "system" {
         fn DwmExtendFrameIntoClientArea(hwnd: isize, margins: *const Margins) -> i32;
         fn DwmSetWindowAttribute(hwnd: isize, attr: u32, value: *const core::ffi::c_void, size: u32) -> i32;
     }

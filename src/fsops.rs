@@ -128,13 +128,16 @@ pub fn unique_copy_name(destination: &Path) -> PathBuf {
         return destination.to_path_buf();
     }
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let stem = destination.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Copy".into());
-    let ext = destination.extension().map(|e| e.to_string_lossy().into_owned());
+    // Built from OsStrings, so a name that is not valid Unicode is kept byte for byte.
+    let stem = destination.file_stem().map(|s| s.to_os_string()).unwrap_or_else(|| "Copy".into());
+    let ext = destination.extension().map(|e| e.to_os_string());
     for n in 1u64.. {
-        let name = match &ext {
-            Some(e) => format!("{stem} ({n}).{e}"),
-            None => format!("{stem} ({n})"),
-        };
+        let mut name = stem.clone();
+        name.push(format!(" ({n})"));
+        if let Some(e) = &ext {
+            name.push(".");
+            name.push(e);
+        }
         let candidate = parent.join(name);
         if !candidate.exists() {
             return candidate;
@@ -146,9 +149,12 @@ pub fn unique_copy_name(destination: &Path) -> PathBuf {
 /// A free name next to `path` for something that is only temporary: the leading dot hides it from
 /// listings, the pid keeps two running instances apart, the counter avoids clobbering a leftover.
 fn free_sibling(path: &Path, tag: &str) -> PathBuf {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
     for n in 0u32.. {
-        let candidate = path.with_file_name(format!(".{name}.{tag}-{}-{n}", std::process::id()));
+        let mut file = std::ffi::OsString::from(".");
+        file.push(&name);
+        file.push(format!(".{tag}-{}-{n}", std::process::id()));
+        let candidate = path.with_file_name(file);
         if fs::symlink_metadata(&candidate).is_err() {
             return candidate;
         }

@@ -85,6 +85,7 @@ impl Entry {
 
         let icon_key = make_icon_key(is_dir, ext.as_deref(), &path);
 
+        note_name(&name); // may need a fallback font for this script
         Self {
             name_lc: name.to_lowercase(),
             name,
@@ -320,6 +321,70 @@ enum ThemeChoice {
     Dark,
 }
 
+/// A split layout in a form that can be stored: leaves are indices into `Session::tabs`.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+enum SavedTile {
+    Leaf(usize),
+    Split {
+        side_by_side: bool,
+        ratio: f32,
+        a: Box<SavedTile>,
+        b: Box<SavedTile>,
+    },
+}
+
+impl SavedTile {
+    /// Panes whose tab can't be found are dropped; their sibling takes over.
+    fn from_tile(t: &Tile, tabs: &[Tab]) -> Option<SavedTile> {
+        match t {
+            Tile::Leaf(id) => tabs.iter().position(|x| x.id == *id).map(SavedTile::Leaf),
+            Tile::Split { side_by_side, ratio, a, b } => {
+                match (Self::from_tile(a, tabs), Self::from_tile(b, tabs)) {
+                    (Some(a), Some(b)) => Some(SavedTile::Split {
+                        side_by_side: *side_by_side,
+                        ratio: *ratio,
+                        a: Box::new(a),
+                        b: Box::new(b),
+                    }),
+                    (x, None) => x,
+                    (None, y) => y,
+                }
+            }
+        }
+    }
+
+    /// `ids[i]` is the id of the restored tab `i`, or `None` if that folder is gone.
+    fn to_tile(&self, ids: &[Option<u64>]) -> Option<Tile> {
+        match self {
+            SavedTile::Leaf(i) => ids.get(*i).copied().flatten().map(Tile::Leaf),
+            SavedTile::Split { side_by_side, ratio, a, b } => {
+                match (a.to_tile(ids), b.to_tile(ids)) {
+                    (Some(a), Some(b)) => Some(Tile::Split {
+                        side_by_side: *side_by_side,
+                        ratio: if ratio.is_finite() { ratio.clamp(0.1, 0.9) } else { 0.5 },
+                        a: Box::new(a),
+                        b: Box::new(b),
+                    }),
+                    (x, None) => x,
+                    (None, y) => y,
+                }
+            }
+        }
+    }
+}
+
+/// Which folders were open, in which tabs, and how they were arranged.
+/// Folders are stored as text: a path that is not valid Unicode would otherwise make
+/// serialising (and so saving *all* settings) fail.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct Session {
+    tabs: Vec<String>,
+    active: usize,
+    /// `None` when not split.
+    tiles: Option<SavedTile>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
@@ -338,7 +403,11 @@ struct Settings {
     col_widths: [f32; 3],
     /// Inner size of the window when it was last closed (points), and whether it was maximised.
     window_size: Option<[f32; 2]>,
+    /// Top-left of the window (points, screen coordinates) when it was last not maximised.
+    window_pos: Option<[f32; 2]>,
     maximized: bool,
+    /// Open tabs and split layout from the last session.
+    session: Session,
 }
 
 impl Default for Settings {
@@ -356,6 +425,8 @@ impl Default for Settings {
             index_dir: None,
             col_widths: [150.0, 110.0, 90.0],
             window_size: None,
+            window_pos: None,
+            session: Session::default(),
             maximized: false,
             use_mica: true,
         }
@@ -370,14 +441,37 @@ fn app_dir() -> PathBuf {
         .join("FileFly")
 }
 
+/// Set once this window has resized a column. Other FileFly windows are separate processes
+/// that all write settings.json when they close; a window that never touched the column
+/// widths must not overwrite what another window saved.
+static COLS_TOUCHED: AtomicBool = AtomicBool::new(false);
+
+/// Windows started with `--open` (a tab dragged out) neither restore nor save the session:
+/// they would overwrite the main window's tabs with their single one.
+static SESSION_READONLY: AtomicBool = AtomicBool::new(false);
+
 fn load_settings() -> Settings {
-    fs::read_to_string(app_dir().join("settings.json"))
+    let mut s: Settings = fs::read_to_string(app_dir().join("settings.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // A hand-edited or damaged file must not hide columns or make them unusable.
+    let def = Settings::default().col_widths;
+    for (w, d) in s.col_widths.iter_mut().zip(def) {
+        *w = if w.is_finite() { w.clamp(50.0, 600.0) } else { d };
+    }
+    s
 }
 
 fn save_settings(s: &Settings) {
+    let mut s = s.clone();
+    if !COLS_TOUCHED.load(AtomicOrdering::Relaxed) {
+        s.col_widths = load_settings().col_widths;
+    }
+    if SESSION_READONLY.load(AtomicOrdering::Relaxed) {
+        s.session = load_settings().session;
+    }
+    let s = &s;
     let dir = app_dir();
     let _ = fs::create_dir_all(&dir);
     if let Ok(t) = serde_json::to_string_pretty(s) {
@@ -411,21 +505,26 @@ fn occupied(p: &Path) -> bool {
 /// "name (n).ext" with the lowest n that is free on disk and not claimed by this paste.
 fn lowest_free_name(dest: &Path, taken: &HashSet<PathBuf>, is_dir: bool) -> PathBuf {
     let parent = dest.parent().map(Path::to_path_buf).unwrap_or_default();
-    let name = dest
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    // OsStrings throughout, so a name that is not valid Unicode is kept byte for byte.
+    let name = dest.file_name().map(|n| n.to_os_string()).unwrap_or_default();
     let (stem, ext) = if is_dir {
-        (name.clone(), String::new())
+        (name.clone(), None)
     } else {
-        match name.rfind('.') {
-            Some(i) if i > 0 => (name[..i].to_owned(), name[i..].to_owned()),
-            _ => (name.clone(), String::new()),
-        }
+        let p = Path::new(&name);
+        (
+            p.file_stem().map(|s| s.to_os_string()).unwrap_or_else(|| name.clone()),
+            p.extension().map(|e| e.to_os_string()),
+        )
     };
     let mut n = 1u32;
     loop {
-        let cand = parent.join(format!("{stem} ({n}){ext}"));
+        let mut file = stem.clone();
+        file.push(format!(" ({n})"));
+        if let Some(e) = &ext {
+            file.push(".");
+            file.push(e);
+        }
+        let cand = parent.join(file);
         if !occupied(&cand) && !taken.contains(&cand) {
             return cand;
         }
@@ -1209,7 +1308,11 @@ impl Explorer {
                     .unwrap_or_else(Instant::now),
             ),
         };
-        app.load_tab(0);
+        if START_DIR.get().is_none() {
+            app.restore_session();
+        }
+        // Tabs load when they first become visible (see `ui`), so restoring many tabs
+        // doesn't read every folder and hold every listing in memory at once.
         app.on_active_changed();
         app
     }
@@ -1225,6 +1328,54 @@ impl Explorer {
         let modifier = keys.contains(&Keycode::LControl) || keys.contains(&Keycode::RControl);
         modifier && keys.contains(&Keycode::V)
     }
+    // ------------------------------------------------------------------ session
+
+    fn session_snapshot(&self) -> Session {
+        Session {
+            tabs: self
+                .tabs
+                .iter()
+                .map(|t| t.dir.to_string_lossy().into_owned())
+                .collect(),
+            active: self.active,
+            tiles: self
+                .tiles
+                .as_ref()
+                .and_then(|t| SavedTile::from_tile(t, &self.tabs)),
+        }
+    }
+
+    /// Re-opens the tabs and split layout of the last session. Folders that no longer exist
+    /// are skipped; if none are left the normal start folder stays.
+    fn restore_session(&mut self) {
+        let ses = self.settings.session.clone();
+        let mut ids: Vec<Option<u64>> = Vec::new();
+        let mut tabs: Vec<Tab> = Vec::new();
+        for p in &ses.tabs {
+            let dir = PathBuf::from(p);
+            if dir.is_dir() {
+                let id = tabs.len() as u64 + 1;
+                tabs.push(Tab::new(id, dir));
+                ids.push(Some(id));
+            } else {
+                ids.push(None);
+            }
+        }
+        if tabs.is_empty() {
+            return;
+        }
+        self.next_tab_id = tabs.len() as u64 + 1;
+        self.tabs = tabs;
+        self.active = ids
+            .get(ses.active)
+            .copied()
+            .flatten()
+            .and_then(|id| self.tabs.iter().position(|t| t.id == id))
+            .unwrap_or(0);
+        // A tree that ends up as a single pane is just the normal view (fix_tiles handles it).
+        self.tiles = ses.tiles.and_then(|t| t.to_tile(&ids));
+    }
+
     // ------------------------------------------------------------------ navigation
 
     fn load_tab(&mut self, ti: usize) {
@@ -4090,19 +4241,36 @@ fn table_ui(
     }
 
     // ---- column geometry: Name flexes; Type, then Date, then Size are dropped when space runs out
-    let base_cols = *cols;
-    let w = |i: usize| base_cols[i] * m.s;
-    let mut show = [true; 3];
+    // Each pane keeps its own widths. Whether a column fits depends on the pane's width, so
+    // one shared set made a column vanish in a narrower pane when another pane was resized.
+    // A pane starts from the shared widths; the most recent resize anywhere becomes the
+    // shared default (used for new panes and saved to settings).
+    let cols_id = Id::new(("tab_cols", tab_id));
+    let base_cols = ui.data(|d| d.get_temp::<[f32; 3]>(cols_id)).unwrap_or(*cols);
+    // No column is ever hidden. When the pane is too narrow for the stored widths, the data
+    // columns are squeezed (never below `col_floor`) so Name keeps its preferred width; a wider
+    // pane gets the stored widths back. (Hiding columns with a `>` test also flickered: a drag
+    // that exactly filled the pane flipped it on rounding error.)
     let name_min = m.s * 220.0;
-    let total = |show: &[bool; 3]| (0..3).filter(|&i| show[i]).map(w).sum::<f32>();
-    for d in [1usize, 0, 2] {
-        if name_min + total(&show) > avail {
-            show[d] = false;
-        }
-    }
-    let name_w = (avail - total(&show)).max(0.0);
-    let last_shown = (0..3).rev().find(|&i| show[i]);
-    let first_shown = (0..3).find(|&i| show[i]);
+    let col_floor = m.s * 50.0;
+    let want = [base_cols[0] * m.s, base_cols[1] * m.s, base_cols[2] * m.s];
+    let room = (avail - name_min).max(0.0);
+    let sum_want: f32 = want.iter().sum();
+    let eff_px: [f32; 3] = if sum_want <= room {
+        want
+    } else {
+        let floors = 3.0 * col_floor;
+        let excess = (sum_want - floors).max(f32::EPSILON);
+        let k = ((room.max(floors) - floors) / excess).clamp(0.0, 1.0);
+        [0, 1, 2].map(|i| col_floor + (want[i] - col_floor).max(0.0) * k)
+    };
+    // The widths actually on screen, in stored units: drags start from these.
+    let eff_cols = [eff_px[0] / m.s, eff_px[1] / m.s, eff_px[2] / m.s];
+    let w = |i: usize| eff_px[i];
+    let show = [true; 3];
+    let name_w = (avail - eff_px.iter().sum::<f32>()).max(0.0);
+    let last_shown = Some(2usize);
+    let first_shown = Some(0usize);
     let mut new_cols = base_cols;
 
     // ---- header
@@ -4174,26 +4342,62 @@ fn table_ui(
             *view_dirty = true;
         }
 
-        // resize handle on this column's right edge
-        let target = if c == 0 {
-            first_shown.map(|k| (k, -1.0))
+        // Resize handle on this column's right edge.
+        //  * Name | first column: the first column changes, Name absorbs the difference.
+        //  * Between two data columns: the two trade width, so every other boundary stays put
+        //    and the dragged boundary follows the pointer.
+        // The last column's right edge is the table edge and has no handle.
+        let boundary = if c == 0 {
+            first_shown.map(|k| (k, None))
         } else if Some(c - 1) != last_shown {
-            Some((c - 1, 1.0))
+            (c..3).find(|&j| show[j]).map(|k2| (c - 1, Some(k2)))
         } else {
             None
         };
-        if let Some((k, sign)) = target {
+        if let Some((k, next)) = boundary {
             let hr = Rect::from_center_size(
                 pos2(crect.right(), crect.center().y),
                 vec2(m.s * 8.0, header_h),
             );
-            let h = ui.interact(hr, Id::new(("resize", tab_id, c)), Sense::drag());
+            let hid = Id::new(("resize", tab_id, c));
+            let h = ui.interact(hr, hid, Sense::drag());
             let hot = h.hovered() || h.dragged();
             if hot {
                 ui.set_cursor_icon(egui::CursorIcon::ResizeColumn);
             }
+            if h.drag_started() {
+                ui.data_mut(|d| d.insert_temp(hid, eff_cols));
+            }
             if h.dragged() {
-                new_cols[k] = (new_cols[k] + sign * h.drag_delta().x / m.s).clamp(50.0, 600.0);
+                // Work from the widths at drag start and the total pointer movement, so
+                // clamping never lets the boundary drift away from the pointer.
+                let start = ui.data(|d| d.get_temp::<[f32; 3]>(hid));
+                if let (Some(start), Some(total_drag)) = (start, h.total_drag_delta()) {
+                    const MIN_W: f32 = 50.0;
+                    const MAX_W: f32 = 600.0;
+                    let dx = total_drag.x / m.s;
+                    let mut nc = start;
+                    match next {
+                        None => {
+                            let shown_sum: f32 = (0..3).filter(|&i| show[i]).map(|i| start[i]).sum();
+                            // Name must keep its minimum width, or other columns would vanish.
+                            let room = (avail / m.s - name_min / m.s - shown_sum).max(0.0);
+                            let hi = (start[k] + room).min(MAX_W).max(start[k]);
+                            let lo = MIN_W.min(start[k]);
+                            nc[k] = (start[k] - dx).clamp(lo, hi);
+                        }
+                        Some(k2) => {
+                            let pair = start[k] + start[k2];
+                            let lo = MIN_W.max(pair - MAX_W);
+                            let hi = MAX_W.min(pair - MIN_W);
+                            if lo <= hi {
+                                nc[k] = (start[k] + dx).clamp(lo, hi);
+                                nc[k2] = pair - nc[k];
+                            }
+                        }
+                    }
+                    new_cols = nc;
+                }
             }
             let ly = header_h * if hot { 0.15 } else { 0.28 };
             ui.painter().line_segment(
@@ -4205,7 +4409,13 @@ fn table_ui(
             );
         }
     }
-    *cols = new_cols;
+    if new_cols != base_cols {
+        COLS_TOUCHED.store(true, AtomicOrdering::Relaxed);
+        *cols = new_cols;
+    }
+    ui.data_mut(|d| {
+        d.insert_temp(cols_id, new_cols);
+    });
     ui.painter().line_segment(
         [
             pos2(hrect.left(), hrect.bottom()),
@@ -5635,16 +5845,47 @@ impl Explorer {
 
     /// Keeps the saved window size current and tells other windows where this one is.
     fn track_window(&mut self, ctx: &egui::Context) {
-        let (inner, maxi, mini, full, focused) = ctx.input(|i| {
+        let (inner, outer, maxi, mini, full, focused) = ctx.input(|i| {
             let v = i.viewport();
             (
                 v.inner_rect,
+                v.outer_rect,
                 v.maximized.unwrap_or(false),
                 v.minimized.unwrap_or(false),
                 v.fullscreen.unwrap_or(false),
                 i.focused,
             )
         });
+        // Once at startup: if the saved position is on a monitor that is no longer connected
+        // the (undecorated) window would be unreachable, so bring it back to the primary one.
+        let mut off_screen = false;
+        if !maxi && !mini && !full {
+            let id = Id::new("onscreen_checked");
+            let done = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+            if !done {
+                if let Some(r) = outer.or(inner) {
+                    ctx.data_mut(|d| d.insert_temp(id, true));
+                    let ppp = ctx.pixels_per_point();
+                    // The strip of title bar a user would grab: 120 x 32 pt around its middle.
+                    let cx = r.center().x * ppp;
+                    let (l, t) = ((cx - 60.0 * ppp) as i32, r.top() * ppp);
+                    let visible = rect_touches_a_monitor(
+                        l,
+                        t as i32,
+                        l + (120.0 * ppp) as i32,
+                        (t + 32.0 * ppp) as i32,
+                    );
+                    if !visible {
+                        off_screen = true;
+                        // Primary monitor's top-left is always (0, 0).
+                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos2(
+                            80.0, 80.0,
+                        )));
+                        self.settings.window_pos = None;
+                    }
+                }
+            }
+        }
         if !mini && !full {
             self.settings.maximized = maxi;
             if !maxi {
@@ -5654,7 +5895,43 @@ impl Explorer {
                         self.settings.window_size = Some(s);
                     }
                 }
+                // Position: only while the window is in its normal state, so restoring from
+                // maximised or minimised (Windows reports -32000 there) never overwrites it.
+                if let Some(r) = outer.or(inner).filter(|_| !off_screen) {
+                    let p = [r.left().round(), r.top().round()];
+                    if window_pos_is_sane(p) {
+                        self.settings.window_pos = Some(p);
+                    }
+                }
             }
+        }
+
+        // Write the geometry to disk shortly after the window stops moving or resizing, so a
+        // crash, kill or power loss doesn't lose it (the clean-exit save still runs too).
+        {
+            type Geo = (Option<[f32; 2]>, Option<[f32; 2]>, bool);
+            let id = Id::new("saved_window_geo");
+            let geo: Geo = (
+                self.settings.window_pos,
+                self.settings.window_size,
+                self.settings.maximized,
+            );
+            let (mut seen, mut at, mut saved) = ctx
+                .data(|d| d.get_temp::<(Geo, Instant, Geo)>(id))
+                .unwrap_or((geo, Instant::now(), geo));
+            if geo != seen {
+                seen = geo;
+                at = Instant::now();
+            }
+            if seen != saved {
+                if at.elapsed() >= Duration::from_secs(1) {
+                    save_settings(&self.settings);
+                    saved = seen;
+                } else {
+                    ctx.request_repaint_after(Duration::from_millis(1100));
+                }
+            }
+            ctx.data_mut(|d| d.insert_temp(id, (seen, at, saved)));
         }
         if let Some(r) = inner {
             let ppp = ctx.pixels_per_point();
@@ -6527,6 +6804,18 @@ impl eframe::App for Explorer {
 
         self.pump_messages();
         self.pump_search(ctx);
+
+        // Load a fallback font the first time a script that needs one is on screen
+        // (names are noted as listings arrive; typed text is checked here).
+        {
+            let tab = &self.tabs[self.active];
+            note_name(&tab.address);
+            note_name(&tab.search);
+            if let Some(r) = &tab.rename {
+                note_name(&r.text);
+            }
+        }
+        sync_fonts(ctx);
         icons_begin_frame(ctx);
 
         // Keep the Mica state synchronized with settings and system state.
@@ -6568,6 +6857,13 @@ impl eframe::App for Explorer {
             painter.rect_filled(rect, 8.0, self.pal.layer);
         }
 
+        // Load tabs that are on screen but have never been read (restored session).
+        for ti in self.visible_tabs() {
+            if self.tabs[ti].load_gen == 0 {
+                self.load_tab(ti);
+            }
+        }
+
         // Collect actions triggered by the UI and shortcuts.
         let mut actions: Vec<Action> = Vec::new();
         self.collect_shortcuts(ui, &mut actions);
@@ -6607,6 +6903,48 @@ impl eframe::App for Explorer {
             self.apply(action);
         }
 
+        // Keep the session current, and write it to disk a second after the last change
+        // (the clean-exit save also includes it).
+        if !SESSION_READONLY.load(AtomicOrdering::Relaxed) {
+            let snap = self.session_snapshot();
+            let id = Id::new("saved_session");
+            let (mut seen, mut at, mut saved) = ui
+                .data(|d| d.get_temp::<(Session, Instant, Session)>(id))
+                .unwrap_or_else(|| (snap.clone(), Instant::now(), snap.clone()));
+            if snap != seen {
+                seen = snap.clone();
+                at = Instant::now();
+            }
+            self.settings.session = snap;
+            if seen != saved {
+                if at.elapsed() >= Duration::from_secs(1) {
+                    save_settings(&self.settings);
+                    saved = seen.clone();
+                } else {
+                    ui.ctx().request_repaint_after(Duration::from_millis(1100));
+                }
+            }
+            ui.data_mut(|d| {
+                d.insert_temp(id, (seen, at, saved));
+            });
+        }
+
+        // Save column widths as soon as a resize drag ends, not only on a clean exit.
+        {
+            let id = Id::new("saved_col_widths");
+            let cols = self.settings.col_widths;
+            match ui.data(|d| d.get_temp::<[f32; 3]>(id)) {
+                None => {
+                    ui.data_mut(|d| d.insert_temp(id, cols));
+                }
+                Some(prev) if prev != cols && !ui.input(|i| i.pointer.any_down()) => {
+                    save_settings(&self.settings);
+                    ui.data_mut(|d| d.insert_temp(id, cols));
+                }
+                _ => {}
+            }
+        }
+
         // Update the title after applying actions, so tab changes
         // can update the title in the same UI pass.
         let title = format!(
@@ -6627,6 +6965,36 @@ impl eframe::App for Explorer {
         // the transparent parts.
         [0.0, 0.0, 0.0, 0.0]
     }
+}
+
+/// True if the physical-pixel rectangle touches any connected monitor.
+#[cfg(windows)]
+fn rect_touches_a_monitor(left: i32, top: i32, right: i32, bottom: i32) -> bool {
+    #[repr(C)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MonitorFromRect(rc: *const Rect, flags: u32) -> isize;
+    }
+    const MONITOR_DEFAULTTONULL: u32 = 0;
+    let rc = Rect { left, top, right, bottom };
+    unsafe { MonitorFromRect(&rc, MONITOR_DEFAULTTONULL) != 0 }
+}
+/// Other platforms: no monitor query is available, so assume the window is visible.
+#[cfg(not(windows))]
+fn rect_touches_a_monitor(_: i32, _: i32, _: i32, _: i32) -> bool {
+    true
+}
+
+/// Rejects positions that are obviously not a real on-screen location (e.g. the -32000
+/// the OS reports for a minimised window) before they are saved or restored.
+fn window_pos_is_sane(p: [f32; 2]) -> bool {
+    p.iter().all(|v| v.is_finite() && *v > -10_000.0 && *v < 20_000.0)
 }
 
 /// Folder a window opened by "drag a tab out" starts in.
@@ -6664,17 +7032,19 @@ fn main() -> eframe::Result<()> {
     }));
 
     // Command line (used when a tab is dragged out into a window of its own).
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `args_os`: `args()` panics on a non-Unicode folder name, and `--open` is a path.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let mut pos: Option<[f32; 2]> = None;
     let mut k = 0;
     while k < args.len() {
-        match args[k].as_str() {
+        match args[k].to_str().unwrap_or_default() {
             "--open" if k + 1 < args.len() => {
                 let _ = START_DIR.set(PathBuf::from(&args[k + 1]));
+                SESSION_READONLY.store(true, AtomicOrdering::Relaxed);
                 k += 1;
             }
             "--pos" if k + 1 < args.len() => {
-                if let Some((x, y)) = args[k + 1].split_once(',') {
+                if let Some((x, y)) = args[k + 1].to_str().and_then(|a| a.split_once(',')) {
                     if let (Ok(x), Ok(y)) = (x.trim().parse::<f32>(), y.trim().parse::<f32>()) {
                         pos = Some([x, y]);
                     }
@@ -6711,9 +7081,16 @@ fn main() -> eframe::Result<()> {
         .with_transparent(true) // required for the Mica backdrop
         .with_icon(Arc::new(icon));
     if let Some(p) = pos {
+        // Explicit position from "drag a tab out".
         viewport = viewport.with_position(p);
-    } else if saved.maximized {
-        viewport = viewport.with_maximized(true);
+    } else {
+        // Same place and state as last time.
+        if let Some(p) = saved.window_pos.filter(|p| window_pos_is_sane(*p)) {
+            viewport = viewport.with_position(p);
+        }
+        if saved.maximized {
+            viewport = viewport.with_maximized(true);
+        }
     }
     let options = eframe::NativeOptions {
         viewport,
