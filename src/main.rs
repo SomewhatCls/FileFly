@@ -180,8 +180,8 @@ enum SearchScope {
 impl SearchScope {
     fn label(self) -> &'static str {
         match self {
-            SearchScope::CurrentDir => "Current folder",
-            SearchScope::System => "Entire system",
+            SearchScope::CurrentDir => "Current folder (Ctrl+F)",
+            SearchScope::System => "Entire system (Ctrl+G)",
         }
     }
 }
@@ -1990,25 +1990,27 @@ impl Explorer {
 
     // ------------------------------------------------------------------ shortcuts
 
-    fn collect_shortcuts(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
+    fn collect_shortcuts(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         use egui::{Key, Modifiers as M};
         let typing = ui.egui_wants_keyboard_input();
         let modal = self.settings_open
             || self.props.is_some()
             || self.conflict.is_some()
             || self.confirm.is_some();
-        let tab = &self.tabs[self.active];
-        let in_trash = tab.trash.is_some();
+
+        let in_trash = self.tabs[self.active].trash.is_some();
         let sel: Vec<PathBuf> = if in_trash {
             Vec::new()
         } else {
-            tab.selected_paths()
+            self.tabs[self.active].selected_paths()
         };
+
         let active = self.active;
         let key_down = self.paste_key_down();
         let paste_edge = key_down && !self.prev_paste_key.get();
         self.prev_paste_key.set(key_down);
 
+        //Keyboard Shortcuts
         ui.input_mut(|i| {
             if i.consume_key(M::CTRL | M::SHIFT, Key::Tab) {
                 actions.push(Action::StepTab(-1));
@@ -2025,6 +2027,11 @@ impl Explorer {
                 actions.push(Action::FocusAddress);
             }
             if i.consume_key(M::CTRL, Key::F) || i.consume_key(M::CTRL, Key::E) {
+                self.tabs[active].chosen_search_scope = SearchScope::CurrentDir;
+                actions.push(Action::FocusSearch);
+            }
+            if i.consume_key(M::CTRL, Key::G) || i.consume_key(M::CTRL, Key::E) {
+                self.tabs[active].chosen_search_scope = SearchScope::System;
                 actions.push(Action::FocusSearch);
             }
             if i.consume_key(M::NONE, Key::F5) {
