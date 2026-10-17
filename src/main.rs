@@ -16,7 +16,7 @@ use eframe::{
     }
 };
 use egui::containers::scroll_area::{DragScroll, ScrollSource};
-use drives::{is_network_path, load_drives, DriveInfo, DriveKind};
+use drives::{clean_path, is_network_path, load_drives, path_available, spawn_watcher, DriveInfo, DriveKind, DriveWatchCtl};
 use fsops::*;
 use icons::*;
 use indexer::*;
@@ -111,6 +111,9 @@ struct QuickItem {
     path: PathBuf,
     /// Built-in icon shown until (or unless) the platform icon of the folder is available.
     icon: &'static str,
+    /// False while the folder sits on a removable / network drive that is not connected: the entry stays
+    /// pinned in the settings but is hidden from the sidebar until the drive comes back.
+    available: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -227,6 +230,8 @@ struct Tab {
 
 impl Tab {
     fn new(id: u64, dir: PathBuf) -> Self {
+        // Restored sessions / dragged-out tabs may still carry a \\?\ verbatim path.
+        let dir = clean_path(&dir);
         Self {
             id,
             address: dir.display().to_string(),
@@ -1100,15 +1105,15 @@ fn build_quick(s: &Settings) -> Vec<QuickItem> {
             .into_iter()
             .filter_map(|(icon, label, p)| {
                 p.filter(|p| p.is_dir())
-                    .map(|path| QuickItem { label: label.to_owned(), path, icon })
+                    .map(|path| QuickItem { label: label.to_owned(), path, icon, available: true })
             })
             .collect();
     };
     list.iter()
         .map(PathBuf::from)
         .map(|path| match known.iter().find(|(_, _, p)| p.as_deref() == Some(path.as_path())) {
-            Some((icon, label, _)) => QuickItem { label: (*label).to_owned(), path, icon: *icon },
-            None => QuickItem { label: folder_label(&path), path, icon: "folder" },
+            Some((icon, label, _)) => QuickItem { label: (*label).to_owned(), path, icon: *icon, available: true },
+            None => QuickItem { label: folder_label(&path), path, icon: "folder", available: true },
         })
         .collect()
 }
@@ -1190,8 +1195,10 @@ struct Explorer {
     next_tab_id: u64,
 
     drives: Vec<DriveInfo>,
-    last_drives: Instant,
-    drives_inflight: bool,
+    /// Background thread that polls the drives live (see drives.rs).
+    drive_ctl: Arc<DriveWatchCtl>,
+    /// True once the first drive list has arrived (Quick access availability is only judged after that).
+    drives_ready: bool,
     quick: Vec<QuickItem>,
     clipboard: Option<(Vec<PathBuf>, bool)>,
     peazip: Option<PathBuf>,
@@ -1290,6 +1297,16 @@ impl Explorer {
 
         let quick = build_quick(&settings);
 
+        // Live drive polling: USB sticks / network shares appearing, vanishing or getting their label.
+        let drive_ctl = {
+            let (tx, repaint) = (msg_tx.clone(), ui.clone());
+            spawn_watcher(settings.network_drives, move |d| {
+                let alive = tx.send(AppMsg::Drives(d)).is_ok();
+                repaint.request_repaint();
+                alive
+            })
+        };
+
         let mut app = Self {
             ui: ui.clone(),
             settings,
@@ -1297,8 +1314,8 @@ impl Explorer {
             active: 0,
             next_tab_id: 2,
             drives: Vec::new(),
-            last_drives: Instant::now() - Duration::from_secs(60),
-            drives_inflight: false,
+            drive_ctl,
+            drives_ready: false,
             quick,
             clipboard: None,
             peazip: find_peazip(),
@@ -1502,7 +1519,7 @@ impl Explorer {
 
     fn navigate(&mut self, ti: usize, path: PathBuf) {
         let path = match dunce::canonicalize(&path) {
-            Ok(p) if p.is_dir() => p,
+            Ok(p) if p.is_dir() => clean_path(&p), // no \\?\ / \\?\UNC\ prefix (breaks cargo, cmd, ...)
             Ok(_) => {
                 self.tabs[ti].error = Some("That path is not a folder.".to_owned());
                 return;
@@ -1547,6 +1564,7 @@ impl Explorer {
     }
 
     fn set_dir(&mut self, ti: usize, path: PathBuf) {
+        let path = clean_path(&path);
         let tab = &mut self.tabs[ti];
         tab.address = path.display().to_string();
         tab.dir = path;
@@ -1655,6 +1673,7 @@ impl Explorer {
     /// have an icon of their own.
     fn rebuild_quick(&mut self) {
         self.quick = build_quick(&self.settings);
+        self.apply_quick_availability();
         self.sync_special_icons();
     }
 
@@ -1990,15 +2009,28 @@ impl Explorer {
         }
     }
 
+    /// Applies the network setting to the drive watcher and makes it poll right away.
     fn refresh_drives(&mut self) {
-        self.drives_inflight = true;
-        self.last_drives = Instant::now();
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        self.drive_ctl.set_network(self.settings.network_drives);
+        self.drive_ctl.poke();
+    }
+
+    /// Hides Quick access entries whose removable / network drive is not connected and shows them again
+    /// when it is back. The pins themselves stay in the settings. Returns whether anything changed.
+    fn apply_quick_availability(&mut self) -> bool {
+        if !self.drives_ready {
+            return false;
+        }
         let network = self.settings.network_drives;
-        std::thread::spawn(move || {
-            let _ = tx.send(AppMsg::Drives(load_drives(network)));
-            ui.request_repaint();
-        });
+        let mut changed = false;
+        for q in &mut self.quick {
+            let a = path_available(&q.path, &self.drives, network);
+            if q.available != a {
+                q.available = a;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Starts/cancels the recursive search whenever a tab's search text changes (this also
@@ -2112,7 +2144,8 @@ impl Explorer {
                     }
                     set_special_drives(d.iter().map(|x| x.mount_point.clone()));
                     self.drives = d;
-                    self.drives_inflight = false;
+                    self.drives_ready = true;
+                    self.apply_quick_availability();
                 }
                 AppMsg::Job(result) => {
                     self.jobs_running = self.jobs_running.saturating_sub(1);
@@ -2223,14 +2256,9 @@ impl Explorer {
             self.start_indexing(force);
         }
 
-        // Probing every volume can block for seconds on a disconnected network drive or an empty
-        // card reader, so do it rarely and only while the window is in use.
-        if self.last_drives.elapsed() > Duration::from_secs(30)
-            && !self.drives_inflight
-            && self.ui.input(|i| i.focused)
-        {
-            self.refresh_drives();
-        }
+        // The drive watcher thread polls on its own; it only needs to know whether the window is in use.
+        let focused = self.ui.input(|i| i.focused);
+        self.drive_ctl.set_focused(focused);
         if self.indexer.is_dirty() {
             if self.last_save.elapsed() > Duration::from_secs(15) {
                 self.indexer.save_if_dirty(&self.index_dir, false);
@@ -5979,7 +6007,7 @@ impl Explorer {
                                 if quick_header(ui, &m, &pal, "Quick access", can_pin) {
                                     actions.push(Action::PinQuick(cur.clone()));
                                 }
-                                for q in quick {
+                                for q in quick.iter().filter(|q| q.available) {
                                     let resp = nav_item_ex(
                                         ui,
                                         &m,
@@ -6018,7 +6046,7 @@ impl Explorer {
                                         }
                                     });
                                 }
-                                if quick.is_empty() {
+                                if !quick.iter().any(|q| q.available) {
                                     section_label(ui, &m, &pal, "Nothing pinned");
                                 }
 

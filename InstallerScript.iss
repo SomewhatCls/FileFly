@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "FileFly"
-#define MyAppVersion "0.2.9"
+#define MyAppVersion "0.3.0"
 #define MyAppExeName "FileFly.exe"
 
 [Setup]
