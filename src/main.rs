@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod drives;
 mod fsops;
 mod icons;
 mod indexer;
@@ -14,6 +15,7 @@ use eframe::{
     }
 };
 use egui::containers::scroll_area::{DragScroll, ScrollSource};
+use drives::{is_network_path, load_drives, DriveInfo, DriveKind};
 use fsops::*;
 use icons::*;
 use indexer::*;
@@ -34,8 +36,6 @@ use std::{
 };
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use eframe::egui::TextBuffer;
-use sysinfo::Disks;
 use theme::*;
 use jwalk::{Parallelism, WalkDir};
 // ==============================================================================================
@@ -103,12 +103,13 @@ impl Entry {
     }
 }
 
+/// One entry of the Quick access list in the sidebar.
 #[derive(Clone)]
-struct DriveInfo {
-    mount_point: PathBuf,
-    name: String,
-    total: u64,
-    available: u64,
+struct QuickItem {
+    label: String,
+    path: PathBuf,
+    /// Built-in icon shown until (or unless) the platform icon of the folder is available.
+    icon: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -212,6 +213,8 @@ struct Tab {
     rename: Option<RenameState>,
     pending_rename: Option<PathBuf>,
     trash: Option<TrashState>,
+    /// True: this tab shows the Settings page instead of a folder.
+    settings: bool,
     search_job: Option<SearchJob>,
     search_results: Vec<Entry>,
     search_lookup: HashMap<PathBuf, usize>, // path -> index into search_results
@@ -247,6 +250,7 @@ impl Tab {
             rename: None,
             pending_rename: None,
             trash: None,
+            settings: false,
             search_job: None,
             search_results: Vec::new(),
             search_lookup: HashMap::new(),
@@ -283,6 +287,9 @@ impl Tab {
         if self.trash.is_some() {
             return "Recycle Bin".to_owned();
         }
+        if self.settings {
+            return "Settings".to_owned();
+        }
         self.dir
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -290,6 +297,10 @@ impl Tab {
     }
     fn searching(&self) -> bool {
         !self.search.trim().is_empty()
+    }
+    /// Recycle Bin or Settings: the tab shows a page of its own, not the files of `dir`.
+    fn special(&self) -> bool {
+        self.trash.is_some() || self.settings
     }
     /// Everything that indexes into `view` (the table, selection, context menu) must read from this instead of `self.entries`.
     fn source(&self) -> &[Entry] {
@@ -336,7 +347,7 @@ enum SavedTile {
 
 impl SavedTile {
     /// Panes whose tab can't be found are dropped; their sibling takes over.
-    fn from_tile(t: &Tile, tabs: &[Tab]) -> Option<SavedTile> {
+    fn from_tile(t: &Tile, tabs: &[&Tab]) -> Option<SavedTile> {
         match t {
             Tile::Leaf(id) => tabs.iter().position(|x| x.id == *id).map(SavedTile::Leaf),
             Tile::Split { side_by_side, ratio, a, b } => {
@@ -386,7 +397,7 @@ struct Session {
     tiles: Option<SavedTile>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
     font_size: f32,
@@ -396,6 +407,10 @@ struct Settings {
     custom_accent: [u8; 3],
     theme: ThemeChoice,
     show_hidden: bool,
+    /// List mapped network drives / network mounts in the sidebar.
+    network_drives: bool,
+    /// Folders pinned to Quick access. `None`: the default list (Home, Desktop, Downloads, ...).
+    quick_access: Option<Vec<String>>,
     date_format: DateFormat,
     search_threads: usize,
     max_search_results: usize,
@@ -420,6 +435,8 @@ impl Default for Settings {
             custom_accent: [0x00, 0x78, 0xD4],
             theme: ThemeChoice::System,
             show_hidden: false,
+            network_drives: true,
+            quick_access: None,
             date_format: DateFormat::default(),
             search_threads: 4_usize,
             max_search_results: 100_000_usize,
@@ -825,6 +842,8 @@ enum Action {
     ToggleHidden,
     OpenSettings,
     OpenRecycleBin,
+    PinQuick(PathBuf),
+    UnpinQuick(PathBuf),
     MoveSelection(i32),
     SelectEdge(bool),
     TrashRestoreSelected,
@@ -978,7 +997,7 @@ fn on_search_changed(tab: &mut Tab, show_hidden: bool, fmt: DateFormat, ctx: &eg
     tab.rename = None;
     if !tab.search_query.is_empty() {
         let roots = if tab.chosen_search_scope == SearchScope::System {
-            load_drives().into_iter().map(|d| d.mount_point).collect()
+            load_drives(false).into_iter().filter(|d| d.kind != DriveKind::Network).map(|d| d.mount_point).collect()
         } else {
             vec![tab.dir.clone()]
         };
@@ -1053,20 +1072,52 @@ fn rebuild_view(tab: &mut Tab) {
     tab.view_dirty = false;
 }
 
-fn load_drives() -> Vec<DriveInfo> {
-    let mut drives: Vec<DriveInfo> = Disks::new_with_refreshed_list()
-        .list()
-        .iter()
-        .map(|d| DriveInfo {
-            mount_point: d.mount_point().to_path_buf(),
-            name: d.name().to_string_lossy().into_owned(),
-            total: d.total_space(),
-            available: d.available_space(),
+/// Quick access folders that exist on every system: (built-in icon, label, folder).
+fn known_folders() -> Vec<(&'static str, &'static str, Option<PathBuf>)> {
+    vec![
+        ("home", "Home", dirs::home_dir()),
+        ("desktop", "Desktop", dirs::desktop_dir()),
+        ("downloads", "Downloads", dirs::download_dir()),
+        ("documents", "Documents", dirs::document_dir()),
+        ("pictures", "Pictures", dirs::picture_dir()),
+        ("music", "Music", dirs::audio_dir()),
+        ("videos", "Videos", dirs::video_dir()),
+    ]
+}
+
+fn folder_label(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.display().to_string())
+}
+
+/// The Quick access list: the user's pinned folders, or the defaults if never customised.
+fn build_quick(s: &Settings) -> Vec<QuickItem> {
+    let known = known_folders();
+    let Some(list) = &s.quick_access else {
+        return known
+            .into_iter()
+            .filter_map(|(icon, label, p)| {
+                p.filter(|p| p.is_dir())
+                    .map(|path| QuickItem { label: label.to_owned(), path, icon })
+            })
+            .collect();
+    };
+    list.iter()
+        .map(PathBuf::from)
+        .map(|path| match known.iter().find(|(_, _, p)| p.as_deref() == Some(path.as_path())) {
+            Some((icon, label, _)) => QuickItem { label: (*label).to_owned(), path, icon: *icon },
+            None => QuickItem { label: folder_label(&path), path, icon: "folder" },
         })
-        .collect();
-        //sort drives by drive letter
-        drives.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
-        drives
+        .collect()
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+    } else {
+        a == b
+    }
 }
 
 fn expand_env(s: &str) -> String {
@@ -1140,7 +1191,7 @@ struct Explorer {
     drives: Vec<DriveInfo>,
     last_drives: Instant,
     drives_inflight: bool,
-    quick: Vec<(&'static str, &'static str, PathBuf)>,
+    quick: Vec<QuickItem>,
     clipboard: Option<(Vec<PathBuf>, bool)>,
     peazip: Option<PathBuf>,
 
@@ -1158,7 +1209,6 @@ struct Explorer {
     conflict: Option<PendingPaste>,
     props: Option<Props>,
     props_gen: Arc<AtomicU64>,
-    settings_open: bool,
     settings_dirty: bool,
 
     sys_accent: Option<Accent>,
@@ -1233,20 +1283,7 @@ impl Explorer {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let mut quick = Vec::new();
-        for (icon, label, path) in [
-            ("home", "Home", dirs::home_dir()),
-            ("desktop", "Desktop", dirs::desktop_dir()),
-            ("downloads", "Downloads", dirs::download_dir()),
-            ("documents", "Documents", dirs::document_dir()),
-            ("pictures", "Pictures", dirs::picture_dir()),
-            ("music", "Music", dirs::audio_dir()),
-            ("videos", "Videos", dirs::video_dir()),
-        ] {
-            if let Some(p) = path.filter(|p| p.is_dir()) {
-                quick.push((icon, label, p));
-            }
-        }
+        let quick = build_quick(&settings);
 
         let mut app = Self {
             ui: ui.clone(),
@@ -1273,7 +1310,6 @@ impl Explorer {
             conflict: None,
             props: None,
             props_gen: Arc::new(AtomicU64::new(0)),
-            settings_open: false,
             settings_dirty: false,
             sys_accent: system_accent(),
             text_scale: system_text_scale(),
@@ -1309,6 +1345,7 @@ impl Explorer {
                     .unwrap_or_else(Instant::now),
             ),
         };
+        app.sync_special_icons();
         if START_DIR.get().is_none() {
             app.restore_session();
         }
@@ -1332,17 +1369,16 @@ impl Explorer {
     // ------------------------------------------------------------------ session
 
     fn session_snapshot(&self) -> Session {
+        // The Settings tab is not part of the session (it would come back as a plain folder tab).
+        let kept: Vec<&Tab> = self.tabs.iter().filter(|t| !t.settings).collect();
+        let active_id = self.tabs.get(self.active).map(|t| t.id);
         Session {
-            tabs: self
-                .tabs
-                .iter()
-                .map(|t| t.dir.to_string_lossy().into_owned())
-                .collect(),
-            active: self.active,
+            tabs: kept.iter().map(|t| t.dir.to_string_lossy().into_owned()).collect(),
+            active: kept.iter().position(|t| Some(t.id) == active_id).unwrap_or(0),
             tiles: self
                 .tiles
                 .as_ref()
-                .and_then(|t| SavedTile::from_tile(t, &self.tabs)),
+                .and_then(|t| SavedTile::from_tile(t, &kept)),
         }
     }
 
@@ -1471,6 +1507,14 @@ impl Explorer {
         };
         let tab = &mut self.tabs[ti];
         let in_trash = tab.trash.is_some();
+        if tab.settings {
+            // Leaving the Settings page: the tab turns into a normal folder tab.
+            tab.settings = false;
+            tab.back.clear();
+            tab.fwd.clear();
+            self.set_dir(ti, path);
+            return;
+        }
         if path == tab.dir {
             if in_trash {
                 // The Recycle Bin is a view *over* `tab.dir`, so asking for that same folder
@@ -1504,6 +1548,7 @@ impl Explorer {
         tab.rename = None;
         tab.editing_addr = false;
         tab.trash = None;
+        tab.settings = false;
         tab.entries.clear();
         tab.lookup.clear();
         tab.view.clear();
@@ -1549,6 +1594,10 @@ impl Explorer {
             tab.id.hash(&mut h);
             tab.dir.hash(&mut h);
             acc ^= h.finish();
+            // Measuring folders over a network share would mean reading the whole share.
+            if tab.settings || is_network_path(&tab.dir) {
+                continue;
+            }
             for e in tab.entries.iter_mut().filter(|e| e.is_dir && !e.is_link) {
                 if e.dir_size.is_none() {
                     e.dir_size = self.indexer.lookup(&e.path);
@@ -1565,6 +1614,78 @@ impl Explorer {
         }
         self.index_sig = Some(sig);
         self.indexer.start(paths); // also cancels a scan that belonged to the previous folder
+    }
+
+    /// Opens the Settings tab (or focuses it if it is already open; pressing the button again closes it).
+    fn open_settings(&mut self) {
+        if let Some(i) = self.tabs.iter().position(|t| t.settings) {
+            if i == self.active && self.tabs.len() > 1 {
+                self.apply(Action::CloseTab(i));
+            } else {
+                self.activate_tab(i);
+            }
+            return;
+        }
+        let dir = self.tabs[self.active].dir.clone();
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        if let Some(tree) = self.tiles.as_mut() {
+            // In tiled mode the new tab takes over the focused pane.
+            let cur = self.tabs[self.active].id;
+            tree.replace(cur, id);
+        }
+        let mut tab = Tab::new(id, dir);
+        tab.settings = true;
+        tab.load_gen = 1; // nothing to read: the page is not a folder listing
+        self.tabs.push(tab);
+        self.active = self.tabs.len() - 1;
+        self.on_active_changed();
+    }
+
+    /// Rebuilds the Quick access list from the settings and tells the icon cache which folders
+    /// have an icon of their own.
+    fn rebuild_quick(&mut self) {
+        self.quick = build_quick(&self.settings);
+        self.sync_special_icons();
+    }
+
+    fn sync_special_icons(&mut self) {
+        let mut special: Vec<PathBuf> = known_folders().into_iter().filter_map(|(_, _, p)| p).collect();
+        special.extend(self.quick.iter().map(|q| q.path.clone()));
+        set_special_folders(special);
+        // Listings that are already on screen were keyed before the change.
+        for t in &mut self.tabs {
+            for e in t.entries.iter_mut().chain(t.search_results.iter_mut()).filter(|e| e.is_dir) {
+                e.icon_key = make_icon_key(true, None, &e.path);
+            }
+        }
+    }
+
+    fn quick_paths(&self) -> Vec<String> {
+        self.quick.iter().map(|q| q.path.to_string_lossy().into_owned()).collect()
+    }
+
+    fn pin_quick(&mut self, p: PathBuf) {
+        if self.quick.iter().any(|q| same_path(&q.path, &p)) || !p.is_dir() {
+            return;
+        }
+        let mut list = self.quick_paths();
+        list.push(p.to_string_lossy().into_owned());
+        self.settings.quick_access = Some(list);
+        self.rebuild_quick();
+        save_settings(&self.settings);
+    }
+
+    fn unpin_quick(&mut self, p: &Path) {
+        let list: Vec<String> = self
+            .quick
+            .iter()
+            .filter(|q| !same_path(&q.path, p))
+            .map(|q| q.path.to_string_lossy().into_owned())
+            .collect();
+        self.settings.quick_access = Some(list);
+        self.rebuild_quick();
+        save_settings(&self.settings);
     }
 
     fn new_tab(&mut self, dir: PathBuf) {
@@ -1864,8 +1985,9 @@ impl Explorer {
         self.drives_inflight = true;
         self.last_drives = Instant::now();
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        let network = self.settings.network_drives;
         std::thread::spawn(move || {
-            let _ = tx.send(AppMsg::Drives(load_drives()));
+            let _ = tx.send(AppMsg::Drives(load_drives(network)));
             ui.request_repaint();
         });
     }
@@ -1876,7 +1998,7 @@ impl Explorer {
     fn pump_search(&mut self, ctx: &egui::Context) {
         let (show_hidden, fmt) = (self.settings.show_hidden, self.settings.date_format);
         for t in &mut self.tabs {
-            let q = if t.trash.is_some() {
+            let q = if t.special() {
                 String::new()
             } else {
                 t.search.trim().to_lowercase()
@@ -1974,7 +2096,12 @@ impl Explorer {
                         }
                     }
                 }
-                AppMsg::Drives(d) => {
+                AppMsg::Drives(mut d) => {
+                    // A scan that started before network drives were switched off may still deliver them.
+                    if !self.settings.network_drives {
+                        d.retain(|x| x.kind != DriveKind::Network);
+                    }
+                    set_special_drives(d.iter().map(|x| x.mount_point.clone()));
                     self.drives = d;
                     self.drives_inflight = false;
                 }
@@ -2147,13 +2274,13 @@ impl Explorer {
     fn collect_shortcuts(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         use egui::{Key, Modifiers as M};
         let typing = ui.egui_wants_keyboard_input();
-        let modal = self.settings_open
-            || self.props.is_some()
+        let modal = self.props.is_some()
             || self.conflict.is_some()
             || self.confirm.is_some();
 
         let in_trash = self.tabs[self.active].trash.is_some();
-        let sel: Vec<PathBuf> = if in_trash {
+        let in_settings = self.tabs[self.active].settings;
+        let sel: Vec<PathBuf> = if in_trash || in_settings {
             Vec::new()
         } else {
             self.tabs[self.active].selected_paths()
@@ -2210,8 +2337,11 @@ impl Explorer {
             if i.consume_key(M::CTRL | M::SHIFT, Key::N) {
                 actions.push(Action::NewFolder);
             }
+            if i.consume_key(M::CTRL, Key::Comma) {
+                actions.push(Action::OpenSettings);
+            }
 
-            if typing || modal {
+            if typing || modal || in_settings {
                 return;
             }
             if in_trash {
@@ -2289,7 +2419,7 @@ impl Explorer {
 
     fn apply(&mut self, action: Action) {
         let ti = self.active;
-        if self.tabs[ti].trash.is_some()
+        if self.tabs[ti].special()
             && matches!(
                 action,
                 Action::NewFolder | Action::Paste | Action::Rename(_) | Action::CommitRename(..)
@@ -2363,6 +2493,8 @@ impl Explorer {
             Action::Refresh => {
                 if self.tabs[ti].trash.is_some() {
                     self.load_trash(ti);
+                } else if self.tabs[ti].settings {
+                    self.refresh_drives();
                 } else {
                     self.reindex_force = true; // F5 also recalculates folder sizes
                     self.load_tab(ti);
@@ -2527,7 +2659,9 @@ impl Explorer {
                 self.settings_dirty = true;
                 self.reload_all();
             }
-            Action::OpenSettings => self.settings_open = !self.settings_open,
+            Action::OpenSettings => self.open_settings(),
+            Action::PinQuick(p) => self.pin_quick(p),
+            Action::UnpinQuick(p) => self.unpin_quick(&p),
             Action::OpenRecycleBin => {
                 if trashbin::SUPPORTED {
                     self.open_trash(ti);
@@ -2883,6 +3017,42 @@ fn nav_item(
     label: &str,
     selected: bool,
 ) -> egui::Response {
+    nav_item_ex(ui, m, pal, icon, None, label, selected)
+}
+
+/// Section title with a small "+" button at its right end (returns true when the button is clicked).
+fn quick_header(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str, can_add: bool) -> bool {
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), m.font * 2.0), Sense::hover());
+    let tr = Rect::from_min_max(pos2(rect.left() + m.pad * 1.5, rect.top()), rect.max);
+    paint_text(ui, tr, text, FontId::proportional(m.font * 0.86), pal.text_secondary, false);
+    let sz = m.font * 1.6;
+    let btn = Rect::from_center_size(
+        pos2(rect.right() - m.pad * 1.5 - sz / 2.0, rect.center().y),
+        vec2(sz, sz),
+    );
+    let resp = ui.interact(
+        btn,
+        ui.id().with("quick_add_btn"),
+        if can_add { Sense::click() } else { Sense::hover() },
+    );
+    if can_add {
+        hover_fill(ui, btn, &resp, pal, m);
+    }
+    can_add && resp.on_hover_text("Pin the current folder to Quick access").clicked()
+}
+
+/// Navigation item. With a `path` the folder's own platform icon is shown (Documents, Downloads,
+/// ... have special icons on Windows); `icon` is the built-in stand-in.
+fn nav_item_ex(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    icon: &str,
+    path: Option<&Path>,
+    label: &str,
+    selected: bool,
+) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), m.nav_h), Sense::click());
     let inner = rect.shrink2(vec2(0.0, 1.0));
     let r = CornerRadius::same(m.radius);
@@ -2900,13 +3070,19 @@ fn nav_item(
     } else {
         list_hover(ui, inner, &resp, pal, m);
     }
-    draw_icon(
-        ui,
-        pos2(inner.left() + m.pad * 1.5 + m.icon / 2.0, inner.center().y),
-        m.icon,
-        icon,
-        Color32::WHITE,
-    );
+    let icon_c = pos2(inner.left() + m.pad * 1.5 + m.icon / 2.0, inner.center().y);
+    match path {
+        Some(p) => draw_path_icon(
+            ui,
+            icon_c,
+            m.icon,
+            &make_icon_key(true, None, p),
+            p,
+            icon,
+            Color32::WHITE,
+        ),
+        None => draw_icon(ui, icon_c, m.icon, icon, Color32::WHITE),
+    }
     let tr = Rect::from_min_max(
         pos2(inner.left() + m.pad * 2.3 + m.icon, inner.top()),
         pos2(inner.right() - m.pad, inner.bottom()),
@@ -2963,13 +3139,21 @@ fn drive_card(
     let x0 = inner.left() + m.pad * 1.5;
     let x1 = inner.right() - m.pad * 1.5;
     let y1 = inner.top() + h * 0.24;
-    draw_icon(
-        ui,
-        pos2(x0 + m.icon / 2.0, y1),
-        m.icon,
-        "drive",
-        Color32::WHITE,
-    );
+    let icon_c = pos2(x0 + m.icon / 2.0, y1);
+    if d.total == 0 && d.kind == DriveKind::Network {
+        // Unreachable share: don't ask the shell for its icon (that can block on the network).
+        draw_icon(ui, icon_c, m.icon, "drive", Color32::WHITE);
+    } else {
+        draw_path_icon(
+            ui,
+            icon_c,
+            m.icon,
+            &make_icon_key(true, None, &d.mount_point),
+            &d.mount_point,
+            "drive",
+            Color32::WHITE,
+        );
+    }
     paint_text(
         ui,
         Rect::from_min_max(
@@ -3002,11 +3186,11 @@ fn drive_card(
     };
     let fill = Rect::from_min_size(bar.min, vec2(bar.width() * frac, bar_h));
     ui.painter().rect_filled(fill, CornerRadius::same(2), color);
-    let info = format!(
-        "{} free of {}",
-        format_size(d.available),
-        format_size(d.total)
-    );
+    let info = if d.total == 0 {
+        "Not available".to_owned()
+    } else {
+        format!("{} free of {}", format_size(d.available), format_size(d.total))
+    };
     paint_text(
         ui,
         Rect::from_min_max(
@@ -3638,6 +3822,7 @@ fn rebuild_trash_view(tr: &mut TrashState, search: &str) {
     tr.needs_sort = false;
 }
 
+///static_address determines the look of the static, immutable address bar for the settings tab.
 fn static_address(ui: &mut Ui, m: &Metrics, pal: &Palette, width: f32, icon: &str, label: &str) {
     let (pill, _) = ui.allocate_exact_size(vec2(width, m.ctl_h), Sense::hover());
     let r = CornerRadius::same(m.radius);
@@ -3648,13 +3833,25 @@ fn static_address(ui: &mut Ui, m: &Metrics, pal: &Palette, width: f32, icon: &st
         Stroke::new(1.0_f32, pal.control_stroke),
         StrokeKind::Inside,
     );
-    draw_icon(
-        ui,
-        pos2(pill.left() + m.pad + m.small_icon / 2.0, pill.center().y),
-        m.small_icon,
-        icon,
-        Color32::WHITE,
-    );
+    //Settings icon drawn in the settings adress bar
+    if label == "Settings"{
+        draw_icon(
+            ui,
+            pos2(pill.left() + m.pad + m.small_icon / 2.0, pill.center().y),
+            m.small_icon,
+            icon,
+            pal.text_secondary,
+        );
+    }else{
+        draw_icon(
+            ui,
+            pos2(pill.left() + m.pad + m.small_icon / 2.0, pill.center().y),
+            m.small_icon,
+            icon,
+            Color32::WHITE,
+        );
+    }
+
     let tr = Rect::from_min_max(
         pos2(pill.left() + m.pad * 1.8 + m.small_icon, pill.top()),
         pill.max,
@@ -3670,6 +3867,359 @@ fn danger_button(ui: &mut Ui, m: &Metrics, text: &str) -> egui::Response {
             .corner_radius(CornerRadius::same(m.radius))
             .min_size(vec2(m.s * 92.0, m.ctl_h)),
     )
+}
+
+// ==============================================================================================
+// Settings page (shown inside a tab), Fluent 2 style: a title, section headings, and cards that
+// hold one row per setting (text on the left, control on the right).
+
+/// Working copy of the settings the Settings tab edits during one frame, plus the buttons that
+/// were pressed. `Explorer::finish_settings_page` applies the result.
+struct SettingsPage {
+    old: Settings,
+    s: Settings,
+    font: f32,
+    font_edit: Option<f32>,
+    index_dir: String,
+    cache_len: usize,
+    rescan: bool,
+    choose: bool,
+    delete_index: bool,
+    reset_quick: bool,
+}
+
+impl SettingsPage {
+    fn new(settings: &Settings, font_edit: Option<f32>, index_dir: String, cache_len: usize) -> Self {
+        Self {
+            old: settings.clone(),
+            s: settings.clone(),
+            font: font_edit.unwrap_or(settings.font_size),
+            font_edit,
+            index_dir,
+            cache_len,
+            rescan: false,
+            choose: false,
+            delete_index: false,
+            reset_quick: false,
+        }
+    }
+}
+
+fn fl_card_fill(pal: &Palette) -> Color32 {
+    if pal.dark {
+        Color32::from_white_alpha(13)
+    } else {
+        Color32::from_white_alpha(185)
+    }
+}
+
+fn fl_section(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str) {
+    ui.add_space(m.pad * 1.4);
+    ui.label(RichText::new(text).size(m.font * 1.05).strong().color(pal.text));
+    ui.add_space(m.pad * 0.5);
+}
+
+/// Rounded surface with a hairline border that groups related rows.
+fn fl_card(ui: &mut Ui, m: &Metrics, pal: &Palette, add: impl FnOnce(&mut Ui)) {
+    egui::Frame::new()
+        .fill(fl_card_fill(pal))
+        .stroke(Stroke::new(1.0_f32, pal.divider))
+        .corner_radius(CornerRadius::same(m.radius + 2))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add(ui);
+        });
+}
+
+fn fl_divider(ui: &mut Ui, m: &Metrics, pal: &Palette) {
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter()
+        .rect_filled(r.shrink2(vec2(m.pad * 0.8, 0.0)), CornerRadius::ZERO, pal.divider);
+}
+
+/// One setting: title and optional description on the left, `control` vertically centred on the right.
+fn fl_row(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    title: &str,
+    desc: Option<&str>,
+    control: impl FnOnce(&mut Ui),
+) {
+    let w = ui.available_width();
+    let pad_x = m.pad * 1.6;
+    let pad_y = m.pad * 0.9;
+    let gap = m.s * 2.0;
+    let text_w = ((w - pad_x * 3.0) * 0.55).max(m.s * 120.0);
+    let tg = ui
+        .painter()
+        .layout(title.to_owned(), FontId::proportional(m.font), pal.text, text_w);
+    let dg = desc.map(|d| {
+        ui.painter()
+            .layout(d.to_owned(), FontId::proportional(m.font * 0.88), pal.text_secondary, text_w)
+    });
+    let title_h = tg.size().y;
+    let text_h = title_h + dg.as_ref().map_or(0.0, |g| g.size().y + gap);
+    let h = (text_h + pad_y * 2.0).max(m.row_h * 1.55);
+    let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+    let top = rect.center().y - text_h / 2.0;
+    ui.painter()
+        .galley(pos2(rect.left() + pad_x, top), tg, pal.text);
+    if let Some(dg) = dg {
+        ui.painter()
+            .galley(pos2(rect.left() + pad_x, top + title_h + gap), dg, pal.text_secondary);
+    }
+    let ctl = Rect::from_min_max(
+        pos2(rect.left() + pad_x * 2.0 + text_w, rect.top()),
+        pos2(rect.right() - pad_x, rect.bottom()),
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(ctl)
+            .layout(Layout::right_to_left(Align::Center)),
+        control,
+    );
+}
+
+/// Fluent toggle switch with its "On" / "Off" label to the left.
+fn fl_switch(ui: &mut Ui, m: &Metrics, pal: &Palette, on: &mut bool) {
+    let size = vec2(m.font * 2.7, m.font * 1.35);
+    let (rect, mut resp) = ui.allocate_exact_size(size, Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let t = ui.ctx().animate_bool_with_time(resp.id, *on, 0.12);
+    let radius = CornerRadius::same((size.y / 2.0).round() as u8);
+    if *on {
+        ui.painter().rect_filled(rect, radius, pal.accent);
+    } else {
+        let fill = if resp.hovered() { pal.subtle_hover } else { Color32::TRANSPARENT };
+        ui.painter().rect_filled(rect, radius, fill);
+        ui.painter().rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0_f32, pal.text_secondary),
+            StrokeKind::Inside,
+        );
+    }
+    let knob_r = egui::lerp((size.y * 0.2)..=(size.y * 0.27), t);
+    let x = egui::lerp((rect.left() + size.y * 0.5)..=(rect.right() - size.y * 0.5), t);
+    let knob = if *on { pal.on_accent } else { pal.text_secondary };
+    ui.painter().circle_filled(pos2(x, rect.center().y), knob_r, knob);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    ui.label(RichText::new(if *on { "On" } else { "Off" }).color(pal.text_secondary));
+}
+
+fn settings_page(ui: &mut Ui, rect: Rect, m: &Metrics, pal: &Palette, tab_id: u64, sp: &mut SettingsPage) {
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt(("settings_page", tab_id))
+            .max_rect(rect),
+        |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let avail = ui.available_width();
+                    let w = (avail - m.pad * 4.0).clamp(m.s * 240.0, m.s * 860.0);
+                    let left = ((avail - w) / 2.0).max(m.pad * 2.0);
+                    ui.horizontal_top(|ui| {
+                        ui.add_space(left);
+                        ui.vertical(|ui| {
+                            ui.set_width(w);
+                            settings_content(ui, m, pal, sp);
+                        });
+                    });
+                });
+        },
+    );
+}
+
+fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut SettingsPage) {
+    ui.spacing_mut().slider_width = m.s * 150.0;
+    ui.add_space(m.pad * 1.5);
+    ui.label(RichText::new("Settings").size(m.font * 2.0).strong().color(pal.text));
+    ui.label(
+        RichText::new(format!("FileFly v{}", env!("CARGO_PKG_VERSION"))).color(pal.text_secondary),
+    );
+
+    // ---------------------------------------------------------------- Appearance
+    fl_section(ui, m, pal, "Appearance");
+    fl_card(ui, m, pal, |ui| {
+        fl_row(ui, m, pal, "App theme", Some("Choose how FileFly looks"), |ui| {
+            let label = |t: ThemeChoice| match t {
+                ThemeChoice::System => "Use system setting",
+                ThemeChoice::Light => "Light",
+                ThemeChoice::Dark => "Dark",
+            };
+            egui::ComboBox::from_id_salt("settings_theme")
+                .width(m.s * 150.0)
+                .selected_text(label(sp.s.theme))
+                .show_ui(ui, |ui| {
+                    for t in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
+                        ui.selectable_value(&mut sp.s.theme, t, label(t));
+                    }
+                });
+        });
+        fl_divider(ui, m, pal);
+        fl_row(ui, m, pal, "Text size", Some("Scales text and interface elements"), |ui| {
+            // The whole UI is sized from this value, so applying it mid-drag would move the slider
+            // under the cursor. Preview in the handle, apply on release.
+            let resp = ui.add(
+                egui::Slider::new(&mut sp.font, 10.0..=24.0)
+                    .step_by(0.5)
+                    .suffix(" pt"),
+            );
+            if resp.dragged() {
+                sp.font_edit = Some(sp.font);
+            } else if resp.drag_stopped() || resp.changed() {
+                sp.s.font_size = sp.font;
+                sp.font_edit = None;
+            }
+        });
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Follow system text size",
+            Some("Also apply the “Text size” setting from Windows Accessibility"),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.follow_text_scale),
+        );
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Use Windows accent color",
+            Some("Turn off to pick your own accent color"),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.use_system_accent),
+        );
+        if !sp.s.use_system_accent {
+            fl_divider(ui, m, pal);
+            fl_row(ui, m, pal, "Accent color", None, |ui| {
+                ui.color_edit_button_srgb(&mut sp.s.custom_accent);
+            });
+        }
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Transparency effects",
+            Some("Use the Mica material behind the window (Windows 11)"),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.use_mica),
+        );
+    });
+
+    // ---------------------------------------------------------------- Files
+    fl_section(ui, m, pal, "Files & folders");
+    fl_card(ui, m, pal, |ui| {
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Show hidden items",
+            Some("List files and folders that are marked as hidden"),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.show_hidden),
+        );
+        fl_divider(ui, m, pal);
+        fl_row(ui, m, pal, "Date format", Some("How modification dates are written"), |ui| {
+            egui::ComboBox::from_id_salt("settings_date_format")
+                .width(m.s * 150.0)
+                .selected_text(sp.s.date_format.label())
+                .show_ui(ui, |ui| {
+                    for f in [DateFormat::European, DateFormat::Iso, DateFormat::American] {
+                        ui.selectable_value(&mut sp.s.date_format, f, f.label());
+                    }
+                });
+        });
+    });
+
+    // ---------------------------------------------------------------- Drives and Quick access
+    fl_section(ui, m, pal, "Drives & Quick access");
+    fl_card(ui, m, pal, |ui| {
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Network drives",
+            Some("Show mapped network drives and network mounts in the sidebar. Turn off if an unreachable share slows things down."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.network_drives),
+        );
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Quick access",
+            Some("Pin folders with the + button in the sidebar or a folder's right-click menu; unpin them from their own right-click menu."),
+            |ui| {
+                if secondary_button(ui, m, "Restore defaults").clicked() {
+                    sp.reset_quick = true;
+                }
+            },
+        );
+    });
+
+    // ---------------------------------------------------------------- Search
+    fl_section(ui, m, pal, "Search (experimental)");
+    fl_card(ui, m, pal, |ui| {
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Maximum search results",
+            Some("Default: 100,000"),
+            |ui| {
+                ui.add(
+                    egui::Slider::new(&mut sp.s.max_search_results, 1_usize..=1_000_000_usize)
+                        .logarithmic(true),
+                );
+            },
+        );
+        fl_divider(ui, m, pal);
+        fl_row(ui, m, pal, "Search threads", Some("Default: 4"), |ui| {
+            ui.add(egui::Slider::new(&mut sp.s.search_threads, 1_usize..=64_usize));
+        });
+    });
+
+    // ---------------------------------------------------------------- Folder sizes
+    fl_section(ui, m, pal, "Folder sizes");
+    fl_card(ui, m, pal, |ui| {
+        let loc = format!("Index location: {}", sp.index_dir);
+        fl_row(ui, m, pal, "Index location", Some(loc.as_str()), |ui| {
+            if secondary_button(ui, m, "Choose location…").clicked() {
+                sp.choose = true;
+            }
+        });
+        fl_divider(ui, m, pal);
+        let cached = format!(
+            "{} folders cached. Changes are picked up automatically while the app is open.",
+            sp.cache_len
+        );
+        fl_row(ui, m, pal, "Rescan all folders", Some(cached.as_str()), |ui| {
+            if secondary_button(ui, m, "Rescan all").clicked() {
+                sp.rescan = true;
+            }
+        });
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Delete index",
+            Some("Removes all saved folder sizes from memory and disk; the folders on screen are measured again."),
+            |ui| {
+                if danger_button(ui, m, "Delete index").clicked() {
+                    sp.delete_index = true;
+                }
+            },
+        );
+    });
+
+    ui.add_space(m.pad * 3.0);
 }
 
 /// The Recycle Bin list: multi-select (Ctrl / Shift), sortable columns, virtualized rows.
@@ -4459,6 +5009,16 @@ fn table_ui(
             actions.push(Action::OpenTerminal(dir.clone()));
             
         }
+        let dir_pinned = ui
+            .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::new("pinned_paths")))
+            .is_some_and(|s| s.contains(dir));
+        if dir_pinned {
+            if menu_item(ui, m, pal, Some("close"), "Remove folder from Quick access", None, true) {
+                actions.push(Action::UnpinQuick(dir.clone()));
+            }
+        } else if menu_item(ui, m, pal, Some("plus"), "Pin folder to Quick access", None, true) {
+            actions.push(Action::PinQuick(dir.clone()));
+        }
         ui.separator();
         if menu_item(ui, m, pal, Some("refresh"), "Refresh", Some("F5"), true) {
             actions.push(Action::Refresh);
@@ -4781,6 +5341,18 @@ fn table_ui(
                         actions.push(Action::NewTabAt(p.clone()));
                         
                     }
+                    if e.is_dir {
+                        let pinned = ui
+                            .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::new("pinned_paths")))
+                            .is_some_and(|s| s.contains(p));
+                        if pinned {
+                            if menu_item(ui, m, pal, Some("close"), "Remove from Quick access", None, true) {
+                                actions.push(Action::UnpinQuick(p.clone()));
+                            }
+                        } else if menu_item(ui, m, pal, Some("plus"), "Pin to Quick access", None, true) {
+                            actions.push(Action::PinQuick(p.clone()));
+                        }
+                    }
                     ui.separator();
                     if menu_item(ui, m, pal, Some("cut"), "Cut", Some("Ctrl+X"), true) {
                         actions.push(Action::Cut(targets.clone()));
@@ -4882,7 +5454,7 @@ fn table_ui(
 //window decoration radius for linux
 const RADIUS: u8 = if cfg!(target_os = "linux") { 12 } else { 0 };
 
-/// The contents of one pane: the file table (or the Recycle Bin) of `tab`, inside `rect`.
+/// The contents of one pane: the file table (or the Recycle Bin / Settings page) of `tab`, inside `rect`.
 #[allow(clippy::too_many_arguments)]
 fn tab_body(
     ui: &mut Ui,
@@ -4895,8 +5467,15 @@ fn tab_body(
     can_paste: bool,
     has_peazip: bool,
     actions: &mut Vec<Action>,
+    sp: Option<&mut SettingsPage>,
 ) {
     let tab_id = tab.id;
+    if tab.settings {
+        if let Some(sp) = sp {
+            settings_page(ui, rect, m, pal, tab_id, sp);
+        }
+        return;
+    }
     if tab.trash.is_some() {
         let Tab {
             trash,
@@ -5034,6 +5613,8 @@ impl Explorer {
             .map(|t| {
                 if t.trash.is_some() {
                     (t.id, t.title(), "Recycle Bin".to_owned(), "recycle_bin")
+                } else if t.settings {
+                    (t.id, t.title(), "Settings".to_owned(), "settings")
                 } else {
                     (t.id, t.title(), t.dir.display().to_string(), "folder")
                 }
@@ -5156,12 +5737,14 @@ impl Explorer {
                                 Sense::click(),
                             );
                             let show_close = is_active || resp.hovered() || close.hovered();
+                            //Unlike the fetched icons, the settings icon is a white svg and therefore needs to be colored in properly.
+                            let color = if *tab_icon == "settings" {pal.text_secondary} else {Color32::WHITE};
                             draw_icon(
                                 ui,
                                 pos2(rect.left() + m.pad + m.small_icon / 2.0, rect.center().y),
                                 m.small_icon,
                                 tab_icon,
-                                Color32::WHITE,
+                                color,
                             );
                             let right_edge = if show_close {
                                 close_rect.left() - m.pad * 0.3
@@ -5243,8 +5826,17 @@ impl Explorer {
     fn ui_sidebar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
         let cur = self.tabs[self.active].dir.clone();
+        let special_active = self.tabs[self.active].special();
         let trash_active = self.tabs[self.active].trash.is_some();
         let (quick, drives) = (&self.quick, &self.drives);
+        // Folder context menus (file list) need to know what is pinned.
+        ui.data_mut(|d| {
+            d.insert_temp(
+                Id::new("pinned_paths"),
+                Arc::new(quick.iter().map(|q| q.path.clone()).collect::<HashSet<PathBuf>>()),
+            )
+        });
+        let can_pin = !special_active && !quick.iter().any(|q| same_path(&q.path, &cur));
         let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
         let radius = if maximized { 0 } else { RADIUS };
         let dragging = item_drag_paths(ui);
@@ -5281,46 +5873,89 @@ impl Explorer {
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 ui.spacing_mut().item_spacing.y = 0.0;
-                                section_label(ui, &m, &pal, "Quick access");
-                                for (icon, label, path) in quick {
-                                    let resp = nav_item(
+                                if quick_header(ui, &m, &pal, "Quick access", can_pin) {
+                                    actions.push(Action::PinQuick(cur.clone()));
+                                }
+                                for q in quick {
+                                    let resp = nav_item_ex(
                                         ui,
                                         &m,
                                         &pal,
-                                        icon,
-                                        label,
-                                        *path == cur && !trash_active,
+                                        q.icon,
+                                        Some(q.path.as_path()),
+                                        &q.label,
+                                        same_path(&q.path, &cur) && !special_active,
                                     );
                                     if let Some(ps) = &dragging {
-                                        drag_drop_zone(ui, &pal, &m, resp.rect, path, ps);
+                                        drag_drop_zone(ui, &pal, &m, resp.rect, &q.path, ps);
                                     }
                                     if resp.clicked() {
-                                        actions.push(Action::Navigate(path.clone()));
+                                        actions.push(Action::Navigate(q.path.clone()));
                                     } else if resp.middle_clicked() {
-                                        actions.push(Action::NewTabAt(path.clone()));
+                                        actions.push(Action::NewTabAt(q.path.clone()));
+                                    }
+                                    resp.context_menu(|ui| {
+                                        if menu_item(ui, &m, &pal, Some("external"), "Open", None, true) {
+                                            actions.push(Action::Navigate(q.path.clone()));
+                                        }
+                                        if menu_item(ui, &m, &pal, Some("new_tab"), "Open in new tab", None, true) {
+                                            actions.push(Action::NewTabAt(q.path.clone()));
+                                        }
+                                        ui.separator();
+                                        if menu_item(
+                                            ui,
+                                            &m,
+                                            &pal,
+                                            Some("close"),
+                                            "Remove from Quick access",
+                                            None,
+                                            true,
+                                        ) {
+                                            actions.push(Action::UnpinQuick(q.path.clone()));
+                                        }
+                                    });
+                                }
+                                if quick.is_empty() {
+                                    section_label(ui, &m, &pal, "Nothing pinned");
+                                }
+
+                                // System drives, removable drives and network drives are listed apart.
+                                let mut any_drive = false;
+                                for (title, kind) in [
+                                    ("System drives", DriveKind::System),
+                                    ("Removable drives", DriveKind::Removable),
+                                    ("Network drives", DriveKind::Network),
+                                ] {
+                                    let group: Vec<&DriveInfo> =
+                                        drives.iter().filter(|d| d.kind == kind).collect();
+                                    if group.is_empty() {
+                                        continue;
+                                    }
+                                    any_drive = true;
+                                    ui.add_space(m.pad);
+                                    section_label(ui, &m, &pal, title);
+                                    for d in group {
+                                        let resp = drive_card(
+                                            ui,
+                                            &m,
+                                            &pal,
+                                            d,
+                                            same_path(&d.mount_point, &cur) && !special_active,
+                                        );
+                                        if let Some(ps) = &dragging {
+                                            drag_drop_zone(ui, &pal, &m, resp.rect, &d.mount_point, ps);
+                                        }
+                                        if resp.clicked() {
+                                            actions.push(Action::Navigate(d.mount_point.clone()));
+                                        } else if resp.middle_clicked() {
+                                            actions.push(Action::NewTabAt(d.mount_point.clone()));
+                                        }
                                     }
                                 }
-                                ui.add_space(m.pad);
-                                section_label(ui, &m, &pal, "Drives");
-                                if drives.is_empty() {
+                                if !any_drive {
+                                    ui.add_space(m.pad);
+                                    section_label(ui, &m, &pal, "Drives");
                                     section_label(ui, &m, &pal, "No drives found");
-                                }
-                                for d in drives {
-                                    let resp = drive_card(
-                                        ui,
-                                        &m,
-                                        &pal,
-                                        d,
-                                        d.mount_point == cur && !trash_active,
-                                    );
-                                    if let Some(ps) = &dragging {
-                                        drag_drop_zone(ui, &pal, &m, resp.rect, &d.mount_point, ps);
-                                    }
-                                    if resp.clicked() {
-                                        actions.push(Action::Navigate(d.mount_point.clone()));
-                                    } else if resp.middle_clicked() {
-                                        actions.push(Action::NewTabAt(d.mount_point.clone()));
-                                    }
                                 }
                             });
                     });
@@ -5337,7 +5972,7 @@ impl Explorer {
         let (can_back, can_fwd, can_up) = (
             !tab.back.is_empty(),
             !tab.fwd.is_empty(),
-            tab.trash.is_none() && tab.dir.parent().is_some(),
+            !tab.special() && tab.dir.parent().is_some(),
         );
         egui::Panel::top("nav")
             .show_separator_line(false)
@@ -5359,6 +5994,12 @@ impl Explorer {
                     }
                     if icon_button(ui, &m, &pal, "refresh", "Refresh (F5)", true, false).clicked() {
                         actions.push(Action::Refresh);
+                    }
+                    if tab.settings {
+                        ui.add_space(m.pad * 0.5);
+                        let w = ui.available_width().max(m.s * 120.0);
+                        static_address(ui, &m, &pal, w, "settings", "Settings");
+                        return;
                     }
                     ui.add_space(m.pad * 0.5);
                     let gap = ui.spacing().item_spacing.x + m.pad * 0.5;
@@ -5386,7 +6027,7 @@ impl Explorer {
         let (can_paste, hidden, settings_open) = (
             get_clipboard().is_some(),
             self.settings.show_hidden,
-            self.settings_open,
+            self.tabs[self.active].settings,
         );
         egui::Panel::top("command")
             .show_separator_line(false)
@@ -5402,6 +6043,15 @@ impl Explorer {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = m.s * 2.0;
+                    if settings_open {
+                        // Remove all file interaction buttons for settings tab.
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if icon_button(ui, &m, &pal, "settings", "Close Settings", true, true).clicked() {
+                                actions.push(Action::OpenSettings);
+                            }
+                        });
+                        return;
+                    }
                     if in_trash {
                         if cmd_button(
                             ui,
@@ -5549,7 +6199,9 @@ impl Explorer {
             tab.view.len(),
             if tab.view.len() == 1 { "" } else { "s" }
         );
-        if let Some(tr) = &tab.trash {
+        if tab.settings {
+            text = String::new();
+        } else if let Some(tr) = &tab.trash {
             text = format!(
                 "{} item{}",
                 tr.view.len(),
@@ -5645,6 +6297,17 @@ impl Explorer {
     fn ui_central(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         self.fix_tiles();
         let (m, pal) = (self.m, self.pal);
+        // The Settings tab edits a working copy of the settings (see `finish_settings_page`).
+        let mut sp: Option<SettingsPage> = if self.visible_tabs().iter().any(|&i| self.tabs[i].settings) {
+            Some(SettingsPage::new(
+                &self.settings,
+                self.font_edit,
+                self.index_dir.display().to_string(),
+                self.indexer.len(),
+            ))
+        } else {
+            None
+        };
         let can_paste = get_clipboard().is_some();
         let has_peazip = self.peazip.is_some();
         let cut_set: Option<HashSet<PathBuf>> = self
@@ -5677,6 +6340,7 @@ impl Explorer {
                         can_paste,
                         has_peazip,
                         actions,
+                        sp.as_mut(),
                     );
                 });
             }
@@ -5726,7 +6390,13 @@ impl Explorer {
                             ui,
                             pos2(hdr.left() + m.pad + m.small_icon / 2.0, hdr.center().y),
                             m.small_icon,
-                            if in_bin { "recycle_bin" } else { "folder" },
+                            if in_bin {
+                                "recycle_bin"
+                            } else if tabs[idx].settings {
+                                "settings"
+                            } else {
+                                "folder"
+                            },
                             Color32::WHITE,
                         );
                         let close_rect = Rect::from_center_size(
@@ -5775,6 +6445,7 @@ impl Explorer {
                                     can_paste,
                                     has_peazip,
                                     actions,
+                                    sp.as_mut(),
                                 );
                             },
                         );
@@ -5784,6 +6455,9 @@ impl Explorer {
         }
         self.tiles = tree;
         self.pane_rects = panes.clone();
+        if let Some(sp) = sp {
+            self.finish_settings_page(ui, sp);
+        }
 
         if let Some(i) = focus {
             if i != self.active && i < self.tabs.len() {
@@ -5808,7 +6482,7 @@ impl Explorer {
         let Some(ti) = self.tabs.iter().position(|t| t.id == dragged) else {
             return;
         };
-        if self.tabs[ti].trash.is_some() {
+        if self.tabs[ti].special() {
             return;
         }
         let Some((cx, cy)) = cursor_screen_pos() else {
@@ -5824,7 +6498,7 @@ impl Explorer {
                     let mut dirs: Vec<PathBuf> = self
                         .tabs
                         .iter()
-                        .filter(|t| t.id != dragged && t.trash.is_none())
+                        .filter(|t| t.id != dragged && !t.special())
                         .map(|t| t.dir.clone())
                         .collect();
                     dirs.push(self.tabs[ti].dir.clone());
@@ -6171,7 +6845,7 @@ impl Explorer {
                                 .paths
                                 .iter()
                                 .all(|s| s.parent() == Some(t.dir.as_path()));
-                            if t.trash.is_none() && !same {
+                            if !t.special() && !same {
                                 target = Some(t.dir.clone());
                                 pane_rect = Some(*r);
                             }
@@ -6318,7 +6992,7 @@ impl Explorer {
         let ti = hit
             .and_then(|id| self.tabs.iter().position(|t| t.id == id))
             .unwrap_or(self.active);
-        if self.tabs[ti].trash.is_some() {
+        if self.tabs[ti].special() {
             return;
         }
         let dest = self.tabs[ti].dir.clone();
@@ -6330,135 +7004,43 @@ impl Explorer {
 
     // ------------------------------------------------------------------ dialogs
 
-    fn ui_settings(&mut self, ui: &mut Ui) {
-        if !self.settings_open {
-            return;
-        }
-        let (m, pal) = (self.m, self.pal);
-        let old = self.settings.clone();
-        let mut s = old.clone();
-        let (mut rescan, mut choose, mut delete_index) = (false, false, false);
-        let mut font = self.font_edit.unwrap_or(s.font_size);
-        let mut font_edit = self.font_edit;
-        let mut max_results = old.max_search_results;
-        let mut threads = old.search_threads;
-        let index_dir = self.index_dir.display().to_string();
-        let cache_len = self.indexer.len();
-        //String literals are read only so use format
-        let closed = dialog_shell(
-            ui,
-            &m,
-            &pal,
-            "settings",
-            &format!("Settings - FileFly v{}", env!("CARGO_PKG_VERSION")),
-            false,
-            m.s * 440.0,
-            |ui| {
-                let head = |ui: &mut Ui, t: &str| {
-                    ui.add_space(m.pad * 0.5);
-                    ui.label(RichText::new(t).strong().color(pal.text_secondary));
-                };
-                head(ui, "Appearance");
-                ui.horizontal(|ui| {
-                    ui.label("Theme");
-                    for (t, l) in [
-                        (ThemeChoice::System, "System"),
-                        (ThemeChoice::Light, "Light"),
-                        (ThemeChoice::Dark, "Dark"),
-                    ] {
-                        ui.selectable_value(&mut s.theme, t, l);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Text size");
-                    // The whole UI is sized from this value, so applying it mid-drag would move the slider
-                    // under the cursor. Preview in the handle, apply on release.
-                    let resp = ui.add(
-                        egui::Slider::new(&mut font, 10.0..=24.0)
-                            .step_by(0.5)
-                            .suffix(" pt"),
-                    );
-                    if resp.dragged() {
-                        font_edit = Some(font);
-                    } else if resp.drag_stopped() || resp.changed() {
-                        s.font_size = font;
-                        font_edit = None;
-                    }
-                });
-                ui.checkbox(
-                    &mut s.follow_text_scale,
-                    "Also follow Windows “Text size” (Accessibility)",
-                );
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut s.use_system_accent, "Use Windows accent color");
-                    if !s.use_system_accent {
-                        ui.color_edit_button_srgb(&mut s.custom_accent);
-                    }
-                });
-                ui.checkbox(
-                    &mut s.use_mica,
-                    "Use Mica transparency effect (Windows 11)",
-                );
-                head(ui, "Files");
-                ui.checkbox(&mut s.show_hidden, "Show hidden items");
-                ui.label("Date format");
-                ui.horizontal_wrapped(|ui| {
-                    for f in [DateFormat::European, DateFormat::Iso, DateFormat::American] {
-                        ui.radio_value(&mut s.date_format, f, f.label());
-                    }
-                });
-                head(ui, "Experimental");
-                ui.horizontal(|ui| {
-                    ui.label("max search results (default=100_000)");
-                    let resp = ui.add(
-                        egui::Slider::new(&mut max_results, 1_usize..=1_000_000_usize)
-                    );
-                    if resp.dragged() {
-                        s.max_search_results = max_results;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("search threads (default=4)");
-                    let resp = ui.add(
-                        egui::Slider::new(&mut threads, 1_usize..=64_usize)
-                    );
-                    if resp.dragged() {
-                        s.search_threads = threads;
-                    }
-                });
-                head(ui, "Folder sizes");
-                ui.label(
-                    RichText::new(format!("Index location: {index_dir}")).color(pal.text_secondary),
-                );
-                ui.label(RichText::new(format!("{cache_len} folders cached. Changes are picked up automatically while the app is open.")).color(pal.text_secondary).size(m.font * 0.9));
-                ui.horizontal(|ui| {
-                    if secondary_button(ui, &m, "Choose location…").clicked() {
-                        choose = true;
-                    }
-                    if secondary_button(ui, &m, "Rescan all").clicked() {
-                        rescan = true;
-                    }
-                    if danger_button(ui, &m, "Delete index").clicked() {
-                        delete_index = true;
-                    }
-                });
-                ui.label(
-                    RichText::new("Delete index removes all saved folder sizes from memory and disk; the folders on screen are measured again.")
-                        .color(pal.text_secondary)
-                        .size(m.font * 0.9),
-                );
-            },
-        );
-
+    /// Applies what the Settings tab changed this frame (it works on a copy of the settings).
+    fn finish_settings_page(&mut self, ui: &mut Ui, sp: SettingsPage) {
+        let SettingsPage { old, s, font_edit, rescan, choose, delete_index, reset_quick, .. } = sp;
         self.font_edit = font_edit;
-        let reload = s.show_hidden != old.show_hidden || s.date_format != old.date_format;
-        if s.theme != old.theme {
-            ui.set_theme(theme_pref(s.theme));
+        if s != old {
+            // Only the fields the page edits: window geometry, columns and the session belong to the app.
+            let st = &mut self.settings;
+            st.theme = s.theme;
+            st.font_size = s.font_size;
+            st.follow_text_scale = s.follow_text_scale;
+            st.use_system_accent = s.use_system_accent;
+            st.custom_accent = s.custom_accent;
+            st.use_mica = s.use_mica;
+            st.show_hidden = s.show_hidden;
+            st.date_format = s.date_format;
+            st.network_drives = s.network_drives;
+            st.max_search_results = s.max_search_results;
+            st.search_threads = s.search_threads;
+            self.settings_dirty = true;
+            if s.theme != old.theme {
+                ui.set_theme(theme_pref(s.theme));
+            }
+            if s.show_hidden != old.show_hidden || s.date_format != old.date_format {
+                self.reload_all();
+            }
+            if s.network_drives != old.network_drives {
+                self.refresh_drives();
+            }
         }
-        self.settings = s;
-        self.settings_dirty = true;
-        if reload {
-            self.reload_all();
+        if self.settings_dirty && !ui.input(|i| i.pointer.any_down()) {
+            save_settings(&self.settings);
+            self.settings_dirty = false;
+        }
+        if reset_quick {
+            self.settings.quick_access = None;
+            self.rebuild_quick();
+            save_settings(&self.settings);
         }
         if rescan {
             self.indexer.clear();
@@ -6474,21 +7056,13 @@ impl Explorer {
             self.start_indexing(true);
         }
         if choose {
-            if let Some(p) = rfd::FileDialog::new()
-                .set_directory(&self.index_dir)
-                .pick_folder()
-            {
+            if let Some(p) = rfd::FileDialog::new().set_directory(&self.index_dir).pick_folder() {
                 self.index_dir = p.clone();
                 self.settings.index_dir = Some(p.clone());
                 self.indexer.load(&p);
                 self.start_indexing(true);
+                save_settings(&self.settings);
             }
-        }
-        if closed {
-            self.font_edit = None;
-            self.settings_open = false;
-            save_settings(&self.settings);
-            self.settings_dirty = false;
         }
     }
 
@@ -6904,7 +7478,6 @@ impl eframe::App for Explorer {
             );
         }
 
-        self.ui_settings(ui);
         self.ui_props(ui);
         self.ui_conflict(ui);
         self.ui_confirm(ui);
