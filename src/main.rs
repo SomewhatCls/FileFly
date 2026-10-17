@@ -1189,8 +1189,6 @@ struct Explorer {
     next_tab_id: u64,
 
     drives: Vec<DriveInfo>,
-    last_drives: Instant,
-    drives_inflight: bool,
     quick: Vec<QuickItem>,
     clipboard: Option<(Vec<PathBuf>, bool)>,
     peazip: Option<PathBuf>,
@@ -1267,6 +1265,16 @@ impl Explorer {
 
         let (msg_tx, msg_rx) = mpsc::channel();
         let (idx_tx, idx_rx) = mpsc::channel();
+        // Real-time drive list: USB sticks, volume names, free space, network drives and WSL
+        // distributions are reported from background threads as soon as they change.
+        drives::set_include_network(settings.network_drives);
+        {
+            let (tx, ctx) = (msg_tx.clone(), ui.clone());
+            drives::start_watcher(move |d| {
+                let _ = tx.send(AppMsg::Drives(d));
+                ctx.request_repaint();
+            });
+        }
         let index_dir = settings
             .index_dir
             .clone()
@@ -1292,8 +1300,6 @@ impl Explorer {
             active: 0,
             next_tab_id: 2,
             drives: Vec::new(),
-            last_drives: Instant::now() - Duration::from_secs(60),
-            drives_inflight: false,
             quick,
             clipboard: None,
             peazip: find_peazip(),
@@ -1981,15 +1987,10 @@ impl Explorer {
         }
     }
 
+    /// Applies the "network drives" setting and asks the watcher for a fresh scan.
     fn refresh_drives(&mut self) {
-        self.drives_inflight = true;
-        self.last_drives = Instant::now();
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
-        let network = self.settings.network_drives;
-        std::thread::spawn(move || {
-            let _ = tx.send(AppMsg::Drives(load_drives(network)));
-            ui.request_repaint();
-        });
+        drives::set_include_network(self.settings.network_drives);
+        drives::rescan();
     }
 
     /// Starts/cancels the recursive search whenever a tab's search text changes (this also
@@ -2103,7 +2104,6 @@ impl Explorer {
                     }
                     set_special_drives(d.iter().map(|x| x.mount_point.clone()));
                     self.drives = d;
-                    self.drives_inflight = false;
                 }
                 AppMsg::Job(result) => {
                     self.jobs_running = self.jobs_running.saturating_sub(1);
@@ -2214,14 +2214,7 @@ impl Explorer {
             self.start_indexing(force);
         }
 
-        // Probing every volume can block for seconds on a disconnected network drive or an empty
-        // card reader, so do it rarely and only while the window is in use.
-        if self.last_drives.elapsed() > Duration::from_secs(30)
-            && !self.drives_inflight
-            && self.ui.input(|i| i.focused)
-        {
-            self.refresh_drives();
-        }
+        // Drives are no longer polled here: the watcher threads in `drives` push changes.
         if self.indexer.is_dirty() {
             if self.last_save.elapsed() > Duration::from_secs(15) {
                 self.indexer.save_if_dirty(&self.index_dir, false);
@@ -3131,7 +3124,10 @@ fn drive_card(
         list_hover(ui, inner, &resp, pal, m);
     }
     let mount = d.mount_point.display().to_string();
-    let title = if d.name.is_empty() {
+    let wsl = drives::is_wsl_path(&d.mount_point);
+    let title = if wsl {
+        format!("{} (WSL)", d.name)
+    } else if d.name.is_empty() {
         mount.clone()
     } else {
         format!("{} ({})", d.name, mount.trim_end_matches(['\\', '/']))
@@ -3186,7 +3182,9 @@ fn drive_card(
     };
     let fill = Rect::from_min_size(bar.min, vec2(bar.width() * frac, bar_h));
     ui.painter().rect_filled(fill, CornerRadius::same(2), color);
-    let info = if d.total == 0 {
+    let info = if wsl {
+        "Linux files".to_owned()
+    } else if d.total == 0 {
         "Not available".to_owned()
     } else {
         format!("{} free of {}", format_size(d.available), format_size(d.total))
