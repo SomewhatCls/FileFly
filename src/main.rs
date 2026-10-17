@@ -5472,7 +5472,12 @@ fn tab_body(
     let tab_id = tab.id;
     if tab.settings {
         if let Some(sp) = sp {
-            settings_page(ui, rect, m, pal, tab_id, sp);
+            // Same side gutter as the file view, so the scroll bar does not sit on the window edge.
+            let inner = Rect::from_min_max(
+                pos2(rect.left() + m.pad, rect.top()),
+                pos2(rect.right() - m.pad, rect.bottom()),
+            );
+            settings_page(ui, inner, m, pal, tab_id, sp);
         }
         return;
     }
@@ -5668,18 +5673,67 @@ impl Explorer {
                     pos2(caption.left(), full.bottom()),
                 );
                 let mut wings: Vec<(Rect, f32)> = Vec::new();
+                let mut scroll_rect = tabs_rect;
                 ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(tabs_rect)
                         .layout(Layout::left_to_right(Align::Center)),
                     |ui| {
                         ui.spacing_mut().item_spacing.x = m.s * 2.0;
-                        let n = info.len();
-                        let avail = ui.available_width() - m.ctl_h - m.pad * 0.5;
-                        let tab_w = (avail / n as f32).clamp(m.s * 90.0, m.s * 240.0);
+                        let gap = ui.spacing().item_spacing.x;
+                        let n = info.len().max(1);
+                        // Room for the tabs: everything left of the pinned "+" button.
+                        let avail = (ui.available_width() - m.ctl_h - gap).max(0.0);
+                        let tab_w = ((avail - gap * (n as f32 - 1.0)) / n as f32)
+                            .clamp(m.s * 90.0, m.s * 240.0);
+                        let content_w = tab_w * n as f32 + gap * (n as f32 - 1.0);
+                        let overflow = content_w > avail + 0.5;
+                        //When there are too many tabs, the overflow becomes scrollable.
+                        // The scroll area is exactly as wide as the tabs (so the rest of the title bar
+                        // stays draggable) but never wider than the space before the "+" button.
+                        let scroll_w = content_w.min(avail);
+                        scroll_rect = Rect::from_min_size(tabs_rect.min, vec2(scroll_w, m.tab_h));
+
+                        // Bring the active tab into view when it (or the tab count) changes.
+                        let strip_key = (info.get(active).map(|t| t.0).unwrap_or(0), info.len());
+                        let strip_id = Id::new("tab_strip_last");
+                        let strip_changed =
+                            ui.data(|d| d.get_temp::<(u64, usize)>(strip_id)) != Some(strip_key);
+                        ui.data_mut(|d| d.insert_temp(strip_id, strip_key));
+
+                        ui.allocate_ui(vec2(scroll_w, m.tab_h), |ui| {
+                        egui::ScrollArea::horizontal()
+                            .id_salt("tab_strip")
+                            .scroll_source(ScrollSource {
+                                drag: DragScroll::Never,
+                                ..Default::default()
+                            })
+                            .scroll_bar_visibility(
+                                egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                            )
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                        ui.scope_builder(
+                            egui::UiBuilder::new().layout(Layout::left_to_right(Align::Center)),
+                            |ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        // The mouse wheel scrolls the strip sideways. The delta is taken so the
+                        // scroll area does not apply it a second time.
+                        if overflow && ui.rect_contains_pointer(scroll_rect) {
+                            let d = ui.input_mut(|i| std::mem::take(&mut i.smooth_scroll_delta));
+                            let dx = if d.y != 0.0 { d.y } else { d.x };
+                            if dx != 0.0 {
+                                //multiplier for scrolling the tab bar
+                                const TAB_SCROLL_SPEED: f32 = 8.0;
+                                ui.scroll_with_delta(vec2(dx * TAB_SCROLL_SPEED, 0.0));
+                            }
+                        }
                         for (i, (id, title, full_path, tab_icon)) in info.iter().enumerate() {
                             let (rect, resp) = ui
                                 .allocate_exact_size(vec2(tab_w, m.tab_h), Sense::click_and_drag());
+                            if i == active && strip_changed && overflow {
+                                ui.scroll_to_rect(rect.expand2(vec2(gap, 0.0)), None);
+                            }
                             let is_active = i == active;
                             if resp.drag_started_by(egui::PointerButton::Primary) {
                                 drag_start = Some(*id);
@@ -5802,6 +5856,10 @@ impl Explorer {
                             }
                             close.on_hover_text("Close tab (Ctrl+W)");
                         }
+                            },
+                        );
+                            });
+                        });
                         if icon_button(ui, &m, &pal, "plus", "New tab (Ctrl+T)", true, false)
                             .clicked()
                         {
@@ -5811,9 +5869,14 @@ impl Explorer {
                 );
 
                 // Concave "wings" blend the selected tab into the band below it.
+                // A tab cut off by the edge of the scrolled strip gets no wing on that side.
                 for (rect, k) in &wings {
-                    tab_wing(ui, rect.left_bottom(), wing * k, true, pal.layer);
-                    tab_wing(ui, rect.right_bottom(), wing * k, false, pal.layer);
+                    if rect.left() >= scroll_rect.left() - 0.5 {
+                        tab_wing(ui, rect.left_bottom(), wing * k, true, pal.layer);
+                    }
+                    if rect.right() <= scroll_rect.right() + 0.5 {
+                        tab_wing(ui, rect.right_bottom(), wing * k, false, pal.layer);
+                    }
                 }
 
                 caption_buttons(ui, &m, &pal, caption, maximized);
