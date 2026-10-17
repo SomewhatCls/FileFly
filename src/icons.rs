@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock, RwLock};
 use crate::Entry;
 
 //Consts for Worker thread metrics and icon size
@@ -20,10 +20,64 @@ const PER_FILE_EXTS: &[&str] = &["exe", "lnk", "ico", "url", "msi", "scr", "cur"
 #[cfg(not(windows))]
 const PER_FILE_EXTS: &[&str] = &["desktop", "appimage", "ico"];
 
-/// Cache key for a platform icon: one per extension, or one per path for per-file icons like .exe on Windows.
+/// Folders that get their own platform icon instead of the shared generic folder icon:
+/// the well-known user folders (Documents, Downloads, ...), folders pinned to Quick access
+/// and drive roots / mount points.
+#[derive(Default)]
+struct Special {
+    folders: HashSet<PathBuf>,
+    drives: HashSet<PathBuf>,
+}
+
+fn special() -> &'static RwLock<Special> {
+    static S: OnceLock<RwLock<Special>> = OnceLock::new();
+    S.get_or_init(|| RwLock::new(Special::default()))
+}
+
+/// Windows paths are case-insensitive; compare them lower-cased there.
+fn norm(p: &Path) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(p.to_string_lossy().to_lowercase())
+    } else {
+        p.to_path_buf()
+    }
+}
+
+/// Replaces the set of well-known / pinned folders that show their own system icon.
+pub fn set_special_folders<I: IntoIterator<Item = PathBuf>>(paths: I) {
+    if let Ok(mut s) = special().write() {
+        s.folders = paths.into_iter().map(|p| norm(&p)).collect();
+    }
+}
+
+/// Replaces the set of drive roots / mount points that show their own system icon.
+pub fn set_special_drives<I: IntoIterator<Item = PathBuf>>(paths: I) {
+    if let Ok(mut s) = special().write() {
+        s.drives = paths.into_iter().map(|p| norm(&p)).collect();
+    }
+}
+
+fn is_special_dir(path: &Path) -> bool {
+    if path.parent().is_none() {
+        return true; // drive root (C:\, \\server\share\, /)
+    }
+    match special().read() {
+        Ok(s) => {
+            if s.folders.is_empty() && s.drives.is_empty() {
+                return false;
+            }
+            let k = norm(path);
+            s.folders.contains(&k) || s.drives.contains(&k)
+        }
+        Err(_) => false,
+    }
+}
+
+/// Cache key for a platform icon: one per extension, one per path for per-file icons like .exe on
+/// Windows, and one per path for special folders (Documents, drives, pinned folders).
 pub fn make_icon_key(is_dir: bool, ext: Option<&str>, path: &Path) -> String {
     if is_dir {
-        return "<dir>".into();
+        return if is_special_dir(path) { path.to_string_lossy().into_owned() } else { "<dir>".into() };
     }
     match ext {
         Some(e) if PER_FILE_EXTS.contains(&e) => path.to_string_lossy().into_owned(),
@@ -172,11 +226,12 @@ pub fn icons_begin_frame(ctx: &egui::Context) {
     ICON_CACHE.with(|c| c.borrow_mut().get_or_insert_with(|| IconCache::new(ctx)).begin_frame());
 }
 
-pub fn draw_system_icon(ui: &Ui, center: Pos2, size: f32, e: &Entry, tint: Color32) {
+/// Draws the platform icon of `path` (cached under `key`); until it is ready, or if the platform has
+/// none, the built-in SVG called `fallback` is drawn instead.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_path_icon(ui: &Ui, center: Pos2, size: f32, key: &str, path: &Path, fallback: &str, tint: Color32) {
     let ctx = ui.ctx().clone();
-    let tex = ICON_CACHE.with(|c| {
-        c.borrow_mut().get_or_insert_with(|| IconCache::new(&ctx)).get(&e.icon_key, &e.path)
-    });
+    let tex = ICON_CACHE.with(|c| c.borrow_mut().get_or_insert_with(|| IconCache::new(&ctx)).get(key, path));
     match tex {
         Some(tex) => {
             let sized = egui::load::SizedTexture::new(tex.id(), vec2(size, size));
@@ -184,8 +239,21 @@ pub fn draw_system_icon(ui: &Ui, center: Pos2, size: f32, e: &Entry, tint: Color
                 .tint(Color32::from_white_alpha(tint.a()))
                 .paint_at(ui, Rect::from_center_size(center, vec2(size, size)));
         }
-        None => draw_icon(ui, center, size, &e.icon_key, tint),
+        None => draw_icon(ui, center, size, fallback, tint),
     }
+}
+
+/// Name of the built-in icon that stands in for an entry until its platform icon has loaded.
+pub fn fallback_icon_name(e: &Entry) -> &'static str {
+    if e.is_dir {
+        "folder"
+    } else {
+        icon_for_extension(&e.path.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase())
+    }
+}
+
+pub fn draw_system_icon(ui: &Ui, center: Pos2, size: f32, e: &Entry, tint: Color32) {
+    draw_path_icon(ui, center, size, &e.icon_key, &e.path, fallback_icon_name(e), tint);
 }
 
 /// Built-in SVG icon (moved here from main.rs, so delete it there).

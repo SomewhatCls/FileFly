@@ -379,7 +379,12 @@ impl DirWatcher {
             let _ = self.watcher.unwatch(&old);
         }
         // Drive roots see constant system churn; only watch their direct children.
-        let mode = if dir.parent().is_none() { RecursiveMode::NonRecursive } else { RecursiveMode::Recursive };
+        // Network shares are watched shallowly too: recursive watches over SMB/NFS are slow and unreliable.
+        let mode = if dir.parent().is_none() || crate::drives::is_network_path(dir) {
+            RecursiveMode::NonRecursive
+        } else {
+            RecursiveMode::Recursive
+        };
         if self.watcher.watch(dir, mode).is_ok() {
             self.current = Some(dir.to_path_buf());
         }
