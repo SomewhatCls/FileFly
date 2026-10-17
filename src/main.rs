@@ -1,6 +1,5 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-mod defaultapp;
 mod drives;
 mod fsops;
 mod icons;
@@ -1209,10 +1208,6 @@ struct Explorer {
     props: Option<Props>,
     props_gen: Arc<AtomicU64>,
     settings_dirty: bool,
-    /// FileFly is registered as the default folder handler (cached; read when Settings opens).
-    default_on: bool,
-    /// Last error from changing the default file manager, shown in the Settings page.
-    default_error: Option<String>,
 
     sys_accent: Option<Accent>,
     text_scale: f32,
@@ -1322,8 +1317,6 @@ impl Explorer {
             props: None,
             props_gen: Arc::new(AtomicU64::new(0)),
             settings_dirty: false,
-            default_on: defaultapp::is_default(),
-            default_error: None,
             sys_accent: system_accent(),
             text_scale: system_text_scale(),
             last_poll: Instant::now(),
@@ -1631,8 +1624,6 @@ impl Explorer {
 
     /// Opens the Settings tab (or focuses it if it is already open; pressing the button again closes it).
     fn open_settings(&mut self) {
-        self.default_on = defaultapp::is_default();
-        self.default_error = None;
         if let Some(i) = self.tabs.iter().position(|t| t.settings) {
             if i == self.active && self.tabs.len() > 1 {
                 self.apply(Action::CloseTab(i));
@@ -3893,21 +3884,10 @@ struct SettingsPage {
     choose: bool,
     delete_index: bool,
     reset_quick: bool,
-    default_on: bool,
-    default_error: Option<String>,
-    /// Some(true): make FileFly the default file manager; Some(false): back to Windows Explorer.
-    default_request: Option<bool>,
 }
 
 impl SettingsPage {
-    fn new(
-        settings: &Settings,
-        font_edit: Option<f32>,
-        index_dir: String,
-        cache_len: usize,
-        default_on: bool,
-        default_error: Option<String>,
-    ) -> Self {
+    fn new(settings: &Settings, font_edit: Option<f32>, index_dir: String, cache_len: usize) -> Self {
         Self {
             old: settings.clone(),
             s: settings.clone(),
@@ -3919,9 +3899,6 @@ impl SettingsPage {
             choose: false,
             delete_index: false,
             reset_quick: false,
-            default_on,
-            default_error,
-            default_request: None,
         }
     }
 }
@@ -4182,23 +4159,6 @@ fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut SettingsPa
                 }
             },
         );
-    });
-
-    // ---------------------------------------------------------------- Default file manager
-    fl_section(ui, m, pal, "Default file manager");
-    fl_card(ui, m, pal, |ui| {
-        let desc = match &sp.default_error {
-            Some(e) => format!("Could not change the setting: {e}"),
-            None if sp.default_on => "FileFly opens folders from other apps, the Run dialog and “Show in folder”. Turn off to return to Windows Explorer. Win+E and the taskbar icon still open Windows Explorer.".to_owned(),
-            None => "Open folders from other apps, the Run dialog and “Show in folder” in FileFly instead of Windows Explorer. Applies to your account only.".to_owned(),
-        };
-        fl_row(ui, m, pal, "Use FileFly as default file manager", Some(desc.as_str()), |ui| {
-            let mut on = sp.default_on;
-            fl_switch(ui, m, pal, &mut on);
-            if on != sp.default_on {
-                sp.default_request = Some(on);
-            }
-        });
     });
 
     // ---------------------------------------------------------------- Search
@@ -6405,8 +6365,6 @@ impl Explorer {
                 self.font_edit,
                 self.index_dir.display().to_string(),
                 self.indexer.len(),
-                self.default_on,
-                self.default_error.clone(),
             ))
         } else {
             None
@@ -7109,7 +7067,7 @@ impl Explorer {
 
     /// Applies what the Settings tab changed this frame (it works on a copy of the settings).
     fn finish_settings_page(&mut self, ui: &mut Ui, sp: SettingsPage) {
-        let SettingsPage { old, s, font_edit, rescan, choose, delete_index, reset_quick, default_request, .. } = sp;
+        let SettingsPage { old, s, font_edit, rescan, choose, delete_index, reset_quick, .. } = sp;
         self.font_edit = font_edit;
         if s != old {
             // Only the fields the page edits: window geometry, columns and the session belong to the app.
@@ -7139,11 +7097,6 @@ impl Explorer {
         if self.settings_dirty && !ui.input(|i| i.pointer.any_down()) {
             save_settings(&self.settings);
             self.settings_dirty = false;
-        }
-        if let Some(on) = default_request {
-            let result = if on { defaultapp::set_default() } else { defaultapp::restore_default() };
-            self.default_error = result.err().map(|e| e.to_string());
-            self.default_on = defaultapp::is_default();
         }
         if reset_quick {
             self.settings.quick_access = None;
@@ -7704,22 +7657,6 @@ fn spawn_window(dir: &Path, pos: Option<(f32, f32)>) {
     }
 }
 
-/// Path argument from the command line. Windows passes a drive root as `"D:\"`, which the argument
-/// parser reads as an escaped quote and hands over as `D:"`; this restores the real path.
-fn clean_path_arg(a: &std::ffi::OsStr) -> PathBuf {
-    match a.to_str() {
-        Some(s) if s.ends_with('"') => {
-            let t = s.trim_end_matches('"');
-            if t.len() == 2 && t.ends_with(':') {
-                PathBuf::from(format!("{t}\\"))
-            } else {
-                PathBuf::from(t)
-            }
-        }
-        _ => PathBuf::from(a),
-    }
-}
-
 fn main() -> eframe::Result<()> {
     // The release build has no console, so a panic would otherwise vanish without a trace.
     std::panic::set_hook(Box::new(|info| {
@@ -7747,7 +7684,7 @@ fn main() -> eframe::Result<()> {
     while k < args.len() {
         match args[k].to_str().unwrap_or_default() {
             "--open" if k + 1 < args.len() => {
-                let _ = START_DIR.set(clean_path_arg(&args[k + 1]));
+                let _ = START_DIR.set(PathBuf::from(&args[k + 1]));
                 SESSION_READONLY.store(true, AtomicOrdering::Relaxed);
                 k += 1;
             }
