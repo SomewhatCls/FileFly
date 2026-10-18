@@ -271,6 +271,7 @@ pub fn icon_source(name: &str) -> egui::ImageSource<'static> {
         "archive" => egui::include_image!("../assets/archive.svg"),
         "audio" => egui::include_image!("../assets/audio.svg"),
         "back" => egui::include_image!("../assets/back.svg"),
+        "browse" => egui::include_image!("../assets/browse.svg"),
         "check" => egui::include_image!("../assets/check.svg"),
         "chevron_down" => egui::include_image!("../assets/chevron_down.svg"),
         "chevron_right" => egui::include_image!("../assets/chevron_right.svg"),

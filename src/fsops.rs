@@ -1,10 +1,37 @@
 //! File-system helpers and formatting that don't touch the UI.
+//!
+//! # Where temporary files live (and how a crash is cleaned up)
+//!
+//! | What                                   | Where                                                    | Name                                  |
+//! |----------------------------------------|----------------------------------------------------------|---------------------------------------|
+//! | Copy, or Cut across drives (`copy_item`) | next to the destination                                  | `.<name>.part-<pid>-<n>`              |
+//! | Extract a zip (`extract_zip`)          | next to the destination                                  | `.<name>.part-<pid>-<n>`              |
+//! | Compress to zip (`compress_items`)     | next to the destination                                  | `.<name>.part-<pid>-<n>.zip`          |
+//! | "Replace" parks the old item           | next to the destination                                  | `.<name>.replaced-<pid>-<n>`          |
+//! | Browsing a zip like a folder           | `<temp dir>/FileFly-archives-<pid>/`                     | (`.in-use` lock file inside)          |
+//! | Journal of the temp items above        | `<temp dir>/FileFly-journal-<pid>-<stamp>.log`           | one `+`/`-` line per temp item        |
+//!
+//! A Cut on the same drive is a plain rename and creates no temp file at all.
+//!
+//! The temp items sit next to their destination (anywhere on any drive), so they can't be found by
+//! scanning a folder. Instead every one is written to the journal *before* it is created and struck
+//! out again once it is gone. At startup `sweep_leftover_temps` reads the journals of dead runs
+//! (a journal whose lock can be taken belongs to a process that no longer exists; a running second
+//! window holds its lock) and, for each entry that is still pending:
+//!   * `part`: deletes the half-written copy / archive,
+//!   * `replaced`: puts the original back if the destination is missing, otherwise deletes it
+//!     (the replacement was finished, because it only ever appears by an atomic rename).
+//!
+//! Only paths named in a journal are touched, and only if their name still has exactly the shape
+//! listed above and carries the pid of the run that wrote the journal. Cut sources, the user's own
+//! files and anything else are never looked at.
 
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
     fs, io,
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
@@ -165,7 +192,16 @@ fn free_sibling(path: &Path, tag: &str) -> PathBuf {
 /// Where "Replace" parks the existing item until the new one is safely in place. If the app dies
 /// in between, the original is still sitting next to the destination under this name.
 pub fn backup_name(path: &Path) -> PathBuf {
-    free_sibling(path, "replaced")
+    let aside = free_sibling(path, "replaced");
+    journal_add("replaced", &aside, path);
+    aside
+}
+
+/// Call once the parked original is gone again (deleted after a successful paste, or renamed back
+/// after a failed one, or the parking rename itself failed). Does nothing while it still exists, so
+/// the next start can still deal with it.
+pub fn backup_settled(aside: &Path) {
+    journal_settle(aside);
 }
 
 /// Final rename of a finished temp item. Antivirus/indexers sometimes hold a just-written file or
@@ -215,6 +251,7 @@ pub fn copy_item(source: &Path, destination: &Path) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot copy a folder into itself"));
     }
     let tmp = free_sibling(destination, "part");
+    journal_add("part", &tmp, destination);
     let copied = if is_dir {
         copy_tree(source, &tmp, 0)
     } else {
@@ -224,6 +261,7 @@ pub fn copy_item(source: &Path, destination: &Path) -> io::Result<()> {
     if result.is_err() {
         let _ = remove_existing(&tmp); // don't leave the partial copy behind
     }
+    journal_settle(&tmp);
     result
 }
 
@@ -655,6 +693,7 @@ pub fn compress_items(items: &[PathBuf], dest: &Path) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
     }
     let tmp = zip_temp(dest);
+    journal_add("part", &tmp, dest);
     let result = run_first_available(compress_tools(parent, items, &names, &tmp)).and_then(|_| {
         if tmp.is_file() {
             rename_retry(&tmp, dest)
@@ -665,6 +704,7 @@ pub fn compress_items(items: &[PathBuf], dest: &Path) -> io::Result<()> {
     if result.is_err() {
         let _ = remove_existing(&tmp); // don't leave the partial archive behind
     }
+    journal_settle(&tmp);
     result
 }
 
@@ -675,12 +715,168 @@ pub fn extract_zip(zip: &Path, dest: &Path) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
     }
     let tmp = free_sibling(dest, "part");
-    fs::create_dir(&tmp)?;
+    journal_add("part", &tmp, dest);
+    if let Err(e) = fs::create_dir(&tmp) {
+        journal_settle(&tmp);
+        return Err(e);
+    }
     let result = run_first_available(extract_tools(zip, &tmp)).and_then(|_| rename_retry(&tmp, dest));
     if result.is_err() {
         let _ = remove_existing(&tmp);
     }
+    journal_settle(&tmp);
     result
+}
+
+// ---------------------------------------------------------------------------------------------
+// Journal of temporary items, so that a crash or kill can be cleaned up on the next start (see the
+// table at the top of this file).
+// ---------------------------------------------------------------------------------------------
+
+const JOURNAL_PREFIX: &str = "FileFly-journal-";
+
+struct Journal {
+    /// Opened lazily on the first temp item; the exclusive lock on it lives exactly as long as this
+    /// process, which is how a later start can tell a dead run from a running one.
+    file: Option<fs::File>,
+    path: Option<PathBuf>,
+    /// Temp items that exist (or may exist) right now.
+    pending: Vec<PathBuf>,
+}
+
+static JOURNAL: std::sync::Mutex<Journal> = std::sync::Mutex::new(Journal { file: None, path: None, pending: Vec::new() });
+
+fn journal() -> std::sync::MutexGuard<'static, Journal> {
+    JOURNAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn line_safe(p: &Path) -> Option<&str> {
+    p.to_str().filter(|s| !s.contains(['\t', '\n', '\r']))
+}
+
+/// Records `tmp` (about to be created) and the final path it is meant for. Best effort: when the
+/// journal can't be written the operation itself still runs, it just isn't crash-cleaned.
+fn journal_add(tag: &str, tmp: &Path, dest: &Path) {
+    let (Some(t), Some(d)) = (line_safe(tmp), line_safe(dest)) else { return };
+    let mut j = journal();
+    if j.file.is_none() {
+        let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("{JOURNAL_PREFIX}{}-{stamp}.log", std::process::id()));
+        let Ok(f) = fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path) else { return };
+        if f.try_lock().is_err() {
+            let _ = fs::remove_file(&path);
+            return;
+        }
+        j.file = Some(f);
+        j.path = Some(path);
+    }
+    let Some(f) = j.file.as_mut() else { return };
+    if f.write_all(format!("+\t{tag}\t{t}\t{d}\n").as_bytes()).is_ok() {
+        j.pending.push(tmp.to_path_buf());
+    }
+}
+
+/// Strikes `tmp` out of the journal, but only when it is really gone from the disk.
+fn journal_settle(tmp: &Path) {
+    if fs::symlink_metadata(tmp).is_ok() {
+        return;
+    }
+    let mut j = journal();
+    let Some(i) = j.pending.iter().position(|p| p == tmp) else { return };
+    j.pending.swap_remove(i);
+    if let (Some(t), Some(f)) = (line_safe(tmp), j.file.as_mut()) {
+        let _ = f.write_all(format!("-\t{t}\n").as_bytes());
+    }
+}
+
+/// Called on a clean exit: the journal is deleted when nothing is pending. If the window is closed
+/// in the middle of a copy, it stays so that the next start removes the half-written item.
+pub fn finish_journal() {
+    let mut j = journal();
+    if !j.pending.is_empty() {
+        return;
+    }
+    drop(j.file.take()); // (release the handle before deleting the file)
+    if let Some(path) = j.path.take() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// `<dot><name>.<tag>-<pid>-<n>` (optionally followed by ".zip" for archives) with the pid of the
+/// run that created it: the exact shape `free_sibling` produces, nothing else.
+fn is_our_temp(path: &Path, tag: &str, pid: u32) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
+    if !name.starts_with('.') {
+        return false;
+    }
+    let name = name.strip_suffix(".zip").unwrap_or(name);
+    let Some(i) = name.rfind(&format!(".{tag}-")) else { return false };
+    let mut parts = name[i + tag.len() + 2..].split('-');
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(a), Some(b), None) => a == pid.to_string() && digits(b),
+        _ => false,
+    }
+}
+
+/// Returns true when the entry is dealt with (cleaned, or nothing there, or not ours to touch).
+fn clean_leftover(tag: &str, tmp: &Path, dest: &Path, pid: u32) -> bool {
+    if !is_our_temp(tmp, tag, pid) || fs::symlink_metadata(tmp).is_err() {
+        return true;
+    }
+    match tag {
+        "part" => remove_existing(tmp).is_ok(),
+        "replaced" => {
+            if fs::symlink_metadata(dest).is_err() {
+                fs::rename(tmp, dest).is_ok() // the paste never completed: the original goes back
+            } else {
+                remove_existing(tmp).is_ok() // the replacement is in place: the old one is garbage
+            }
+        }
+        _ => true,
+    }
+}
+
+/// Cleans up what crashed or killed runs left behind. Blocking (can take a while for big copies):
+/// call it from a worker thread at startup.
+pub fn sweep_leftover_temps() {
+    let Ok(rd) = fs::read_dir(std::env::temp_dir()) else { return };
+    for item in rd.flatten() {
+        let name = item.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix(JOURNAL_PREFIX).and_then(|r| r.strip_suffix(".log")) else { continue };
+        let Some(pid) = rest.split('-').next().and_then(|p| p.parse::<u32>().ok()) else { continue };
+        let path = item.path();
+        let Ok(mut f) = fs::OpenOptions::new().read(true).write(true).open(&path) else { continue };
+        if f.try_lock().is_err() {
+            continue; // locked: that run is still alive (our own journal lands here too)
+        }
+        let mut text = String::new();
+        if f.read_to_string(&mut text).is_err() {
+            continue;
+        }
+        drop(f);
+
+        let mut open: Vec<(String, String, String)> = Vec::new();
+        for line in text.lines() {
+            let mut c = line.split('\t');
+            match (c.next(), c.next(), c.next(), c.next()) {
+                (Some("+"), Some(tag), Some(tmp), Some(dest)) => open.push((tag.into(), tmp.into(), dest.into())),
+                (Some("-"), Some(tmp), None, None) => open.retain(|e| e.1 != tmp),
+                _ => {}
+            }
+        }
+        let failed: Vec<_> = open
+            .into_iter()
+            .filter(|(tag, tmp, dest)| !clean_leftover(tag, Path::new(tmp), Path::new(dest), pid))
+            .collect();
+        if failed.is_empty() {
+            let _ = fs::remove_file(&path);
+        } else {
+            // (e.g. the item is still locked by antivirus) keep just those for the next start
+            let keep: String = failed.iter().map(|(a, b, c)| format!("+\t{a}\t{b}\t{c}\n")).collect();
+            let _ = fs::write(&path, keep);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -705,6 +901,21 @@ const CACHE_PREFIX: &str = "FileFly-archives-";
 
 fn mounts() -> std::sync::MutexGuard<'static, Vec<Mount>> {
     MOUNTS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Held (exclusively locked) for as long as this process lives; see `sweep_old_archive_caches`.
+static CACHE_LOCK: std::sync::Mutex<Option<fs::File>> = std::sync::Mutex::new(None);
+const CACHE_LOCK_NAME: &str = ".in-use";
+
+fn hold_cache_lock() {
+    let mut g = CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        if let Ok(f) = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(cache_root().join(CACHE_LOCK_NAME)) {
+            if f.try_lock().is_ok() {
+                *g = Some(f);
+            }
+        }
+    }
 }
 
 fn cache_root() -> PathBuf {
@@ -777,6 +988,7 @@ pub fn mount_archive(zip: &Path) -> io::Result<PathBuf> {
     let md = fs::metadata(zip)?;
     let base = cache_root().join(MOUNT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string());
     fs::create_dir_all(&base)?;
+    hold_cache_lock();
     // Canonical, so it compares equal to what the folder tabs get from `canonicalize` (8.3 names on
     // Windows, /var -> /private/var on macOS).
     let base = dunce::canonicalize(&base)?;
@@ -837,11 +1049,14 @@ pub fn folder_outside(real: &Path) -> PathBuf {
 
 /// Deletes everything unpacked by this process (called on exit).
 pub fn remove_archive_cache() {
+    drop(CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner()).take());
     let _ = fs::remove_dir_all(cache_root());
 }
 
-/// Removes caches that a crashed or killed instance left in the temp folder. Only quite old ones:
-/// another FileFly window that is still running may be using a younger one.
+/// Removes caches that a crashed or killed instance left in the temp folder. A cache whose `.in-use`
+/// lock can be taken belongs to a dead run and goes right away; one that is still locked belongs to
+/// another running FileFly window and is left alone. Caches without a lock file (from older
+/// versions) are only removed once they are a week old.
 pub fn sweep_old_archive_caches() {
     let Ok(rd) = fs::read_dir(std::env::temp_dir()) else { return };
     let ours = cache_root();
@@ -849,14 +1064,18 @@ pub fn sweep_old_archive_caches() {
         if !item.file_name().to_string_lossy().starts_with(CACHE_PREFIX) || item.path() == ours {
             continue;
         }
-        let old = item
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.elapsed().ok())
-            .is_some_and(|age| age > Duration::from_secs(7 * 24 * 3600));
-        if old {
-            let _ = fs::remove_dir_all(item.path());
+        let dir = item.path();
+        let stale = match fs::OpenOptions::new().read(true).write(true).open(dir.join(CACHE_LOCK_NAME)) {
+            Ok(lock) => lock.try_lock().is_ok(), // (dropped at the end of this arm's scope: before the delete below)
+            Err(_) => item
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > Duration::from_secs(7 * 24 * 3600)),
+        };
+        if stale {
+            let _ = fs::remove_dir_all(dir);
         }
     }
 }

@@ -6,6 +6,7 @@ mod fsops;
 mod icons;
 mod indexer;
 mod peers;
+mod picker;
 mod theme;
 mod trashbin;
 
@@ -762,13 +763,15 @@ enum AppMsg {
         target: PathBuf,
         result: Result<(), String>,
     },
-    /// Compress / Extract finished: the new items, what went wrong, and whether the first new item
-    /// should go straight into rename mode (a new zip file does, like in Explorer).
+    /// Compress / Extract finished: the new items, what went wrong, whether the first new item
+    /// should go straight into rename mode (a new zip file does, like in Explorer), and whether it
+    /// should be opened in a new tab ("Extract to…").
     Made {
         tab: u64,
         created: Vec<PathBuf>,
         errors: Vec<String>,
         rename: bool,
+        open: bool,
     },
 }
 
@@ -875,6 +878,8 @@ enum Action {
     Compress(Vec<PathBuf>),
     /// "Extract all": unpack each zip into a new folder named after it.
     Extract(Vec<PathBuf>),
+    /// "Extract to…": ask for a destination folder (see picker.rs), then unpack there.
+    ExtractTo(Vec<PathBuf>),
     ToggleHidden,
     OpenSettings,
     OpenRecycleBin,
@@ -1270,6 +1275,8 @@ struct Explorer {
     first_anim: f32,
     font_edit: Option<f32>,
     confirm: Option<ConfirmPurge>,
+    /// The "Select a destination" dialog is showing.
+    picker: Option<picker::FolderPicker>,
     sidebar_rect: Option<Rect>,
     key_state: Option<device_query::DeviceState>,
     prev_paste_key: Cell<bool>,
@@ -1320,7 +1327,11 @@ impl Explorer {
             .unwrap_or_else(app_dir);
         let indexer = Indexer::new(ui.clone(), idx_tx, &index_dir);
         let watcher = DirWatcher::new(ui.clone());
-        std::thread::spawn(sweep_old_archive_caches); // leftovers of a crashed run
+        std::thread::spawn(|| {
+            // Leftovers of a crashed run: unpacked zips, and half-finished copy/move/zip temp items.
+            sweep_old_archive_caches();
+            sweep_leftover_temps();
+        });
 
         let start = START_DIR
             .get()
@@ -1385,6 +1396,7 @@ impl Explorer {
             first_anim: 1.0,
             font_edit: None,
             confirm: None,
+            picker: None,
             sidebar_rect: None,
             tiles: None,
             tab_drag: None,
@@ -1977,12 +1989,13 @@ impl Explorer {
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compress_items(&items, &dest)))
                 .unwrap_or_else(|_| Err(std::io::Error::other("unexpected failure")));
             let msg = match r {
-                Ok(()) => AppMsg::Made { tab, created: vec![dest], errors: Vec::new(), rename: true },
+                Ok(()) => AppMsg::Made { tab, created: vec![dest], errors: Vec::new(), rename: true, open: false },
                 Err(e) => AppMsg::Made {
                     tab,
                     created: Vec::new(),
                     errors: vec![format!("Could not create the ZIP file: {e}")],
                     rename: false,
+                    open: false,
                 },
             };
             let _ = tx.send(msg);
@@ -2000,6 +2013,12 @@ impl Explorer {
             let dest = unique_copy_name(&folder_outside(parent).join(stem));
             jobs.push((zip, dest));
         }
+        self.run_extract(ti, jobs, false);
+    }
+
+    /// Unpacks each `(zip, new folder)` pair in the background. `open`: show the first result in a
+    /// new tab when done ("Extract to…" with "Show extracted files when complete").
+    fn run_extract(&mut self, ti: usize, jobs: Vec<(PathBuf, PathBuf)>, open: bool) {
         if jobs.is_empty() {
             return;
         }
@@ -2020,7 +2039,7 @@ impl Explorer {
                     )),
                 }
             }
-            let _ = tx.send(AppMsg::Made { tab, created, errors, rename: false });
+            let _ = tx.send(AppMsg::Made { tab, created, errors, rename: false, open });
             ui.request_repaint();
         });
     }
@@ -2069,6 +2088,7 @@ impl Explorer {
                     match fs::rename(&it.dst, &aside) {
                         Ok(()) => backup = Some(aside),
                         Err(e) => {
+                            backup_settled(&aside);
                             errors.push(format!("Could not replace “{name}”: {e}"));
                             continue;
                         }
@@ -2082,10 +2102,12 @@ impl Explorer {
                 match (&r, backup) {
                     (Ok(()), Some(b)) => {
                         let _ = remove_existing(&b);
+                        backup_settled(&b);
                     }
                     (Err(_), Some(b)) => {
                         let _ = remove_existing(&it.dst); // anything half-written
                         let _ = fs::rename(&b, &it.dst); // put the original back
+                        backup_settled(&b);
                     }
                     _ => {}
                 }
@@ -2333,7 +2355,7 @@ impl Explorer {
                         }
                     }
                 }
-                AppMsg::Made { tab, created, errors, rename } => {
+                AppMsg::Made { tab, created, errors, rename, open } => {
                     self.job_finished();
                     // "Extract all" from inside an opened zip: show the result (the tab only shows a
                     // temporary unpacked copy, so refreshing it would tell the user nothing).
@@ -2368,6 +2390,9 @@ impl Explorer {
                         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
                             t.error = Some(errors.join("\n"));
                         }
+                    }
+                    if let (true, Some(first)) = (open, created.first()) {
+                        self.new_tab(first.clone());
                     }
                 }
                 AppMsg::Stats(seq, stats) => {
@@ -2514,6 +2539,7 @@ impl Explorer {
         let modal = self.props.is_some()
             || self.conflict.is_some()
             || self.confirm.is_some()
+            || self.picker.is_some()
             || self.licenses_open;
 
         let in_trash = self.tabs[self.active].trash.is_some();
@@ -2786,6 +2812,7 @@ impl Explorer {
             Action::Open(p) => self.open_path(&p),
             Action::Compress(p) => self.compress(ti, p),
             Action::Extract(p) => self.extract(ti, p),
+            Action::ExtractTo(p) => self.open_extract_to(ti, p),
             Action::Copy(p) => {
                 if !p.is_empty() {
                     let _ = set_clipboard(&p, false); // `true` in the Cut arm
@@ -5349,7 +5376,10 @@ fn table_ui(
         }
         if let Some(zip) = archive_of(dir) {
             if menu_item(ui, m, pal, Some("archive"), "Extract all", None, true) {
-                actions.push(Action::Extract(vec![zip]));
+                actions.push(Action::Extract(vec![zip.clone()]));
+            }
+            if menu_item(ui, m, pal, Some("browse"), "Extract to…", None, true) {
+                actions.push(Action::ExtractTo(vec![zip]));
             }
         }
         let dir_pinned = ui
@@ -5735,10 +5765,13 @@ fn table_ui(
                     // Native zip support: unzipped items can be compressed, zip files extracted.
                     let zips: Vec<PathBuf> =
                         targets.iter().filter(|t| has_zip_ext(t)).cloned().collect();
-                    if !zips.is_empty()
-                        && menu_item(ui, m, pal, Some("archive"), "Extract all", None, true)
-                    {
-                        actions.push(Action::Extract(zips));
+                    if !zips.is_empty() {
+                        if menu_item(ui, m, pal, Some("archive"), "Extract all", None, true) {
+                            actions.push(Action::Extract(zips.clone()));
+                        }
+                        if menu_item(ui, m, pal, Some("browse"), "Extract to…", None, true) {
+                            actions.push(Action::ExtractTo(zips));
+                        }
                     }
                     if menu_item(
                         ui,
@@ -7919,6 +7952,7 @@ impl eframe::App for Explorer {
             self.peers.shutdown();
             self.indexer.save_if_dirty(&self.index_dir, true);
             remove_archive_cache(); // unpacked zips are temporary
+            finish_journal(); // (keeps its entries if a copy was still running)
 
             // The OS cleans up at once.
             terminate_now();
@@ -7983,6 +8017,7 @@ impl eframe::App for Explorer {
         self.ui_props(ui);
         self.ui_conflict(ui);
         self.ui_confirm(ui);
+        self.ui_picker(ui);
         self.ui_licenses(ui);
 
         // Apply actions after rendering, as in your original code.
