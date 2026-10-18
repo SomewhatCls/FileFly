@@ -4,7 +4,7 @@
 //!
 //! | What                                   | Where                                                    | Name                                  |
 //! |----------------------------------------|----------------------------------------------------------|---------------------------------------|
-//! | Copy, or Cut across drives (`copy_item`) | next to the destination                                  | `.<name>.part-<pid>-<n>`              |
+//! | Copy, or Cut across drives (`copy_item_with`) | next to the destination                                  | `.<name>.part-<pid>-<n>`              |
 //! | Extract a zip (`extract_zip`)          | next to the destination                                  | `.<name>.part-<pid>-<n>`              |
 //! | Compress to zip (`compress_items`)     | next to the destination                                  | `.<name>.part-<pid>-<n>.zip`          |
 //! | "Replace" parks the old item           | next to the destination                                  | `.<name>.replaced-<pid>-<n>`          |
@@ -151,6 +151,40 @@ pub fn remove_existing(path: &Path) -> std::io::Result<()> {
     if fs::symlink_metadata(path)?.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
 }
 
+/// Removes the half-written temp item of a failed or cancelled operation, and makes sure its disk
+/// space comes back even when the name can't be deleted right away. A just-closed file is often held
+/// for a moment by antivirus, the search indexer or a sync client (OneDrive, Dropbox); a plain
+/// delete then fails, and because the temp name starts with a dot the leftover is invisible in
+/// listings while its bytes stay allocated. So: empty the file first (frees the space even if the
+/// delete is refused), retry the delete a few times, and if it is still locked keep retrying in the
+/// background (the journal covers the case that the app is closed before that succeeds).
+fn remove_temp(path: &Path) {
+    if let Ok(md) = fs::symlink_metadata(path) {
+        if md.is_file() {
+            if let Ok(f) = fs::OpenOptions::new().write(true).open(path) {
+                let _ = f.set_len(0);
+            }
+        }
+    }
+    for attempt in 0..6u64 {
+        match remove_existing(path) {
+            Ok(()) => return,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+            Err(_) => std::thread::sleep(Duration::from_millis(100 * (attempt + 1))),
+        }
+    }
+    let p = path.to_path_buf();
+    std::thread::spawn(move || {
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_secs(2));
+            if remove_existing(&p).is_ok() || fs::symlink_metadata(&p).is_err() {
+                journal_settle(&p);
+                return;
+            }
+        }
+    });
+}
+
 pub fn unique_copy_name(destination: &Path) -> PathBuf {
     if !destination.exists() {
         return destination.to_path_buf();
@@ -238,6 +272,19 @@ pub struct OpProgress {
     /// Set by the dialog; the worker waits (at chunk boundaries) until it is cleared.
     pub paused: AtomicBool,
     current: std::sync::Mutex<String>,
+    /// Items being worked on right now (id, name). The dialog lists them, each with its own cancel button.
+    running: std::sync::Mutex<Vec<(u64, String)>>,
+    /// Running items the user cancelled one by one: only they stop, the rest of the operation carries on.
+    skipped: std::sync::Mutex<std::collections::HashSet<u64>>,
+    any_skipped: AtomicBool,
+}
+
+thread_local! {
+    /// The item the current worker thread is busy with (0: none), and what that item has added to the
+    /// shared byte counters so far, so a cancelled item can take its share back out again.
+    static ITEM_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ITEM_DONE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ITEM_TOTAL: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 const CANCELLED: &str = "cancelled";
@@ -260,12 +307,64 @@ impl OpProgress {
         self.cancel.load(AO::Relaxed)
     }
 
-    /// Called between chunks / items: waits while paused, fails once cancelled.
+    /// Worker thread: starts item `id` (ids are unique within one operation, never 0).
+    pub fn begin_item(&self, id: u64, name: &str) {
+        ITEM_ID.with(|c| c.set(id));
+        ITEM_DONE.with(|c| c.set(0));
+        ITEM_TOTAL.with(|c| c.set(0));
+        self.running.lock().unwrap_or_else(|e| e.into_inner()).push((id, name.to_owned()));
+    }
+
+    /// Worker thread: ends the item started with `begin_item`; returns the bytes it had added to
+    /// (done, total) while it ran.
+    pub fn end_item(&self, id: u64) -> (u64, u64) {
+        self.running.lock().unwrap_or_else(|e| e.into_inner()).retain(|r| r.0 != id);
+        self.skipped.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        ITEM_ID.with(|c| c.set(0));
+        (ITEM_DONE.with(|c| c.replace(0)), ITEM_TOTAL.with(|c| c.replace(0)))
+    }
+
+    /// The items being worked on right now, in the order they started.
+    pub fn running_items(&self) -> Vec<(u64, String)> {
+        self.running.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Dialog: stop just this item (its partial result is removed); everything else carries on.
+    pub fn skip_item(&self, id: u64) {
+        self.skipped.lock().unwrap_or_else(|e| e.into_inner()).insert(id);
+        self.any_skipped.store(true, AO::Relaxed);
+    }
+
+    fn this_item_skipped(&self) -> bool {
+        let id = ITEM_ID.with(|c| c.get());
+        id != 0
+            && self.any_skipped.load(AO::Relaxed)
+            && self.skipped.lock().unwrap_or_else(|e| e.into_inner()).contains(&id)
+    }
+
+    /// Takes back bytes a cancelled item had contributed (`done`) or announced (`total`).
+    pub fn forgo(&self, done: u64, total: u64) {
+        let _ = self.done_bytes.try_update(AO::Relaxed, AO::Relaxed, |v| Some(v.saturating_sub(done)));
+        let _ = self.total_bytes.try_update(AO::Relaxed, AO::Relaxed, |v| Some(v.saturating_sub(total)));
+    }
+
+    fn add_done(&self, n: u64) {
+        self.done_bytes.fetch_add(n, AO::Relaxed);
+        ITEM_DONE.with(|c| c.set(c.get() + n));
+    }
+
+    fn add_total(&self, n: u64) {
+        self.total_bytes.fetch_add(n, AO::Relaxed);
+        ITEM_TOTAL.with(|c| c.set(c.get() + n));
+    }
+
+    /// Called between chunks / items: waits while paused, fails once the operation (or just this
+    /// item) is cancelled.
     fn checkpoint(&self) -> io::Result<()> {
-        while self.paused.load(AO::Relaxed) && !self.cancelled() {
+        while self.paused.load(AO::Relaxed) && !self.cancelled() && !self.this_item_skipped() {
             std::thread::sleep(Duration::from_millis(50));
         }
-        if self.cancelled() {
+        if self.cancelled() || self.this_item_skipped() {
             return Err(io::Error::new(io::ErrorKind::Interrupted, CANCELLED));
         }
         Ok(())
@@ -309,12 +408,12 @@ fn copy_file(from: &Path, to: &Path, prog: &OpProgress) -> io::Result<()> {
     let md = fs::metadata(from)?;
     if md.len() <= FAST_COPY_LIMIT {
         fs::copy(from, to)?;
-        prog.done_bytes.fetch_add(md.len(), AO::Relaxed);
+        prog.add_done(md.len());
         return Ok(());
     }
     let mut src = fs::File::open(from)?;
     let mut dst = fs::File::create(to)?;
-    let mut buf = vec![0u8; COPY_CHUNK];
+    let mut buf = vec![0u8; COPY_CHUNK.min(md.len() as usize).max(64 * 1024)];
     loop {
         prog.checkpoint()?;
         let n = match src.read(&mut buf) {
@@ -324,7 +423,7 @@ fn copy_file(from: &Path, to: &Path, prog: &OpProgress) -> io::Result<()> {
             Err(e) => return Err(e),
         };
         dst.write_all(&buf[..n])?;
-        prog.done_bytes.fetch_add(n as u64, AO::Relaxed);
+        prog.add_done(n as u64);
     }
     if let Ok(t) = md.modified() {
         let _ = dst.set_modified(t);
@@ -357,11 +456,8 @@ fn copy_tree(source: &Path, destination: &Path, depth: usize, prog: &OpProgress)
 /// Copies to a temporary name next to the destination and renames it into place only when the
 /// whole copy has succeeded, so the real name never points at a half-written file or folder.
 /// Never overwrites: an existing destination is an error (callers move it aside first).
-pub fn copy_item(source: &Path, destination: &Path) -> io::Result<()> {
-    copy_item_with(source, destination, &OpProgress::default())
-}
-
-/// `copy_item` that reports to (and obeys pause/cancel of) `prog`.
+///
+/// Reports to (and obeys pause/cancel of) `prog`.
 pub fn copy_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> io::Result<()> {
     if fs::symlink_metadata(destination).is_ok() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
@@ -380,7 +476,7 @@ pub fn copy_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> i
     };
     let result = copied.and_then(|_| rename_retry(&tmp, destination));
     if result.is_err() {
-        let _ = remove_existing(&tmp); // don't leave the partial copy behind
+        remove_temp(&tmp); // don't leave the partial copy behind
     }
     journal_settle(&tmp);
     result
@@ -486,12 +582,9 @@ fn is_cross_device(e: &io::Error) -> bool {
 /// Rename when possible (atomic on one drive); copy + delete only when the rename failed because
 /// the destination is on another drive. Any other failure (item in use, access denied, ...) is
 /// reported as is, without half-moving anything. Never replaces an existing destination.
-pub fn move_item(source: &Path, destination: &Path) -> io::Result<()> {
-    move_item_with(source, destination, &OpProgress::default())
-}
-
-/// `move_item` that reports to (and obeys pause/cancel of) `prog`. A rename adds no bytes; when the
-/// move has to become a copy, its size is added to the total only then.
+///
+/// Reports to (and obeys pause/cancel of) `prog`. A rename adds no bytes; when the move has to become
+/// a copy, its size is added to the total only then.
 pub fn move_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> io::Result<()> {
     if fs::symlink_metadata(destination).is_ok() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
@@ -502,7 +595,7 @@ pub fn move_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> i
         Ok(()) => Ok(()),
         Err(e) if is_cross_device(&e) => {
             let bytes = tree_bytes(source, prog)?;
-            prog.total_bytes.fetch_add(bytes, AO::Relaxed);
+            prog.add_total(bytes);
             copy_item_with(source, destination, prog)?; // source stays untouched until this fully succeeded
             remove_existing(source)
         }
@@ -833,7 +926,7 @@ pub fn compress_items(items: &[PathBuf], dest: &Path) -> io::Result<()> {
         }
     });
     if result.is_err() {
-        let _ = remove_existing(&tmp); // don't leave the partial archive behind
+        remove_temp(&tmp); // don't leave the partial archive behind
     }
     journal_settle(&tmp);
     result

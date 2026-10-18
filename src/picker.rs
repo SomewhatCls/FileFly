@@ -3,7 +3,7 @@
 // editable path above, "New folder" below. Used by "Extract to…"; `PickFor` says what the chosen
 // folder is for, so other commands ("Copy to…", "Move to…") can reuse the dialog.
 
-use super::*;
+use crate::prelude::*;
 
 /// What the chosen folder is for.
 pub(crate) enum PickFor {
@@ -234,6 +234,71 @@ struct PickerInput {
     cancel: bool,
 }
 
+/// Fluent 2 text-field focus indicator: a 2 px accent line along the bottom edge of the field.
+fn focus_underline(ui: &Ui, resp: &egui::Response, m: &Metrics, pal: &Palette) {
+    if !resp.has_focus() {
+        return;
+    }
+    let r = resp.rect;
+    let y = r.bottom() - 1.0;
+    let inset = m.radius as f32 * 0.6;
+    ui.painter().line_segment(
+        [pos2(r.left() + inset, y), pos2(r.right() - inset, y)],
+        Stroke::new(2.0_f32, pal.accent),
+    );
+}
+
+/// Small chevron drawn from two strokes (no font glyph needed): "this row opens".
+fn chevron_right(ui: &Ui, c: egui::Pos2, size: f32, color: Color32) {
+    let s = size * 0.5;
+    let st = Stroke::new(1.4_f32, color);
+    ui.painter().line_segment([pos2(c.x - s * 0.4, c.y - s), pos2(c.x + s * 0.4, c.y)], st);
+    ui.painter().line_segment([pos2(c.x + s * 0.4, c.y), pos2(c.x - s * 0.4, c.y + s)], st);
+}
+
+/// Fluent 2 "message bar" (error intent): tinted card with a round "!" badge.
+fn message_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str) {
+    let tint = pal.danger;
+    egui::Frame::new()
+        .fill(tint.gamma_multiply(0.12))
+        .stroke(Stroke::new(1.0_f32, tint.gamma_multiply(0.35)))
+        .corner_radius(CornerRadius::same(m.radius))
+        .inner_margin(Margin::symmetric((m.pad * 0.8) as i8, (m.pad * 0.6) as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let d = m.font * 1.1;
+                let (rect, _) = ui.allocate_exact_size(vec2(d, d), Sense::hover());
+                ui.painter().circle_filled(rect.center(), d * 0.5, tint);
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    "!",
+                    FontId::proportional(m.font * 0.8),
+                    Color32::WHITE,
+                );
+                ui.add(egui::Label::new(RichText::new(text).color(pal.text)).wrap());
+            });
+        });
+}
+
+/// Quiet card with a caption and one value line (the path is cut off with an ellipsis).
+fn info_card(ui: &mut Ui, m: &Metrics, pal: &Palette, caption: &str, value: &str) {
+    egui::Frame::new()
+        .fill(fl_card_fill(pal))
+        .stroke(Stroke::new(1.0_f32, pal.divider))
+        .corner_radius(CornerRadius::same(m.radius))
+        .inner_margin(Margin::symmetric((m.pad * 0.8) as i8, (m.pad * 0.6) as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(
+                egui::Label::new(RichText::new(caption).size(m.font * 0.9).color(pal.text_secondary)).wrap(),
+            );
+            ui.add_space(m.pad * 0.2);
+            ui.add(egui::Label::new(RichText::new(value).color(pal.text)).truncate());
+        });
+}
+
 impl Explorer {
     /// "Extract to…": asks where to unpack `zips` (starting next to them).
     pub(crate) fn open_extract_to(&mut self, ti: usize, zips: Vec<PathBuf>) {
@@ -326,6 +391,7 @@ impl Explorer {
                             .vertical_align(Align::Center)
                             .hint_text("Type a folder path"),
                     );
+                    focus_underline(ui, &resp, &m, &pal);
                     if resp.lost_focus() {
                         if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             input.go = Some(PathBuf::from(expand_env(p.address.trim())));
@@ -386,17 +452,44 @@ impl Explorer {
                                     }
                                 });
                         });
+                        ui.add_space(m.pad * 0.4);
+                        let (line, _) = ui.allocate_exact_size(vec2(1.0, body_h), Sense::hover());
+                        ui.painter().rect_filled(line, CornerRadius::ZERO, pal.divider);
+                        ui.add_space(m.pad * 0.4);
                     }
 
                     let list_w = ui.available_width();
                     ui.allocate_ui_with_layout(vec2(list_w, body_h), top_down, |ui| {
+                        ui.spacing_mut().item_spacing.y = m.pad * 0.3;
+                        // Heading: the open folder and how many subfolders it holds.
+                        let head_h = m.font * 2.0;
+                        let title = p
+                            .dir
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| p.dir.display().to_string());
+                        let count = (p.loading.is_none() && p.list_error.is_none()).then(|| {
+                            let n = p.folders.len();
+                            format!("{n} folder{}", if n == 1 { "" } else { "s" })
+                        });
+                        ui.allocate_ui_with_layout(vec2(list_w, head_h), Layout::left_to_right(Align::Center), |ui| {
+                            ui.add_space(m.pad * 0.3);
+                            ui.label(RichText::new(elide(&title, 30)).strong().size(m.font * 1.05));
+                            if let Some(count) = &count {
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.add_space(m.pad * 0.3);
+                                    ui.label(RichText::new(count).size(m.font * 0.9).color(pal.text_secondary));
+                                });
+                            }
+                        });
+                        let card_h = (body_h - head_h - m.pad * 0.3).max(m.row_h * 2.0);
                         egui::Frame::new()
                             .fill(fl_card_fill(&pal))
                             .stroke(Stroke::new(1.0_f32, pal.divider))
                             .corner_radius(CornerRadius::same(m.radius))
                             .inner_margin(Margin::same((m.pad * 0.4) as i8))
                             .show(ui, |ui| {
-                                let inner_h = body_h - m.pad * 0.8;
+                                let inner_h = card_h - m.pad * 0.8;
                                 ui.set_width(ui.available_width());
                                 ui.set_height(inner_h);
                                 folder_list(ui, &m, &pal, &mut p, inner_h, &mut input);
@@ -417,7 +510,13 @@ impl Explorer {
                     PickFor::Extract { zips, name, show } => {
                         if zips.len() == 1 {
                             ui.horizontal(|ui| {
-                                ui.label("Folder name");
+                                ui.allocate_ui_with_layout(
+                                    vec2(m.s * 92.0, m.ctl_h),
+                                    Layout::left_to_right(Align::Center),
+                                    |ui| {
+                                        ui.label(RichText::new("Folder name").color(pal.text_secondary));
+                                    },
+                                );
                                 let resp = ui.add(
                                     egui::TextEdit::singleline(name)
                                         .id(Id::new("picker_name"))
@@ -426,39 +525,36 @@ impl Explorer {
                                         .min_size(vec2(0.0, m.ctl_h))
                                         .vertical_align(Align::Center),
                                 );
+                                focus_underline(ui, &resp, &m, &pal);
                                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                     input.accept = true;
                                 }
                             });
-                            ui.add_space(m.pad * 0.4);
+                            ui.add_space(m.pad * 0.6);
                             match name_problem(name) {
                                 Some(why) if blocker.is_none() => blocker = Some(why.to_owned()),
                                 Some(_) => {}
                                 None => {
                                     let dest = unique_copy_name(&target.join(name.trim()));
-                                    ui.label(
-                                        RichText::new(format!("Files will be extracted to: {}", dest.display()))
-                                            .color(pal.text_secondary),
-                                    );
+                                    info_card(ui, &m, &pal, "Files will be extracted to", &dest.display().to_string());
                                 }
                             }
                         } else {
-                            ui.label(
-                                RichText::new(format!(
-                                    "Each of the {} archives is extracted into its own new folder in: {}",
-                                    zips.len(),
-                                    target.display()
-                                ))
-                                .color(pal.text_secondary),
+                            info_card(
+                                ui,
+                                &m,
+                                &pal,
+                                &format!("Each of the {} archives is extracted into its own new folder in", zips.len()),
+                                &target.display().to_string(),
                             );
                         }
-                        ui.add_space(m.pad * 0.4);
+                        ui.add_space(m.pad * 0.6);
                         ui.checkbox(show, "Show extracted files when complete");
                     }
                 }
                 if let Some(msg) = p.problem.as_ref().or(blocker.as_ref()) {
-                    ui.add_space(m.pad * 0.4);
-                    ui.label(RichText::new(msg).color(pal.danger));
+                    ui.add_space(m.pad * 0.6);
+                    message_bar(ui, &m, &pal, msg);
                 }
                 ui.add_space(m.pad * 1.5);
 
@@ -605,8 +701,12 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, he
             );
             let text_rect = Rect::from_min_max(
                 pos2(inner.left() + m.pad * 2.3 + m.icon, inner.top()),
-                pos2(inner.right() - m.pad, inner.bottom()),
+                pos2(inner.right() - m.pad * 3.2, inner.bottom()),
             );
+            let renaming_here = p.new_folder.as_ref().is_some_and(|nf| &nf.path == path);
+            if (resp.hovered() || selected) && !renaming_here {
+                chevron_right(ui, pos2(inner.right() - m.pad * 1.6, inner.center().y), m.font * 0.8, pal.text_secondary);
+            }
             match &mut p.new_folder {
                 Some(nf) if &nf.path == path => {
                     let id = Id::new("picker_new_folder");

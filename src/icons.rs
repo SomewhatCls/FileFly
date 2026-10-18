@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock, RwLock};
-use crate::Entry;
+use crate::model::Entry;
 
 //Consts for Worker thread metrics and icon size
 const ICON_SIZE: u16 = 32;
