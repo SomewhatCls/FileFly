@@ -3646,7 +3646,7 @@ fn corner_fillet(
     painter.add(egui::Shape::mesh(mesh));
 }
 
-/// Concave fillet at the bottom corner of a tab (Explorer-style).
+/// Concave fillet at the bottom corner of a tab.
 fn tab_wing(ui: &Ui, corner: egui::Pos2, r: f32, left: bool, color: Color32) {
     corner_fillet(
         ui.painter(),
@@ -4230,7 +4230,7 @@ fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut SettingsPa
     fl_card(ui, m, pal, |ui| {
         let desc = match &sp.default_error {
             Some(e) => format!("Could not change the setting: {e}"),
-            None if sp.default_on => "FileFly opens folders from other apps, the Run dialog and “Show in folder”. Turn off to return to Windows Explorer. Win+E and the taskbar icon still open Windows Explorer.".to_owned(),
+            None if sp.default_on => "FileFly opens folders from other apps, the Run dialog and “Show in folder”. Turn off to return to Windows Explorer. Warning: This also overrides shortcuts in your taskbar and Windows menu.".to_owned(),
             None => "Open folders from other apps, the Run dialog and “Show in folder” in FileFly instead of Windows Explorer. Applies to your account only.".to_owned(),
         };
         fl_row(ui, m, pal, "Use FileFly as default file manager", Some(desc.as_str()), |ui| {
