@@ -45,7 +45,11 @@ impl Explorer {
                 return;
             }
             Err(e) => {
-                self.tabs[ti].error = Some(format!("Could not open folder: {e}"));
+                let msg = format!("Could not open folder: {e}");
+                if is_denied_io(&e) {
+                    self.admin_retry = Some((msg.clone(), AdminRetry::OpenFolder(path.clone())));
+                }
+                self.tabs[ti].error = Some(msg);
                 return;
             }
         };
@@ -173,6 +177,9 @@ impl Explorer {
         let mut special: Vec<PathBuf> = known_folders().into_iter().filter_map(|(_, _, p)| p).collect();
         special.extend(self.quick.iter().map(|q| q.path.clone()));
         set_special_folders(special);
+        set_custom_folder_icons(
+            self.settings.folder_icons.iter().map(|(k, v)| (PathBuf::from(k), PathBuf::from(v))),
+        );
         // Listings that are already on screen were keyed before the change.
         for t in &mut self.tabs {
             for e in t.entries.iter_mut().chain(t.search_results.iter_mut()).filter(|e| e.is_dir) {
@@ -218,7 +225,11 @@ impl Explorer {
             Ok(m) if m.is_dir() => self.navigate(self.active, path.to_path_buf()),
             Ok(_) => {
                 if let Err(e) = open::that(path) {
-                    self.tabs[self.active].error = Some(format!("Could not open file: {e}"));
+                    let msg = format!("Could not open file: {e}");
+                    if needs_elevation(&e) {
+                        self.admin_retry = Some((msg.clone(), AdminRetry::RunFile(path.to_path_buf())));
+                    }
+                    self.tabs[self.active].error = Some(msg);
                 }
             }
             Err(e) => self.tabs[self.active].error = Some(format!("Could not access item: {e}")),

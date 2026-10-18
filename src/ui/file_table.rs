@@ -211,12 +211,14 @@ pub(crate) fn table_ui(
 
     // ---- error bar (Fluent InfoBar)
     if let Some(msg) = error.clone() {
+        let offer = ui.data(|d| d.get_temp::<u64>(Id::new("admin_retry_tab"))) == Some(tab_id);
+        let btn_w = if offer { m.s * 150.0 } else { 0.0 };
         let (r, _) = ui.allocate_exact_size(vec2(avail, m.row_h * 1.1), Sense::hover());
         ui.painter()
             .rect_filled(r, CornerRadius::same(m.radius), pal.danger_bg);
         let tr = Rect::from_min_max(
             r.min + vec2(m.pad, 0.0),
-            r.max - vec2(m.pad * 3.0 + m.small_icon, 0.0),
+            r.max - vec2(m.pad * 3.0 + m.small_icon + btn_w, 0.0),
         );
         paint_text(
             ui,
@@ -230,6 +232,25 @@ pub(crate) fn table_ui(
             pos2(r.right() - m.pad - m.small_icon / 2.0, r.center().y),
             vec2(m.ctl_h * 0.8, m.ctl_h * 0.8),
         );
+        if offer {
+            let right = r.right() - m.pad * 3.0 - m.small_icon;
+            let br = Rect::from_min_max(
+                pos2(right - btn_w + m.pad, r.top() + m.row_h * 0.15),
+                pos2(right, r.bottom() - m.row_h * 0.15),
+            );
+            let resp = ui.interact(br, Id::new(("err_admin", tab_id)), Sense::click());
+            hover_fill(ui, br, &resp, pal, m);
+            ui.painter().text(
+                br.center(),
+                Align2::CENTER_CENTER,
+                "Try as administrator",
+                FontId::proportional(m.font * 0.95),
+                pal.danger,
+            );
+            if resp.clicked() {
+                actions.push(Action::RetryAsAdmin);
+            }
+        }
         let resp = ui.interact(cr, Id::new(("err_close", tab_id)), Sense::click());
         hover_fill(ui, cr, &resp, pal, m);
         draw_icon(ui, cr.center(), m.small_icon * 0.8, "close", pal.danger);
@@ -448,6 +469,9 @@ pub(crate) fn table_ui(
         if menu_item(ui, m, pal, Some("code"), "Open in Terminal", None, true) {
             actions.push(Action::OpenTerminal(dir.clone()));
             
+        }
+        if menu_item(ui, m, pal, Some("app"), "Open folder as administrator", None, !ro) {
+            actions.push(Action::OpenFolderAsAdmin(dir.clone()));
         }
         if let Some(zip) = archive_of(dir) {
             if menu_item(ui, m, pal, Some("archive"), "Extract all", None, true) {
@@ -782,6 +806,28 @@ pub(crate) fn table_ui(
                     if menu_item(ui, m, pal, Some("external"), "Open", Some("Enter"), true) {
                         actions.push(Action::Open(p.clone()));
                         
+                    }
+                    // Elevated variants: programs run as administrator, folders open in a new elevated window.
+                    let runnable = !e.is_dir
+                        && e.path
+                            .extension()
+                            .and_then(|x| x.to_str())
+                            .is_some_and(|x| ["exe", "bat", "cmd", "msi", "com", "lnk", "ps1"].contains(&x.to_lowercase().as_str()));
+                    if runnable && menu_item(ui, m, pal, Some("app"), "Run as administrator", None, true) {
+                        actions.push(Action::RunAsAdmin(p.clone()));
+                    }
+                    if e.is_dir && menu_item(ui, m, pal, Some("app"), "Open as administrator", None, true) {
+                        actions.push(Action::OpenFolderAsAdmin(p.clone()));
+                    }
+                    if e.is_dir && archive_of(p).is_none() {
+                        if menu_item(ui, m, pal, Some("image"), "Change folder icon…", None, true) {
+                            actions.push(Action::ChangeFolderIcon(p.clone()));
+                        }
+                        if custom_icon_of(p).is_some()
+                            && menu_item(ui, m, pal, Some("refresh"), "Reset folder icon", None, true)
+                        {
+                            actions.push(Action::ResetFolderIcon(p.clone()));
+                        }
                     }
                     // An opened zip is read-only (it is shown from a temporary unpacked copy).
                     let in_archive = archive_of(p).is_some();

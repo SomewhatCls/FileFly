@@ -12,6 +12,8 @@ impl Explorer {
             self.clipboard = None;
         }
         let n = items.len();
+        let all = items.clone();
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         let verb = if cut { "Moving" } else { "Copying" };
         let title = if n == 1 {
             let name = items[0].dst.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -122,6 +124,7 @@ impl Explorer {
 
             let mut errors = errors.into_inner().unwrap_or_else(|e| e.into_inner());
             errors.sort_by_key(|e| e.0);
+            let failed: Vec<(usize, String)> = errors.clone();
             if errors.is_empty() {
                 Ok(String::new())
             } else {
@@ -129,6 +132,17 @@ impl Explorer {
                 let mut text = errors.into_iter().take(2).map(|e| e.1).collect::<Vec<_>>().join("  |  ");
                 if more > 0 {
                     text.push_str(&format!("  (+{more} more)"));
+                }
+                // Items refused for lack of rights can be redone as administrator.
+                let denied: Vec<(PathBuf, PathBuf, bool)> = failed
+                    .iter()
+                    .filter(|(_, e)| is_denied_text(e))
+                    .map(|(i, _)| (all[*i].src.clone(), all[*i].dst.clone(), all[*i].replace))
+                    .collect();
+                if !denied.is_empty() {
+                    let retry = AdminRetry::Op(AdminOp::Paste { items: denied, cut });
+                    let _ = tx.send(AppMsg::AdminOffer { msg: text.clone(), retry });
+                    ui.request_repaint();
                 }
                 Err(text)
             }

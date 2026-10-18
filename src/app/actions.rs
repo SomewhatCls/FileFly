@@ -209,6 +209,15 @@ impl Explorer {
                         self.load_tab(ti);
                         self.tabs[ti].search_query.clear(); // rerun an active search
                     }
+                    // Protected location (Program Files, ...): ask for administrator rights right
+                    // away (UAC prompt) instead of just reporting the failure. When this window is
+                    // already elevated, "denied" is a real refusal and is reported as usual.
+                    Err(e) if is_denied_io(&e) && !is_elevated() => {
+                        let op = AdminOp::Rename { from: p.clone(), to: dest.clone() };
+                        self.indexer.invalidate(&p);
+                        self.tabs[ti].select_only(dest);
+                        self.run_job("Waiting for administrator approval…", move || run_elevated(&op));
+                    }
                     Err(e) => self.tabs[ti].error = Some(format!("Could not rename item: {e}")),
                 }
             }
@@ -216,11 +225,50 @@ impl Explorer {
                 if p.is_empty() {
                     return;
                 }
-                self.run_job("Moving to Recycle Bin…", move || {
-                    trash::delete_all(&p)
-                        .map(|_| String::new())
-                        .map_err(|e| format!("Could not move item to the Recycle Bin: {e}"))
+                let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+                self.run_job("Moving to Recycle Bin…", move || match trash::delete_all(&p) {
+                    Ok(_) => Ok(String::new()),
+                    Err(e) => {
+                        let msg = format!("Could not move item to the Recycle Bin: {e}");
+                        if is_denied_text(&msg) {
+                            let retry = AdminRetry::Op(AdminOp::Delete { paths: p.clone() });
+                            let _ = tx.send(AppMsg::AdminOffer { msg: msg.clone(), retry });
+                            ui.request_repaint();
+                        }
+                        Err(msg)
+                    }
                 });
+            }
+            Action::RetryAsAdmin => {
+                let Some((_, retry)) = self.admin_retry.take() else { return };
+                self.tabs[ti].error = None;
+                match retry {
+                    AdminRetry::Op(op) => {
+                        self.run_job("Waiting for administrator approval…", move || run_elevated(&op))
+                    }
+                    AdminRetry::OpenFolder(p) => {
+                        if let Err(e) = open_folder_elevated(&p) {
+                            self.tabs[ti].error = Some(e);
+                        }
+                    }
+                    AdminRetry::RunFile(p) => {
+                        if let Err(e) = run_file_elevated(&p) {
+                            self.tabs[ti].error = Some(e);
+                        }
+                    }
+                }
+            }
+            Action::ChangeFolderIcon(p) => self.open_icon_picker(ti, p),
+            Action::ResetFolderIcon(p) => self.set_folder_icon(&p, None),
+            Action::RunAsAdmin(p) => {
+                if let Err(e) = run_file_elevated(&p) {
+                    self.tabs[ti].error = Some(e);
+                }
+            }
+            Action::OpenFolderAsAdmin(p) => {
+                if let Err(e) = open_folder_elevated(&p) {
+                    self.tabs[ti].error = Some(e);
+                }
             }
             Action::NewFolder => {
                 let target = unique_copy_name(&self.tabs[ti].dir.join("New folder"));
@@ -229,7 +277,14 @@ impl Explorer {
                         self.tabs[ti].pending_rename = Some(target);
                         self.load_tab(ti);
                     }
-                    Err(e) => self.tabs[ti].error = Some(format!("Could not create folder: {e}")),
+                    Err(e) => {
+                        let msg = format!("Could not create folder: {e}");
+                        if is_denied_io(&e) {
+                            let op = AdminOp::NewFolder { path: target.clone() };
+                            self.admin_retry = Some((msg.clone(), AdminRetry::Op(op)));
+                        }
+                        self.tabs[ti].error = Some(msg);
+                    }
                 }
             }
             Action::Properties(p) => {
