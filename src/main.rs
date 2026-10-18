@@ -270,6 +270,12 @@ impl Tab {
         }
     }
 
+    /// The folder as the user should see it: inside an opened zip that is "<zip>\\inner\\path"
+    /// (`dir` itself is the real, unpacked folder behind it).
+    fn shown_dir(&self) -> PathBuf {
+        display_path(&self.dir)
+    }
+
     fn select_only(&mut self, p: PathBuf) {
         self.selected.clear();
         self.selected.insert(p.clone());
@@ -300,10 +306,10 @@ impl Tab {
         if self.settings {
             return "Settings".to_owned();
         }
-        self.dir
-            .file_name()
+        let dir = self.shown_dir();
+        dir.file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.dir.display().to_string())
+            .unwrap_or_else(|| dir.display().to_string())
     }
     fn searching(&self) -> bool {
         !self.search.trim().is_empty()
@@ -748,6 +754,22 @@ enum AppMsg {
         seq: u64,
         result: Result<Vec<trashbin::TrashRow>, String>,
     },
+    /// A zip file was unpacked for browsing (see `fsops::mount_archive`); `target` is the path
+    /// (through the zip) the tab should now open.
+    ArchiveReady {
+        tab: u64,
+        zip: PathBuf,
+        target: PathBuf,
+        result: Result<(), String>,
+    },
+    /// Compress / Extract finished: the new items, what went wrong, and whether the first new item
+    /// should go straight into rename mode (a new zip file does, like in Explorer).
+    Made {
+        tab: u64,
+        created: Vec<PathBuf>,
+        errors: Vec<String>,
+        rename: bool,
+    },
 }
 
 // ==============================================================================================
@@ -849,6 +871,10 @@ enum Action {
     OpenContaining(PathBuf),
     PeaOpen(PathBuf),
     PeaAdd(PathBuf),
+    /// "Compress to ZIP file": zip the items next to themselves.
+    Compress(Vec<PathBuf>),
+    /// "Extract all": unpack each zip into a new folder named after it.
+    Extract(Vec<PathBuf>),
     ToggleHidden,
     OpenSettings,
     OpenRecycleBin,
@@ -1206,6 +1232,8 @@ struct Explorer {
     quick: Vec<QuickItem>,
     clipboard: Option<(Vec<PathBuf>, bool)>,
     peazip: Option<PathBuf>,
+    /// Zip files that are being unpacked right now so they can be browsed.
+    extracting: HashSet<PathBuf>,
 
     msg_tx: Sender<AppMsg>,
     msg_rx: Receiver<AppMsg>,
@@ -1292,6 +1320,7 @@ impl Explorer {
             .unwrap_or_else(app_dir);
         let indexer = Indexer::new(ui.clone(), idx_tx, &index_dir);
         let watcher = DirWatcher::new(ui.clone());
+        std::thread::spawn(sweep_old_archive_caches); // leftovers of a crashed run
 
         let start = START_DIR
             .get()
@@ -1325,6 +1354,7 @@ impl Explorer {
             quick,
             clipboard: None,
             peazip: find_peazip(),
+            extracting: HashSet::new(),
             msg_tx,
             msg_rx,
             idx_rx,
@@ -1404,7 +1434,7 @@ impl Explorer {
         let kept: Vec<&Tab> = self.tabs.iter().filter(|t| !t.settings).collect();
         let active_id = self.tabs.get(self.active).map(|t| t.id);
         Session {
-            tabs: kept.iter().map(|t| t.dir.to_string_lossy().into_owned()).collect(),
+            tabs: kept.iter().map(|t| folder_outside(&t.dir).to_string_lossy().into_owned()).collect(),
             active: kept.iter().position(|t| Some(t.id) == active_id).unwrap_or(0),
             tiles: self
                 .tiles
@@ -1525,6 +1555,15 @@ impl Explorer {
     }
 
     fn navigate(&mut self, ti: usize, path: PathBuf) {
+        // A path through a .zip ("C:\\data\\a.zip\\docs") is opened like any folder: the zip is
+        // unpacked once (in the background) and the tab then shows the unpacked folder.
+        let path = match resolve_archive_path(&path) {
+            ArchivePath::Real(p) => p,
+            ArchivePath::Extract { zip, rel } => {
+                self.open_archive(ti, zip, rel);
+                return;
+            }
+        };
         let path = match dunce::canonicalize(&path) {
             Ok(p) if p.is_dir() => clean_path(&p), // no \\?\ / \\?\UNC\ prefix (breaks cargo, cmd, ...)
             Ok(_) => {
@@ -1557,7 +1596,7 @@ impl Explorer {
                 tab.fwd.clear();
                 self.set_dir(ti, path);
             } else {
-                tab.address = path.display().to_string();
+                tab.address = display_path(&path).display().to_string();
             }
             return;
         }
@@ -1573,7 +1612,7 @@ impl Explorer {
     fn set_dir(&mut self, ti: usize, path: PathBuf) {
         let path = clean_path(&path);
         let tab = &mut self.tabs[ti];
-        tab.address = path.display().to_string();
+        tab.address = display_path(&path).display().to_string();
         tab.dir = path;
         tab.search.clear();
         tab.clear_selection();
@@ -1868,6 +1907,11 @@ impl Explorer {
     }
 
     fn open_path(&mut self, path: &Path) {
+        // A .zip opens like a folder: its contents are shown in the same tab.
+        if has_zip_ext(path) && path.is_file() {
+            self.navigate(self.active, path.to_path_buf());
+            return;
+        }
         match fs::metadata(path) {
             Ok(m) if m.is_dir() => self.navigate(self.active, path.to_path_buf()),
             Ok(_) => {
@@ -1877,6 +1921,108 @@ impl Explorer {
             }
             Err(e) => self.tabs[self.active].error = Some(format!("Could not access item: {e}")),
         }
+    }
+
+    // ------------------------------------------------------------------ zip archives
+
+    fn job_started(&mut self, label: &str) {
+        self.jobs_running += 1;
+        self.job_label = label.to_owned();
+    }
+
+    fn job_finished(&mut self) {
+        self.jobs_running = self.jobs_running.saturating_sub(1);
+        if self.jobs_running == 0 {
+            self.job_label.clear();
+        }
+    }
+
+    /// Unpacks `zip` in the background; when done, tab `ti` opens `zip\rel` (see `AppMsg::ArchiveReady`).
+    fn open_archive(&mut self, ti: usize, zip: PathBuf, rel: PathBuf) {
+        if !self.extracting.insert(zip.clone()) {
+            return; // already being opened (double click on a big archive)
+        }
+        self.job_started("Opening archive…");
+        let tab = self.tabs[ti].id;
+        let target = if rel.as_os_str().is_empty() { zip.clone() } else { zip.join(&rel) };
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                mount_archive(&zip).map(|_| ()).map_err(|e| format!("Could not open the archive: {e}"))
+            }))
+            .unwrap_or_else(|_| Err("Could not open the archive: unexpected failure.".to_owned()));
+            let _ = tx.send(AppMsg::ArchiveReady { tab, zip, target, result });
+            ui.request_repaint();
+        });
+    }
+
+    /// "Compress to ZIP file": one zip next to the items, named after the item (or the folder when
+    /// several are selected), built by the operating system's own tools.
+    fn compress(&mut self, ti: usize, items: Vec<PathBuf>) {
+        let Some(parent) = items.first().and_then(|p| p.parent()).map(Path::to_path_buf) else {
+            return;
+        };
+        let base: Option<std::ffi::OsString> = if items.len() == 1 {
+            items[0].file_stem().map(|s| s.to_os_string())
+        } else {
+            parent.file_name().map(|s| s.to_os_string())
+        };
+        let mut name = base.unwrap_or_else(|| "Archive".into());
+        name.push(".zip");
+        let dest = unique_copy_name(&parent.join(name));
+        let tab = self.tabs[ti].id;
+        self.job_started("Compressing…");
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        std::thread::spawn(move || {
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compress_items(&items, &dest)))
+                .unwrap_or_else(|_| Err(std::io::Error::other("unexpected failure")));
+            let msg = match r {
+                Ok(()) => AppMsg::Made { tab, created: vec![dest], errors: Vec::new(), rename: true },
+                Err(e) => AppMsg::Made {
+                    tab,
+                    created: Vec::new(),
+                    errors: vec![format!("Could not create the ZIP file: {e}")],
+                    rename: false,
+                },
+            };
+            let _ = tx.send(msg);
+            ui.request_repaint();
+        });
+    }
+
+    /// "Extract all": every zip goes into a new folder (never an existing one) next to it.
+    fn extract(&mut self, ti: usize, zips: Vec<PathBuf>) {
+        let mut jobs: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for zip in zips.into_iter().filter(|z| z.is_file()) {
+            let (Some(parent), Some(stem)) = (zip.parent(), zip.file_stem()) else {
+                continue;
+            };
+            let dest = unique_copy_name(&folder_outside(parent).join(stem));
+            jobs.push((zip, dest));
+        }
+        if jobs.is_empty() {
+            return;
+        }
+        let tab = self.tabs[ti].id;
+        self.job_started("Extracting…");
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        std::thread::spawn(move || {
+            let mut created = Vec::new();
+            let mut errors = Vec::new();
+            for (zip, dest) in jobs {
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| extract_zip(&zip, &dest)))
+                    .unwrap_or_else(|_| Err(std::io::Error::other("unexpected failure")));
+                match r {
+                    Ok(()) => created.push(dest),
+                    Err(e) => errors.push(format!(
+                        "Could not extract “{}”: {e}",
+                        zip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    )),
+                }
+            }
+            let _ = tx.send(AppMsg::Made { tab, created, errors, rename: false });
+            ui.request_repaint();
+        });
     }
 
     // ------------------------------------------------------------------ background work
@@ -2177,6 +2323,53 @@ impl Explorer {
                         }
                     }
                 }
+                AppMsg::ArchiveReady { tab, zip, target, result } => {
+                    self.extracting.remove(&zip);
+                    self.job_finished();
+                    if let Some(ti) = self.tabs.iter().position(|t| t.id == tab) {
+                        match result {
+                            Ok(()) => self.navigate(ti, target),
+                            Err(e) => self.tabs[ti].error = Some(e),
+                        }
+                    }
+                }
+                AppMsg::Made { tab, created, errors, rename } => {
+                    self.job_finished();
+                    // "Extract all" from inside an opened zip: show the result (the tab only shows a
+                    // temporary unpacked copy, so refreshing it would tell the user nothing).
+                    let inside_zip = self
+                        .tabs
+                        .iter()
+                        .position(|t| t.id == tab)
+                        .filter(|&ti| archive_of(&self.tabs[ti].dir).is_some());
+                    if let (Some(ti), Some(first)) = (inside_zip, created.first()) {
+                        self.navigate(ti, first.clone());
+                        if !errors.is_empty() {
+                            self.tabs[ti].error = Some(errors.join("\n"));
+                        }
+                        continue;
+                    }
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                        if rename {
+                            t.pending_rename = created.first().cloned();
+                        } else if !created.is_empty() {
+                            t.selected = created.iter().cloned().collect();
+                            t.anchor = created.first().cloned();
+                        }
+                    }
+                    for ti in self.visible_tabs() {
+                        if self.tabs[ti].trash.is_none() {
+                            self.load_tab(ti);
+                            self.tabs[ti].search_query.clear(); // rerun an active search
+                        }
+                    }
+                    // (after load_tab, which clears the tab's error)
+                    if !errors.is_empty() {
+                        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                            t.error = Some(errors.join("\n"));
+                        }
+                    }
+                }
                 AppMsg::Stats(seq, stats) => {
                     if let Some(p) = &mut self.props {
                         if p.stats_gen == seq {
@@ -2472,9 +2665,38 @@ impl Explorer {
         {
             return;
         }
+        // An opened zip is shown from a temporary unpacked copy, so changes made there would
+        // silently vanish: it is read-only (copying out of it is fine).
+        let touches_archive = match &action {
+            Action::NewFolder | Action::Paste => archive_of(&self.tabs[ti].dir).is_some(),
+            Action::DropCopy(_, dest) => archive_of(dest).is_some(),
+            Action::Cut(p) | Action::Delete(p) | Action::Compress(p) => {
+                p.iter().any(|x| archive_of(x).is_some())
+            }
+            Action::Rename(p) | Action::CommitRename(p, _) => archive_of(p).is_some(),
+            _ => false,
+        };
+        if touches_archive {
+            self.tabs[ti].rename = None;
+            self.tabs[ti].error = Some(
+                "A zip archive is read-only here. Extract it (right-click → Extract all) to change its contents."
+                    .to_owned(),
+            );
+            return;
+        }
         match action {
             Action::Navigate(p) => self.navigate(ti, p),
-            Action::NewTabAt(p) => self.new_tab(p),
+            Action::NewTabAt(p) => {
+                if has_zip_ext(&p) && p.is_file() {
+                    // A zip gets its own tab next to its folder, then opens like a folder.
+                    let home = p.parent().map(Path::to_path_buf).unwrap_or_else(|| p.clone());
+                    self.new_tab(home);
+                    let tab = self.active;
+                    self.navigate(tab, p);
+                } else {
+                    self.new_tab(p);
+                }
+            }
             Action::NewTab => {
                 let home = dirs::home_dir().unwrap_or_else(|| self.tabs[ti].dir.clone());
                 self.new_tab(home);
@@ -2531,7 +2753,8 @@ impl Explorer {
                 }
             }
             Action::Up => {
-                if let Some(parent) = self.tabs[ti].dir.parent().map(Path::to_path_buf) {
+                // From the top of an opened zip, "Up" leaves the zip (its parent as shown, not the cache).
+                if let Some(parent) = self.tabs[ti].shown_dir().parent().map(Path::to_path_buf) {
                     self.navigate(ti, parent);
                 }
             }
@@ -2553,7 +2776,7 @@ impl Explorer {
             }
             Action::FocusAddress => {
                 let tab = &mut self.tabs[ti];
-                tab.address = tab.dir.display().to_string();
+                tab.address = tab.shown_dir().display().to_string();
                 tab.editing_addr = true;
                 tab.addr_focus = true;
             }
@@ -2561,6 +2784,8 @@ impl Explorer {
                 .ui
                 .memory_mut(|m| m.request_focus(Id::new("search_box"))),
             Action::Open(p) => self.open_path(&p),
+            Action::Compress(p) => self.compress(ti, p),
+            Action::Extract(p) => self.extract(ti, p),
             Action::Copy(p) => {
                 if !p.is_empty() {
                     let _ = set_clipboard(&p, false); // `true` in the Cut arm
@@ -3054,6 +3279,22 @@ fn menu_item(
     resp.clicked()
 }
 
+/// Contents of a context menu that can never run off the window: when the menu is taller than the
+/// window it scrolls instead of being cut off (the popup itself already shifts to stay on screen).
+fn menu_scroll(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    // Room for the popup frame (margins + stroke) and a little air to the window edges.
+    let max_h = (ui.ctx().content_rect().height() - 40.0).max(120.0);
+    egui::ScrollArea::vertical()
+        .max_height(max_h)
+        .auto_shrink([true, true])
+        .show(ui, add);
+}
+
+/// `resp.context_menu(..)` with the scrolling behavior of `menu_scroll`.
+fn scroll_context_menu(resp: &egui::Response, add: impl FnOnce(&mut Ui)) {
+    resp.context_menu(|ui| menu_scroll(ui, add));
+}
+
 fn nav_item(
     ui: &mut Ui,
     m: &Metrics,
@@ -3333,7 +3574,7 @@ fn address_bar(
                 actions.push(Action::GoToAddress(tab.address.clone()));
             }
             tab.editing_addr = false;
-            tab.address = tab.dir.display().to_string();
+            tab.address = tab.shown_dir().display().to_string();
         }
         return;
     }
@@ -3341,10 +3582,10 @@ fn address_bar(
     if pill_resp.clicked() {
         tab.editing_addr = true;
         tab.addr_focus = true;
-        tab.address = tab.dir.display().to_string();
+        tab.address = tab.shown_dir().display().to_string();
     }
 
-    let segs = crumbs(&tab.dir);
+    let segs = crumbs(&tab.shown_dir());
     let seg_pad = m.pad * 0.7;
     let chev = m.small_icon * 0.7;
     let sep_w = chev + m.s * 4.0;
@@ -3378,7 +3619,7 @@ fn address_bar(
         if resp.clicked() {
             tab.editing_addr = true;
             tab.addr_focus = true;
-            tab.address = tab.dir.display().to_string();
+            tab.address = tab.shown_dir().display().to_string();
         }
         x += more_w;
         draw_icon(
@@ -4466,7 +4707,7 @@ fn trash_table_ui(
         selected.clear();
     }
     let any_rows = !rows.is_empty();
-    body_resp.context_menu(|ui| {
+    scroll_context_menu(&body_resp, |ui| {
         if menu_item(
             ui,
             m,
@@ -4631,7 +4872,7 @@ fn trash_table_ui(
                         *anchor = Some(vi);
                     }
                 }
-                resp.context_menu(|ui| {
+                scroll_context_menu(&resp, |ui| {
                     if menu_item(ui, m, pal, Some("restore"), "Restore", None, true) {
                         actions.push(Action::TrashRestoreSelected);
                         
@@ -5091,19 +5332,25 @@ fn table_ui(
         selected.clear();
         *anchor = None;
     }
-    body_resp.context_menu(|ui| {
-        if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+N"), true, ) {
+    scroll_context_menu(&body_resp, |ui| {
+        let ro = archive_of(dir).is_some(); // inside an opened zip: nothing can be added
+        if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+N"), !ro, ) {
             actions.push(Action::NewFolder);
             
         }
         if menu_item(
-            ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), can_paste, ) {
+            ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), can_paste && !ro, ) {
             actions.push(Action::Paste);
             
         }
         if menu_item(ui, m, pal, Some("code"), "Open in Terminal", None, true) {
             actions.push(Action::OpenTerminal(dir.clone()));
             
+        }
+        if let Some(zip) = archive_of(dir) {
+            if menu_item(ui, m, pal, Some("archive"), "Extract all", None, true) {
+                actions.push(Action::Extract(vec![zip]));
+            }
         }
         let dir_pinned = ui
             .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::new("pinned_paths")))
@@ -5411,11 +5658,11 @@ fn table_ui(
                 if resp.double_clicked() && !renaming_here {
                     actions.push(Action::Open(e.path.clone()));
                 }
-                if resp.middle_clicked() && e.is_dir {
+                if resp.middle_clicked() && (e.is_dir || has_zip_ext(&e.path)) {
                     actions.push(Action::NewTabAt(e.path.clone()));
                 }
 
-                resp.context_menu(|ui| {
+                scroll_context_menu(&resp, |ui| {
                     let p = &e.path;
                     // Menu actions apply to the whole selection when the clicked row is part of it.
                     let targets: Vec<PathBuf> = if selected.contains(&e.path) {
@@ -5431,7 +5678,9 @@ fn table_ui(
                         actions.push(Action::Open(p.clone()));
                         
                     }
-                    if e.is_dir
+                    // An opened zip is read-only (it is shown from a temporary unpacked copy).
+                    let in_archive = archive_of(p).is_some();
+                    if (e.is_dir || has_zip_ext(&e.path))
                         && menu_item(ui, m, pal, Some("new_tab"), "Open in new tab", None, true)
                     {
                         actions.push(Action::NewTabAt(p.clone()));
@@ -5450,7 +5699,7 @@ fn table_ui(
                         }
                     }
                     ui.separator();
-                    if menu_item(ui, m, pal, Some("cut"), "Cut", Some("Ctrl+X"), true) {
+                    if menu_item(ui, m, pal, Some("cut"), "Cut", Some("Ctrl+X"), !in_archive) {
                         actions.push(Action::Cut(targets.clone()));
                         
                     }
@@ -5458,7 +5707,7 @@ fn table_ui(
                         actions.push(Action::Copy(targets.clone()));
                         
                     }
-                    if menu_item(ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), true) {
+                    if menu_item(ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), !in_archive) {
                         actions.push(Action::Paste);
                         
                     }
@@ -5473,14 +5722,34 @@ fn table_ui(
                         Some("rename"),
                         "Rename",
                         Some("F2"),
-                        targets.len() == 1,
+                        targets.len() == 1 && !in_archive,
                     ) {
                         actions.push(Action::Rename(p.clone()));
                         
                     }
-                    if menu_item(ui, m, pal, Some("delete"), "Delete", Some("Del"), true) {
+                    if menu_item(ui, m, pal, Some("delete"), "Delete", Some("Del"), !in_archive) {
                         actions.push(Action::Delete(targets.clone()));
                         
+                    }
+                    ui.separator();
+                    // Native zip support: unzipped items can be compressed, zip files extracted.
+                    let zips: Vec<PathBuf> =
+                        targets.iter().filter(|t| has_zip_ext(t)).cloned().collect();
+                    if !zips.is_empty()
+                        && menu_item(ui, m, pal, Some("archive"), "Extract all", None, true)
+                    {
+                        actions.push(Action::Extract(zips));
+                    }
+                    if menu_item(
+                        ui,
+                        m,
+                        pal,
+                        Some("archive"),
+                        "Compress to ZIP file",
+                        None,
+                        !in_archive,
+                    ) {
+                        actions.push(Action::Compress(targets.clone()));
                     }
                     if has_peazip {
                         ui.separator();
@@ -5717,7 +5986,7 @@ impl Explorer {
                 } else if t.settings {
                     (t.id, t.title(), "Settings".to_owned(), "settings")
                 } else {
-                    (t.id, t.title(), t.dir.display().to_string(), "folder")
+                    (t.id, t.title(), t.shown_dir().display().to_string(), "folder")
                 }
             })
             .collect();
@@ -6053,7 +6322,7 @@ impl Explorer {
                                     } else if resp.middle_clicked() {
                                         actions.push(Action::NewTabAt(q.path.clone()));
                                     }
-                                    resp.context_menu(|ui| {
+                                    scroll_context_menu(&resp, |ui| {
                                         if menu_item(ui, &m, &pal, Some("external"), "Open", None, true) {
                                             actions.push(Action::Navigate(q.path.clone()));
                                         }
@@ -7649,6 +7918,7 @@ impl eframe::App for Explorer {
             save_settings(&self.settings);
             self.peers.shutdown();
             self.indexer.save_if_dirty(&self.index_dir, true);
+            remove_archive_cache(); // unpacked zips are temporary
 
             // The OS cleans up at once.
             terminate_now();

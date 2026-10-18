@@ -455,3 +455,408 @@ pub fn folder_stats(root: &Path, cancelled: &dyn Fn() -> bool) -> FolderStats {
     }
     stats
 }
+
+// ---------------------------------------------------------------------------------------------
+// ZIP archives: compress / extract with the tools the operating system ships (no zip library),
+// and "open a .zip like a folder" by unpacking it into a private cache that the UI presents
+// under the zip's own path (C:\data\photos.zip\2024\...).
+//
+//   Windows  tar.exe (bsdtar, part of Windows 10+), PowerShell Compress-Archive/Expand-Archive
+//   macOS    ditto (the engine behind Finder's "Compress" and double-click extraction)
+//   Linux    zip / unzip, then bsdtar, then 7z, whichever is installed
+// ---------------------------------------------------------------------------------------------
+
+use std::ffi::{OsStr, OsString};
+use std::process::{Command, Stdio};
+
+const OK0: &[i32] = &[0];
+/// unzip exits with 1 for "finished, with warnings".
+#[cfg(all(unix, not(target_os = "macos")))]
+const OK01: &[i32] = &[0, 1];
+
+const NO_ZIP_TOOL: &str = if cfg!(windows) {
+    "no ZIP tool found (tar.exe or PowerShell is required)"
+} else if cfg!(target_os = "macos") {
+    "the system tool \"ditto\" was not found"
+} else {
+    "no ZIP tool found; install \"zip\" and \"unzip\" (or bsdtar / 7-Zip)"
+};
+
+pub fn has_zip_ext(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+}
+
+fn tool(program: impl AsRef<OsStr>) -> Command {
+    let mut c = Command::new(program);
+    c.stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console window flashing up
+    }
+    c
+}
+
+/// Runs a tool to completion. `ErrorKind::NotFound` means the program is not installed (the caller
+/// then tries the next candidate); any other error carries the tool's own message.
+fn run_tool(mut cmd: Command, ok_codes: &[i32]) -> io::Result<()> {
+    let out = cmd.output()?;
+    if out.status.success() || out.status.code().is_some_and(|c| ok_codes.contains(&c)) {
+        return Ok(());
+    }
+    let raw = if out.stderr.iter().any(|b| !b.is_ascii_whitespace()) { &out.stderr } else { &out.stdout };
+    let text = String::from_utf8_lossy(raw).into_owned();
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).take(3).collect();
+    Err(io::Error::other(if lines.is_empty() {
+        format!("the ZIP tool failed ({})", out.status)
+    } else {
+        lines.join(" ")
+    }))
+}
+
+fn run_first_available(tools: Vec<(Command, &'static [i32])>) -> io::Result<()> {
+    for (cmd, ok) in tools {
+        match run_tool(cmd, ok) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            done => return done,
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::NotFound, NO_ZIP_TOOL))
+}
+
+/// A name that is safe to hand to a command line tool (a leading "-" would be read as an option).
+fn arg_safe(name: &OsStr) -> OsString {
+    if name.to_string_lossy().starts_with('-') {
+        let mut s = OsString::from("./");
+        s.push(name);
+        s
+    } else {
+        name.to_os_string()
+    }
+}
+
+#[cfg(windows)]
+fn system_tar() -> PathBuf {
+    // Full path on purpose: a "tar" from Git/MSYS earlier in PATH cannot write zip files.
+    std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join("tar.exe")
+}
+
+#[cfg(windows)]
+fn ps_quote(p: &Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', "''"))
+}
+
+#[allow(unused_variables, unused_mut)]
+fn compress_tools(parent: &Path, items: &[PathBuf], names: &[OsString], out: &Path) -> Vec<(Command, &'static [i32])> {
+    let mut tools: Vec<(Command, &'static [i32])> = Vec::new();
+    #[cfg(windows)]
+    {
+        let mut c = tool(system_tar());
+        c.arg("-a").arg("-c").arg("-f").arg(out).arg("-C").arg(parent).args(names);
+        tools.push((c, OK0));
+        let list = items.iter().map(|p| ps_quote(p)).collect::<Vec<_>>().join(",");
+        let mut c = tool("powershell.exe");
+        c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]).arg(format!(
+            "$ErrorActionPreference='Stop'; Compress-Archive -LiteralPath {list} -DestinationPath {}",
+            ps_quote(out)
+        ));
+        tools.push((c, OK0));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut c = tool("ditto");
+        c.args(["-c", "-k", "--sequesterRsrc", "--keepParent"]).args(items).arg(out);
+        tools.push((c, OK0));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut c = tool("zip");
+        c.current_dir(parent).args(["-r", "-q", "-y"]).arg(out).args(names);
+        tools.push((c, OK0));
+        let mut c = tool("bsdtar");
+        c.arg("-a").arg("-c").arg("-f").arg(out).arg("-C").arg(parent).args(names);
+        tools.push((c, OK0));
+        for sevenzip in ["7z", "7zz"] {
+            let mut c = tool(sevenzip);
+            c.current_dir(parent).args(["a", "-tzip", "-bd", "-y"]).arg(out).args(names);
+            tools.push((c, OK0));
+        }
+    }
+    tools
+}
+
+#[allow(unused_variables, unused_mut)]
+fn extract_tools(zip: &Path, dest: &Path) -> Vec<(Command, &'static [i32])> {
+    let mut tools: Vec<(Command, &'static [i32])> = Vec::new();
+    #[cfg(windows)]
+    {
+        let mut c = tool(system_tar());
+        c.arg("-x").arg("-f").arg(zip).arg("-C").arg(dest);
+        tools.push((c, OK0));
+        let mut c = tool("powershell.exe");
+        c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]).arg(format!(
+            "$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath {} -DestinationPath {}",
+            ps_quote(zip),
+            ps_quote(dest)
+        ));
+        tools.push((c, OK0));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut c = tool("ditto");
+        c.arg("-x").arg("-k").arg(zip).arg(dest);
+        tools.push((c, OK0));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut c = tool("unzip");
+        c.arg("-q").arg(zip).arg("-d").arg(dest);
+        tools.push((c, OK01));
+        let mut c = tool("bsdtar");
+        c.arg("-x").arg("-f").arg(zip).arg("-C").arg(dest);
+        tools.push((c, OK0));
+        for sevenzip in ["7z", "7zz"] {
+            let mut o = OsString::from("-o");
+            o.push(dest);
+            let mut c = tool(sevenzip);
+            c.args(["x", "-y", "-bd"]).arg(o).arg(zip);
+            tools.push((c, OK0));
+        }
+    }
+    tools
+}
+
+/// Hidden temporary name next to `dest` that still ends in ".zip" (the tools pick the format and
+/// refuse to write from the extension).
+fn zip_temp(dest: &Path) -> PathBuf {
+    let mut s = free_sibling(dest, "part").into_os_string();
+    s.push(".zip");
+    PathBuf::from(s)
+}
+
+/// Zips `items` (all in one folder) into the new file `dest`. The archive is built under a temporary
+/// name and renamed into place when finished, so `dest` never holds a half-written zip.
+/// Never overwrites: an existing `dest` is an error.
+pub fn compress_items(items: &[PathBuf], dest: &Path) -> io::Result<()> {
+    let invalid = |m: &str| io::Error::new(io::ErrorKind::InvalidInput, m.to_owned());
+    let parent = items.first().and_then(|p| p.parent()).ok_or_else(|| invalid("nothing to compress"))?;
+    let mut names = Vec::with_capacity(items.len());
+    for p in items {
+        if p.parent() != Some(parent) {
+            return Err(invalid("the items are not all in the same folder"));
+        }
+        names.push(arg_safe(p.file_name().ok_or_else(|| invalid("an item has no name"))?));
+    }
+    if fs::symlink_metadata(dest).is_ok() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
+    }
+    let tmp = zip_temp(dest);
+    let result = run_first_available(compress_tools(parent, items, &names, &tmp)).and_then(|_| {
+        if tmp.is_file() {
+            rename_retry(&tmp, dest)
+        } else {
+            Err(io::Error::other("the ZIP tool did not create an archive"))
+        }
+    });
+    if result.is_err() {
+        let _ = remove_existing(&tmp); // don't leave the partial archive behind
+    }
+    result
+}
+
+/// Unpacks `zip` into the new folder `dest` (same temp-then-rename safety as `compress_items`).
+/// Never merges into or overwrites an existing `dest`.
+pub fn extract_zip(zip: &Path, dest: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(dest).is_ok() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
+    }
+    let tmp = free_sibling(dest, "part");
+    fs::create_dir(&tmp)?;
+    let result = run_first_available(extract_tools(zip, &tmp)).and_then(|_| rename_retry(&tmp, dest));
+    if result.is_err() {
+        let _ = remove_existing(&tmp);
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------------------------
+// Browsing a zip like a folder. The archive is unpacked once into a per-process cache folder; tabs
+// navigate in that real folder, while everything the user sees (address bar, breadcrumbs, tab
+// title, "Up") is translated back to "<zip path>\inner\folder" by `display_path`.
+// ---------------------------------------------------------------------------------------------
+
+struct Mount {
+    /// The zip file (canonical path; may itself live inside another mount's cache folder).
+    zip: PathBuf,
+    /// Where it was unpacked.
+    root: PathBuf,
+    /// Size and modification time of the zip when it was unpacked; a changed zip is unpacked anew.
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+static MOUNTS: std::sync::Mutex<Vec<Mount>> = std::sync::Mutex::new(Vec::new());
+static MOUNT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const CACHE_PREFIX: &str = "FileFly-archives-";
+
+fn mounts() -> std::sync::MutexGuard<'static, Vec<Mount>> {
+    MOUNTS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn cache_root() -> PathBuf {
+    std::env::temp_dir().join(format!("{CACHE_PREFIX}{}", std::process::id()))
+}
+
+fn join_rel(base: &Path, rel: &Path) -> PathBuf {
+    if rel.as_os_str().is_empty() { base.to_path_buf() } else { base.join(rel) }
+}
+
+/// The unpacked folder of `zip` if it was unpacked before and the zip has not changed since.
+fn fresh_mount_root(zip: &Path) -> Option<PathBuf> {
+    let md = fs::metadata(zip).ok()?;
+    let modified = md.modified().ok();
+    let ms = mounts();
+    let found = ms
+        .iter()
+        .rev()
+        .find(|m| m.zip == zip && m.len == md.len() && m.modified == modified && m.root.is_dir())
+        .map(|m| m.root.clone());
+    found
+}
+
+pub enum ArchivePath {
+    /// A normal path (possibly translated into an already unpacked archive).
+    Real(PathBuf),
+    /// The path points into (or at) a zip that still has to be unpacked with `mount_archive`;
+    /// `rel` is the part inside the zip.
+    Extract { zip: PathBuf, rel: PathBuf },
+}
+
+/// The first zip *file* on the way down `path` and the remainder of the path after it.
+fn find_zip_in(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let comps: Vec<_> = path.components().collect();
+    let mut prefix = PathBuf::new();
+    for (i, c) in comps.iter().enumerate() {
+        prefix.push(c.as_os_str());
+        if has_zip_ext(&prefix) && prefix.is_file() {
+            let rel: PathBuf = comps[i + 1..].iter().collect();
+            return Some((prefix, rel));
+        }
+    }
+    None
+}
+
+/// Turns a path that may run through zip files ("C:\a\b.zip\docs") into a real one. Archives that
+/// are not unpacked yet are reported instead of being unpacked here (unpacking takes a while).
+pub fn resolve_archive_path(path: &Path) -> ArchivePath {
+    let mut path = path.to_path_buf();
+    for _ in 0..8 {
+        // (zips inside zips: after one translation the new path may run through another zip)
+        let Some((prefix, rel)) = find_zip_in(&path) else {
+            return ArchivePath::Real(path);
+        };
+        let zip = dunce::canonicalize(&prefix).unwrap_or(prefix);
+        match fresh_mount_root(&zip) {
+            Some(root) => path = join_rel(&root, &rel),
+            None => return ArchivePath::Extract { zip, rel },
+        }
+    }
+    ArchivePath::Real(path)
+}
+
+/// Unpacks `zip` (or reuses the unpacking from earlier) and returns the folder it was unpacked to.
+/// Blocking: call it from a worker thread.
+pub fn mount_archive(zip: &Path) -> io::Result<PathBuf> {
+    if let Some(root) = fresh_mount_root(zip) {
+        return Ok(root);
+    }
+    let md = fs::metadata(zip)?;
+    let base = cache_root().join(MOUNT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string());
+    fs::create_dir_all(&base)?;
+    // Canonical, so it compares equal to what the folder tabs get from `canonicalize` (8.3 names on
+    // Windows, /var -> /private/var on macOS).
+    let base = dunce::canonicalize(&base)?;
+    let stem = zip.file_stem().map(|s| s.to_os_string()).unwrap_or_else(|| "archive".into());
+    let root = base.join(stem);
+    if let Err(e) = extract_zip(zip, &root) {
+        let _ = fs::remove_dir_all(&base);
+        return Err(e);
+    }
+    mounts().push(Mount { zip: zip.to_path_buf(), root: root.clone(), len: md.len(), modified: md.modified().ok() });
+    Ok(root)
+}
+
+/// The path the user should see for `real`: inside an unpacked archive that is
+/// "<zip path>\<inner path>", anywhere else the path itself.
+pub fn display_path(real: &Path) -> PathBuf {
+    let ms = mounts();
+    if ms.is_empty() {
+        return real.to_path_buf();
+    }
+    let mut p = real.to_path_buf();
+    for _ in 0..8 {
+        let Some(m) = ms.iter().filter(|m| p.starts_with(&m.root)).max_by_key(|m| m.root.as_os_str().len()) else {
+            break;
+        };
+        let rel = p.strip_prefix(&m.root).map(Path::to_path_buf).unwrap_or_default();
+        p = join_rel(&m.zip, &rel);
+    }
+    p
+}
+
+/// The zip file whose unpacked contents `path` is part of, if any.
+pub fn archive_of(path: &Path) -> Option<PathBuf> {
+    let ms = mounts();
+    let found = ms
+        .iter()
+        .filter(|m| path.starts_with(&m.root))
+        .max_by_key(|m| m.root.as_os_str().len())
+        .map(|m| m.zip.clone());
+    found
+}
+
+/// A real folder next to the outermost zip that `real` is inside of (`real` itself when it is not
+/// inside an archive). Used for what has to be written to disk: sessions, "Extract all".
+pub fn folder_outside(real: &Path) -> PathBuf {
+    if archive_of(real).is_none() {
+        return real.to_path_buf();
+    }
+    let mut p = display_path(real);
+    while !p.is_dir() {
+        match p.parent() {
+            Some(q) => p = q.to_path_buf(),
+            None => break,
+        }
+    }
+    p
+}
+
+/// Deletes everything unpacked by this process (called on exit).
+pub fn remove_archive_cache() {
+    let _ = fs::remove_dir_all(cache_root());
+}
+
+/// Removes caches that a crashed or killed instance left in the temp folder. Only quite old ones:
+/// another FileFly window that is still running may be using a younger one.
+pub fn sweep_old_archive_caches() {
+    let Ok(rd) = fs::read_dir(std::env::temp_dir()) else { return };
+    let ours = cache_root();
+    for item in rd.flatten() {
+        if !item.file_name().to_string_lossy().starts_with(CACHE_PREFIX) || item.path() == ours {
+            continue;
+        }
+        let old = item
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(7 * 24 * 3600));
+        if old {
+            let _ = fs::remove_dir_all(item.path());
+        }
+    }
+}
