@@ -1,0 +1,204 @@
+//! Custom title bar parts: caption buttons, resize handles, tab wings.
+
+use crate::prelude::*;
+
+/// Fills the region between a right-angle corner at `apex` and a quarter circle whose centre lies at
+/// `apex + (sx, sy) * r`. Used for concave "inner corner" rounding (tab wings, sidebar/file-view junction).
+pub(crate) fn corner_fillet(
+    painter: &egui::Painter,
+    apex: egui::Pos2,
+    r: f32,
+    sx: f32,
+    sy: f32,
+    color: Color32,
+) {
+    if r < 0.5 {
+        return;
+    }
+    let c = pos2(apex.x + sx * r, apex.y + sy * r);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(apex, color);
+    const N: usize = 10;
+    for i in 0..=N {
+        let a = std::f32::consts::FRAC_PI_2 * i as f32 / N as f32;
+        mesh.colored_vertex(pos2(c.x - sx * r * a.cos(), c.y - sy * r * a.sin()), color);
+    }
+    for i in 0..N {
+        mesh.add_triangle(0, 1 + i as u32, 2 + i as u32);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// Concave fillet at the bottom corner of a tab.
+pub(crate) fn tab_wing(ui: &Ui, corner: egui::Pos2, r: f32, left: bool, color: Color32) {
+    corner_fillet(
+        ui.painter(),
+        corner,
+        r,
+        if left { -1.0 } else { 1.0 },
+        -1.0,
+        color,
+    );
+}
+
+/// Band behind the nav/command rows: only its top-left corner can be rounded.
+pub(crate) fn band_frame(pal: &Palette, nw: u8, l: f32, r: f32, t: f32, b: f32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(pal.layer)
+        .corner_radius(CornerRadius {
+            nw: if pal.mica { nw } else { 0 },
+            ne: 0,
+            sw: 0,
+            se: 0,
+        })
+        .inner_margin(Margin {
+            left: l as i8,
+            right: r as i8,
+            top: t as i8,
+            bottom: b as i8,
+        })
+}
+
+/// Minimize / maximize-restore / close, drawn with the painter so they stay crisp at any scale.
+pub(crate) fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, area: Rect, maximized: bool) {
+    caption_buttons_ex(ui, m, pal, area, maximized, true);
+}
+
+/// Like `caption_buttons`; with `show_max == false` only minimize and close are drawn (fixed-size
+/// dialog windows such as the file-operation progress window).
+pub(crate) fn caption_buttons_ex(ui: &mut Ui, m: &Metrics, pal: &Palette, area: Rect, maximized: bool, show_max: bool) {
+    let kinds: &[usize] = if show_max { &[0, 1, 2] } else { &[0, 2] };
+    let bw = area.width() / kinds.len() as f32;
+    for (slot, &k) in kinds.iter().enumerate() {
+        let r = Rect::from_min_size(
+            pos2(area.left() + bw * slot as f32, area.top()),
+            vec2(bw, area.height()),
+        );
+        let resp = ui.interact(r, Id::new(("caption", k)), Sense::click());
+        let close = k == 2;
+        let bg = if resp.is_pointer_button_down_on() {
+            if close {
+                Color32::from_rgb(0xB3, 0x28, 0x1A)
+            } else {
+                pal.subtle_pressed
+            }
+        } else if resp.hovered() {
+            if close {
+                Color32::from_rgb(0xC4, 0x2B, 0x1C)
+            } else {
+                pal.subtle_hover
+            }
+        } else {
+            Color32::TRANSPARENT
+        };
+        if bg != Color32::TRANSPARENT {
+            if close && !maximized {
+                ui.painter().rect_filled(
+                    r,
+                    CornerRadius {
+                        nw: 0,
+                        ne: if RADIUS == 0 { RADIUS } else { RADIUS - 4 },
+                        sw: 0,
+                        se: 0,
+                    },
+                    bg,
+                );
+            } else {
+                ui.painter().rect_filled(r, CornerRadius::ZERO, bg);
+            }
+        }
+        let fg = if close && resp.hovered() {
+            Color32::WHITE
+        } else {
+            pal.text
+        };
+        let stroke = Stroke::new(1.0_f32, fg);
+        let c = r.center();
+        let s = (m.s * 5.0).round();
+        let p = ui.painter();
+        match k {
+            0 => {
+                p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke);
+            }
+            1 if maximized => {
+                let o = (m.s * 2.0).round();
+                p.rect_stroke(
+                    Rect::from_min_size(pos2(c.x - s, c.y - s + o), vec2(2.0 * s - o, 2.0 * s - o)),
+                    CornerRadius::ZERO,
+                    stroke,
+                    StrokeKind::Inside,
+                );
+                p.line_segment([pos2(c.x - s + o, c.y - s), pos2(c.x + s, c.y - s)], stroke);
+                p.line_segment([pos2(c.x + s, c.y - s), pos2(c.x + s, c.y + s - o)], stroke);
+            }
+            1 => {
+                p.rect_stroke(
+                    Rect::from_center_size(c, vec2(2.0 * s, 2.0 * s)),
+                    CornerRadius::ZERO,
+                    stroke,
+                    StrokeKind::Inside,
+                );
+            }
+            _ => {
+                p.line_segment([pos2(c.x - s, c.y - s), pos2(c.x + s, c.y + s)], stroke);
+                p.line_segment([pos2(c.x + s, c.y - s), pos2(c.x - s, c.y + s)], stroke);
+            }
+        }
+        if resp.clicked() {
+            ui.send_viewport_cmd(match k {
+                0 => egui::ViewportCommand::Minimized(true),
+                1 => egui::ViewportCommand::Maximized(!maximized),
+                _ => egui::ViewportCommand::Close,
+            });
+        }
+    }
+}
+
+/// Undecorated windows have no native resize border, so handle the edges ourselves.
+pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
+    use egui::viewport::ResizeDirection as D;
+    let (maximized, fullscreen) = ctx.input(|i| {
+        (
+            i.viewport().maximized.unwrap_or(false),
+            i.viewport().fullscreen.unwrap_or(false),
+        )
+    });
+    if maximized || fullscreen {
+        return;
+    }
+    let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else {
+        return;
+    };
+    let r = ctx.content_rect();
+    let (b, c) = (m.s * 5.0, m.s * 12.0);
+    let (el, er, et, eb) = (
+        pos.x - r.left(),
+        r.right() - pos.x,
+        pos.y - r.top(),
+        r.bottom() - pos.y,
+    );
+    let left = el < b || (el < c && (et < b || eb < b));
+    let right = er < b || (er < c && (et < b || eb < b));
+    let top = et < b || (et < c && (el < b || er < b));
+    let bottom = eb < b || (eb < c && (el < b || er < b));
+    let (dir, cursor) = match (left, right, top, bottom) {
+        (true, _, true, _) => (D::NorthWest, egui::CursorIcon::ResizeNorthWest),
+        (_, true, true, _) => (D::NorthEast, egui::CursorIcon::ResizeNorthEast),
+        (true, _, _, true) => (D::SouthWest, egui::CursorIcon::ResizeSouthWest),
+        (_, true, _, true) => (D::SouthEast, egui::CursorIcon::ResizeSouthEast),
+        (true, ..) => (D::West, egui::CursorIcon::ResizeWest),
+        (_, true, ..) => (D::East, egui::CursorIcon::ResizeEast),
+        (_, _, true, _) => {
+            if pos.x > r.right() - m.s * 46.0 * 3.0 {
+                return; // don't steal clicks from the caption buttons
+            }
+            (D::North, egui::CursorIcon::ResizeNorth)
+        }
+        (_, _, _, true) => (D::South, egui::CursorIcon::ResizeSouth),
+        _ => return,
+    };
+    ctx.set_cursor_icon(cursor);
+    if ctx.input(|i| i.pointer.primary_pressed()) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+    }
+}

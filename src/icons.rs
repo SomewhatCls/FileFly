@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock, RwLock};
-use crate::Entry;
+use crate::model::Entry;
 
 //Consts for Worker thread metrics and icon size
 const ICON_SIZE: u16 = 32;
@@ -271,6 +271,7 @@ pub fn icon_source(name: &str) -> egui::ImageSource<'static> {
         "archive" => egui::include_image!("../assets/archive.svg"),
         "audio" => egui::include_image!("../assets/audio.svg"),
         "back" => egui::include_image!("../assets/back.svg"),
+        "browse" => egui::include_image!("../assets/browse.svg"),
         "check" => egui::include_image!("../assets/check.svg"),
         "chevron_down" => egui::include_image!("../assets/chevron_down.svg"),
         "chevron_right" => egui::include_image!("../assets/chevron_right.svg"),

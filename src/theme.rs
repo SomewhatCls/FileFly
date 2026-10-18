@@ -571,3 +571,59 @@ pub fn style_frameless(window: &impl raw_window_handle::HasWindowHandle) {
 }
 #[cfg(not(windows))]
 pub fn style_frameless(_window: &impl raw_window_handle::HasWindowHandle) {}
+
+/// A bare Win32 window handle, so the backdrop helpers above can be applied to windows that
+/// egui/eframe doesn't hand out handles for (the extra viewports).
+#[cfg(windows)]
+struct Hwnd(isize);
+#[cfg(windows)]
+impl raw_window_handle::HasWindowHandle for Hwnd {
+    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let h = std::num::NonZeroIsize::new(self.0).ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let raw = raw_window_handle::RawWindowHandle::Win32(raw_window_handle::Win32WindowHandle::new(h));
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
+    }
+}
+
+/// Gives the extra (undecorated) windows of this process whose title is `title` the same Mica
+/// backdrop, rounded corners and shadow as the main window. Returns false while no such window
+/// exists yet, so the caller can simply try again next frame.
+#[cfg(windows)]
+pub fn backdrop_by_title(title: &str, dark: bool, mica: bool) -> bool {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn EnumThreadWindows(tid: u32, f: unsafe extern "system" fn(isize, isize) -> i32, lparam: isize) -> i32;
+        fn GetWindowTextW(h: isize, buf: *mut u16, max: i32) -> i32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThreadId() -> u32;
+    }
+    struct Search {
+        title: Vec<u16>,
+        found: Vec<isize>,
+    }
+    unsafe extern "system" fn visit(h: isize, lp: isize) -> i32 {
+        let s = unsafe { &mut *(lp as *mut Search) };
+        let mut buf = [0u16; 256];
+        let n = unsafe { GetWindowTextW(h, buf.as_mut_ptr(), buf.len() as i32) };
+        if n > 0 && buf[..n as usize] == s.title[..] {
+            s.found.push(h);
+        }
+        1
+    }
+    let mut s = Search { title: title.encode_utf16().take(255).collect(), found: Vec::new() };
+    unsafe { EnumThreadWindows(GetCurrentThreadId(), visit, &mut s as *mut Search as isize) };
+    for h in &s.found {
+        let w = Hwnd(*h);
+        if mica {
+            apply_backdrop(&w, dark);
+        }
+        style_frameless(&w);
+    }
+    !s.found.is_empty()
+}
+#[cfg(not(windows))]
+pub fn backdrop_by_title(_title: &str, _dark: bool, _mica: bool) -> bool {
+    true
+}
