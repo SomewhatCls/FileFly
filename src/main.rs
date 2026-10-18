@@ -15,6 +15,7 @@ mod app;
 mod defaultapp;
 mod dragdrop;
 mod drives;
+mod elevate;
 mod fsops;
 mod icons;
 mod indexer;

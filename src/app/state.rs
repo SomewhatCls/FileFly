@@ -51,6 +51,8 @@ pub(crate) struct Explorer {
     pub(crate) applied_style: Option<(f32, Accent)>,
     pub(crate) backdrop_theme: Option<egui::Theme>,
     pub(crate) mica: bool,
+    /// Error text + what "Try as administrator" does for it (only offered while that error shows).
+    pub(crate) admin_retry: Option<(String, AdminRetry)>,
     pub(crate) m: Metrics,
     pub(crate) pal: Palette,
     pub(crate) last_title: String,
@@ -174,6 +176,7 @@ impl Explorer {
             applied_style: None,
             backdrop_theme: None,
             mica: false,
+            admin_retry: None,
             m: Metrics::new(14.0, 1.0),
             pal: Palette::new(egui::Theme::Dark, Accent::fallback(), false),
             last_title: String::new(),

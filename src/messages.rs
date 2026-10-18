@@ -12,6 +12,8 @@ pub(crate) enum AppMsg {
     /// A background file operation (see `run_op`) finished.
     Job(u64, Result<String, String>),
     Stats(u64, FolderStats),
+    /// A failed job could be retried as administrator; `msg` is the error text it reports.
+    AdminOffer { msg: String, retry: AdminRetry },
     Trash {
         tab: u64,
         seq: u64,
@@ -61,6 +63,12 @@ pub(crate) enum Action {
     /// Files dragged onto a folder / pane / sidebar entry: copy them there.
     DropCopy(Vec<PathBuf>, PathBuf),
     Rename(PathBuf),
+    /// The "Try as administrator" button of the current error.
+    RetryAsAdmin,
+    /// Run a program elevated.
+    RunAsAdmin(PathBuf),
+    /// Open a folder in a new, elevated window.
+    OpenFolderAsAdmin(PathBuf),
     CommitRename(PathBuf, String),
     CancelRename,
     Delete(Vec<PathBuf>),

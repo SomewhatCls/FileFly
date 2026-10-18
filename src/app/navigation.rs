@@ -45,7 +45,11 @@ impl Explorer {
                 return;
             }
             Err(e) => {
-                self.tabs[ti].error = Some(format!("Could not open folder: {e}"));
+                let msg = format!("Could not open folder: {e}");
+                if is_denied_io(&e) {
+                    self.admin_retry = Some((msg.clone(), AdminRetry::OpenFolder(path.clone())));
+                }
+                self.tabs[ti].error = Some(msg);
                 return;
             }
         };
@@ -218,7 +222,11 @@ impl Explorer {
             Ok(m) if m.is_dir() => self.navigate(self.active, path.to_path_buf()),
             Ok(_) => {
                 if let Err(e) = open::that(path) {
-                    self.tabs[self.active].error = Some(format!("Could not open file: {e}"));
+                    let msg = format!("Could not open file: {e}");
+                    if needs_elevation(&e) {
+                        self.admin_retry = Some((msg.clone(), AdminRetry::RunFile(path.to_path_buf())));
+                    }
+                    self.tabs[self.active].error = Some(msg);
                 }
             }
             Err(e) => self.tabs[self.active].error = Some(format!("Could not access item: {e}")),

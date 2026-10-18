@@ -111,6 +111,17 @@ impl Explorer {
                             );
                         }
                     }
+                    // This window runs with administrator rights.
+                    if is_elevated() {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(
+                                RichText::new("Administrator")
+                                    .color(pal.accent)
+                                    .strong()
+                                    .size(m.font * 0.93),
+                            );
+                        });
+                    }
                 });
             });
     }

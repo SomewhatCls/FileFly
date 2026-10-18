@@ -76,6 +76,11 @@ impl Explorer {
                                 t.entries.clear();
                                 t.lookup.clear();
                                 t.view.clear();
+                                // A folder that needs administrator rights can be opened in an
+                                // elevated window.
+                                if fs::read_dir(&t.dir).is_err_and(|x| is_denied_io(&x)) {
+                                    self.admin_retry = Some((e.clone(), AdminRetry::OpenFolder(t.dir.clone())));
+                                }
                                 t.error = Some(e);
                             }
                         }
@@ -187,6 +192,7 @@ impl Explorer {
                         self.new_tab(first.clone());
                     }
                 }
+                AppMsg::AdminOffer { msg, retry } => self.admin_retry = Some((msg, retry)),
                 AppMsg::Stats(seq, stats) => {
                     if let Some(p) = &mut self.props {
                         if p.stats_gen == seq {

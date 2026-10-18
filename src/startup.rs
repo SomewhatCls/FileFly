@@ -65,6 +65,13 @@ pub(crate) fn clean_path_arg(a: &std::ffi::OsStr) -> PathBuf {
 }
 
 pub(crate) fn run() -> eframe::Result<()> {
+    // The elevated helper (see elevate.rs) performs one file action and exits; it never shows a window.
+    {
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+        if args.first().and_then(|a| a.to_str()) == Some("--admin-op") {
+            std::process::exit(run_helper(&args[1..]));
+        }
+    }
     // The release build has no console, so a panic would otherwise vanish without a trace.
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;

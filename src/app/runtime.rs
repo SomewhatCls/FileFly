@@ -58,6 +58,14 @@ impl eframe::App for Explorer {
     ) {
         // Background painting.
         let rect = ui.content_rect();
+
+        // "Try as administrator" is only offered while the error it belongs to is still showing
+        // (the error bar of the table reads which tab that is).
+        if self.admin_retry.as_ref().is_some_and(|(m, _)| self.tabs[self.active].error.as_ref() != Some(m)) {
+            self.admin_retry = None;
+        }
+        let retry_tab = if self.admin_retry.is_some() { self.tabs[self.active].id } else { u64::MAX };
+        ui.data_mut(|d| d.insert_temp(Id::new("admin_retry_tab"), retry_tab));
         let painter = ui.layer_painter(egui::LayerId::background());
 
         if self.mica {
@@ -163,8 +171,9 @@ impl eframe::App for Explorer {
         // Update the title after applying actions, so tab changes
         // can update the title in the same UI pass.
         let title = format!(
-            "{} – FileFly",
-            self.tabs[self.active].title()
+            "{} – FileFly{}",
+            self.tabs[self.active].title(),
+            if is_elevated() { " (Administrator)" } else { "" }
         );
 
         if title != self.last_title {
