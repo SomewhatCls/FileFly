@@ -1,0 +1,31 @@
+# cargo-about configuration: lists every license cargo-about may accept.
+# If a new dependency uses a license that is not listed, `cargo about generate` fails and names it,
+# so you can review that license before adding it here.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "OFL-1.1",          # fonts bundled with egui (epaint_default_fonts)
+    "Ubuntu-font-1.0",  # fonts bundled with egui (epaint_default_fonts)
+    "MPL-2.0",
+    "AGPL-3.0-or-later",
+]
+
+# Only what ends up in the shipped exe.
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
