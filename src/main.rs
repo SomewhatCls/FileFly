@@ -20,7 +20,7 @@ mod fsops;
 mod icons;
 mod indexer;
 mod messages;
-mod model;
+mod data;
 mod ops;
 mod peers;
 mod picker;

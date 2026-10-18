@@ -65,6 +65,10 @@ pub(crate) enum Action {
     Rename(PathBuf),
     /// The "Try as administrator" button of the current error.
     RetryAsAdmin,
+    /// "Change folder icon…": pick an .ico for the folder.
+    ChangeFolderIcon(PathBuf),
+    /// Back to the normal icon.
+    ResetFolderIcon(PathBuf),
     /// Run a program elevated.
     RunAsAdmin(PathBuf),
     /// Open a folder in a new, elevated window.

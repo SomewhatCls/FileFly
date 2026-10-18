@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock, RwLock};
-use crate::model::Entry;
+use crate::data::Entry;
 
 //Consts for Worker thread metrics and icon size
 const ICON_SIZE: u16 = 32;
@@ -27,6 +27,8 @@ const PER_FILE_EXTS: &[&str] = &["desktop", "appimage", "ico"];
 struct Special {
     folders: HashSet<PathBuf>,
     drives: HashSet<PathBuf>,
+    /// Folders the user gave an `.ico` of their own (normalised folder path -> icon file).
+    custom: HashMap<PathBuf, PathBuf>,
 }
 
 fn special() -> &'static RwLock<Special> {
@@ -57,6 +59,22 @@ pub fn set_special_drives<I: IntoIterator<Item = PathBuf>>(paths: I) {
     }
 }
 
+/// Replaces the folders that show an icon chosen by the user (folder -> `.ico` file).
+pub fn set_custom_folder_icons<I: IntoIterator<Item = (PathBuf, PathBuf)>>(map: I) {
+    if let Ok(mut s) = special().write() {
+        s.custom = map.into_iter().map(|(k, v)| (norm(&k), v)).collect();
+    }
+}
+
+/// The `.ico` the user chose for this folder, if any.
+pub fn custom_icon_of(path: &Path) -> Option<PathBuf> {
+    let s = special().read().ok()?;
+    if s.custom.is_empty() {
+        return None;
+    }
+    s.custom.get(&norm(path)).cloned()
+}
+
 fn is_special_dir(path: &Path) -> bool {
     if path.parent().is_none() {
         return true; // drive root (C:\, \\server\share\, /)
@@ -77,6 +95,10 @@ fn is_special_dir(path: &Path) -> bool {
 /// Windows, and one per path for special folders (Documents, drives, pinned folders).
 pub fn make_icon_key(is_dir: bool, ext: Option<&str>, path: &Path) -> String {
     if is_dir {
+        // A user-chosen icon wins; the key names the .ico itself, so folders sharing one share a texture.
+        if let Some(ico) = custom_icon_of(path) {
+            return format!("ico:{}", ico.to_string_lossy());
+        }
         return if is_special_dir(path) { path.to_string_lossy().into_owned() } else { "<dir>".into() };
     }
     match ext {
@@ -116,7 +138,28 @@ pub struct IconCache {
     frame: u64,
 }
 
+/// Decodes an `.ico` file directly (largest image, scaled to the icon size).
+fn load_ico_file(path: &Path) -> Option<egui::ColorImage> {
+    let img = image::open(path).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let s = ICON_SIZE as u32;
+    let img = if w != s || h != s {
+        image::imageops::resize(&img, s, s, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+    Some(egui::ColorImage::from_rgba_unmultiplied([s as usize, s as usize], img.as_raw()))
+}
+
 fn load_icon(path: &Path) -> Option<egui::ColorImage> {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ico")) {
+        if let Some(img) = load_ico_file(path) {
+            return Some(img);
+        }
+    }
     let icon = get_file_icon(path, ICON_SIZE).ok()?;
     if icon.width == 0 || icon.height == 0 {
         return None;
@@ -204,7 +247,9 @@ impl IconCache {
             return slot.tex.clone();
         }
         if self.pending.insert(key.to_owned()) {
-            self.queue.jobs.lock().unwrap().push_back(Job { key: key.to_owned(), path: path.to_owned() });
+            // "ico:<file>" keys (custom folder icons) load the .ico instead of the folder itself.
+            let load = key.strip_prefix("ico:").map(PathBuf::from).unwrap_or_else(|| path.to_owned());
+            self.queue.jobs.lock().unwrap().push_back(Job { key: key.to_owned(), path: load });
             self.queue.cv.notify_one();
         }
         None

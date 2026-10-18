@@ -258,6 +258,8 @@ impl Explorer {
                     }
                 }
             }
+            Action::ChangeFolderIcon(p) => self.open_icon_picker(ti, p),
+            Action::ResetFolderIcon(p) => self.set_folder_icon(&p, None),
             Action::RunAsAdmin(p) => {
                 if let Err(e) = run_file_elevated(&p) {
                     self.tabs[ti].error = Some(e);

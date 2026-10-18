@@ -819,6 +819,16 @@ pub(crate) fn table_ui(
                     if e.is_dir && menu_item(ui, m, pal, Some("app"), "Open as administrator", None, true) {
                         actions.push(Action::OpenFolderAsAdmin(p.clone()));
                     }
+                    if e.is_dir && archive_of(p).is_none() {
+                        if menu_item(ui, m, pal, Some("image"), "Change folder icon…", None, true) {
+                            actions.push(Action::ChangeFolderIcon(p.clone()));
+                        }
+                        if custom_icon_of(p).is_some()
+                            && menu_item(ui, m, pal, Some("refresh"), "Reset folder icon", None, true)
+                        {
+                            actions.push(Action::ResetFolderIcon(p.clone()));
+                        }
+                    }
                     // An opened zip is read-only (it is shown from a temporary unpacked copy).
                     let in_archive = archive_of(p).is_some();
                     if (e.is_dir || has_zip_ext(&e.path))

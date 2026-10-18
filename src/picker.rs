@@ -14,6 +14,17 @@ pub(crate) enum PickFor {
         name: String,
         show: bool,
     },
+    /// "Change folder icon…": pick an `.ico` file for `folder` (files are listed next to folders).
+    Icon { folder: PathBuf },
+}
+
+fn is_ico_ext(p: &Path) -> bool {
+    p.extension().is_some_and(|x| x.eq_ignore_ascii_case("ico"))
+}
+
+/// An `.ico` file (not a folder that merely has such a name).
+fn is_ico_path(p: &Path) -> bool {
+    is_ico_ext(p) && p.is_file()
 }
 
 type Listing = Result<Vec<(String, PathBuf)>, String>;
@@ -65,22 +76,31 @@ fn name_problem(name: &str) -> Option<&'static str> {
     }
 }
 
-fn list_folders(dir: &Path, show_hidden: bool) -> Listing {
+fn list_folders(dir: &Path, show_hidden: bool, with_ico: bool) -> Listing {
     let rd = fs::read_dir(dir).map_err(|e| format!("Could not read this folder: {e}"))?;
     let mut out: Vec<(String, PathBuf)> = Vec::new();
+    let mut icos: Vec<(String, PathBuf)> = Vec::new();
     for item in rd.flatten() {
         let Ok(ft) = item.file_type() else { continue };
         let path = item.path();
-        if !(ft.is_dir() || (ft.is_symlink() && path.is_dir())) {
+        let is_dir = ft.is_dir() || (ft.is_symlink() && path.is_dir());
+        let is_ico = with_ico && !is_dir && is_ico_ext(&path);
+        if !(is_dir || is_ico) {
             continue;
         }
         let name = item.file_name().to_string_lossy().into_owned();
         if !show_hidden && item.metadata().is_ok_and(|md| is_hidden_entry(&name, &md)) {
             continue;
         }
-        out.push((name, path));
+        if is_ico {
+            icos.push((name, path));
+        } else {
+            out.push((name, path));
+        }
     }
     sort_folders(&mut out);
+    sort_folders(&mut icos);
+    out.extend(icos); // folders first, then the .ico files
     Ok(out)
 }
 
@@ -108,6 +128,11 @@ impl FolderPicker {
         p
     }
 
+    /// Whether `.ico` files are listed and one of them is picked (instead of a folder).
+    fn wants_files(&self) -> bool {
+        matches!(self.purpose, PickFor::Icon { .. })
+    }
+
     /// The folder the command will use: the selected subfolder, else the open folder.
     fn target(&self) -> &Path {
         self.selected.as_deref().unwrap_or(&self.dir)
@@ -126,8 +151,9 @@ impl FolderPicker {
         let (tx, rx) = mpsc::channel();
         self.loading = Some(rx);
         let ctx = ctx.clone();
+        let with_ico = self.wants_files();
         std::thread::spawn(move || {
-            let _ = tx.send(list_folders(&dir, show_hidden));
+            let _ = tx.send(list_folders(&dir, show_hidden, with_ico));
             ctx.request_repaint();
         });
     }
@@ -325,6 +351,34 @@ impl Explorer {
         ));
     }
 
+    /// "Change folder icon…": asks for an `.ico` file (starting in the folder itself, or where the
+    /// current custom icon lives).
+    pub(crate) fn open_icon_picker(&mut self, ti: usize, folder: PathBuf) {
+        let start = custom_icon_of(&folder)
+            .and_then(|i| i.parent().map(Path::to_path_buf))
+            .filter(|d| d.is_dir())
+            .unwrap_or_else(|| folder.clone());
+        self.picker = Some(FolderPicker::new(
+            PickFor::Icon { folder },
+            self.tabs[ti].id,
+            start,
+            self.settings.show_hidden,
+            &self.ui,
+        ));
+    }
+
+    /// Gives `folder` the icon `icon` (an `.ico` file), or the normal one for `None`.
+    pub(crate) fn set_folder_icon(&mut self, folder: &Path, icon: Option<PathBuf>) {
+        self.settings.folder_icons.retain(|k, _| !same_path(Path::new(k), folder));
+        if let Some(i) = icon {
+            self.settings
+                .folder_icons
+                .insert(folder.to_string_lossy().into_owned(), i.to_string_lossy().into_owned());
+        }
+        save_settings(&self.settings);
+        self.sync_special_icons(); // re-keys the listings on screen
+    }
+
     pub(crate) fn ui_picker(&mut self, ui: &mut Ui) {
         let Some(mut p) = self.picker.take() else { return };
         p.poll();
@@ -344,7 +398,18 @@ impl Explorer {
         let body_h = (screen.height() - chrome - rest_h).clamp(m.row_h * 2.0, m.s * 340.0);
         // In a narrow window the navigation pane goes; the path field and Up still get anywhere.
         let show_nav = width >= m.s * 480.0;
+        let icon_mode = p.wants_files();
         let (ok_label, intro) = match &p.purpose {
+            PickFor::Icon { folder } => (
+                "Set icon",
+                format!(
+                    "Choose an .ico file to use as the icon of “{}”.",
+                    folder
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| folder.display().to_string())
+                ),
+            ),
             PickFor::Extract { zips, .. } => (
                 "Extract",
                 match zips.as_slice() {
@@ -364,7 +429,7 @@ impl Explorer {
             &m,
             &pal,
             "folder_picker",
-            "Select a destination",
+            if icon_mode { "Choose a folder icon" } else { "Select a destination" },
             true,
             width,
             |ui| {
@@ -470,7 +535,8 @@ impl Explorer {
                             .unwrap_or_else(|| p.dir.display().to_string());
                         let count = (p.loading.is_none() && p.list_error.is_none()).then(|| {
                             let n = p.folders.len();
-                            format!("{n} folder{}", if n == 1 { "" } else { "s" })
+                            let what = if icon_mode { "item" } else { "folder" };
+                            format!("{n} {what}{}", if n == 1 { "" } else { "s" })
                         });
                         ui.allocate_ui_with_layout(vec2(list_w, head_h), Layout::left_to_right(Align::Center), |ui| {
                             ui.add_space(m.pad * 0.3);
@@ -507,6 +573,13 @@ impl Explorer {
                     blocker = p.list_error.clone();
                 }
                 match &mut p.purpose {
+                    PickFor::Icon { .. } => {
+                        let chosen = p.selected.as_ref().filter(|f| is_ico_path(f));
+                        let text = chosen
+                            .map(|f| f.display().to_string())
+                            .unwrap_or_else(|| "Select an .ico file from the list.".to_owned());
+                        info_card(ui, &m, &pal, "Selected icon", &text);
+                    }
                     PickFor::Extract { zips, name, show } => {
                         if zips.len() == 1 {
                             ui.horizontal(|ui| {
@@ -560,7 +633,7 @@ impl Explorer {
 
                 // ---- buttons
                 ui.horizontal(|ui| {
-                    let can_make = archive_of(&p.dir).is_none() && p.list_error.is_none();
+                    let can_make = !icon_mode && archive_of(&p.dir).is_none() && p.list_error.is_none();
                     if ui
                         .add_enabled_ui(can_make, |ui| secondary_button(ui, &m, "New folder"))
                         .inner
@@ -572,7 +645,12 @@ impl Explorer {
                         if secondary_button(ui, &m, "Cancel").clicked() {
                             input.cancel = true;
                         }
-                        let ok = blocker.is_none() && target.is_dir();
+                        let ok = blocker.is_none()
+                            && if icon_mode {
+                                p.selected.as_ref().is_some_and(|f| is_ico_path(f))
+                            } else {
+                                target.is_dir()
+                            };
                         if ui
                             .add_enabled_ui(ok, |ui| primary_button(ui, &m, &pal, ok_label))
                             .inner
@@ -624,6 +702,11 @@ impl Explorer {
         let ti = self.tabs.iter().position(|t| t.id == p.tab).unwrap_or(self.active);
         let target = p.target().to_path_buf();
         match p.purpose {
+            PickFor::Icon { folder } => {
+                if let Some(icon) = p.selected.filter(|f| is_ico_path(f)) {
+                    self.set_folder_icon(&folder, Some(icon));
+                }
+            }
             PickFor::Extract { zips, name, show } => {
                 let jobs: Vec<(PathBuf, PathBuf)> = if zips.len() == 1 {
                     vec![(zips[0].clone(), unique_copy_name(&target.join(name.trim())))]
@@ -645,12 +728,13 @@ impl Explorer {
 /// after "New folder" shows a text field in its row.
 fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, height: f32, input: &mut PickerInput) {
     let row_h = m.row_h;
+    let icon_mode = p.wants_files();
     let message = if p.loading.is_some() {
         Some("Loading…".to_owned())
     } else if let Some(e) = &p.list_error {
         Some(e.clone())
     } else if p.folders.is_empty() {
-        Some("This folder has no subfolders.".to_owned())
+        Some(if icon_mode { "No folders or .ico files here." } else { "This folder has no subfolders." }.to_owned())
     } else {
         None
     };
@@ -681,6 +765,8 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, he
         for (name, path) in &p.folders[range] {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
             let inner = rect.shrink2(vec2(0.0, 1.0));
+            // In icon mode the list also holds .ico files: those are picked, folders are opened.
+            let ico_row = icon_mode && is_ico_ext(path) && !path.is_dir();
             let selected = p.selected.as_ref() == Some(path);
             if selected {
                 ui.painter()
@@ -694,9 +780,9 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, he
                 ui,
                 icon_c,
                 m.icon,
-                &make_icon_key(true, None, path),
+                &make_icon_key(!ico_row, if ico_row { Some("ico") } else { None }, path),
                 path,
-                "folder",
+                if ico_row { "image" } else { "folder" },
                 Color32::WHITE,
             );
             let text_rect = Rect::from_min_max(
@@ -704,7 +790,7 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, he
                 pos2(inner.right() - m.pad * 3.2, inner.bottom()),
             );
             let renaming_here = p.new_folder.as_ref().is_some_and(|nf| &nf.path == path);
-            if (resp.hovered() || selected) && !renaming_here {
+            if (resp.hovered() || selected) && !renaming_here && !ico_row {
                 chevron_right(ui, pos2(inner.right() - m.pad * 1.6, inner.center().y), m.font * 0.8, pal.text_secondary);
             }
             match &mut p.new_folder {
@@ -731,7 +817,14 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, he
                 _ => paint_text(ui, text_rect, name, FontId::proportional(m.font), pal.text, false),
             }
             if resp.double_clicked() {
-                input.go = Some(path.clone());
+                if ico_row {
+                    p.selected = Some(path.clone());
+                    input.accept = true;
+                } else {
+                    input.go = Some(path.clone());
+                }
+            } else if resp.clicked() && icon_mode && !ico_row {
+                input.go = Some(path.clone()); // folders are only navigated, never chosen
             } else if resp.clicked() {
                 // Clicking the selected folder again selects the open folder instead (like Windows,
                 // where the open folder is the destination when nothing is selected).

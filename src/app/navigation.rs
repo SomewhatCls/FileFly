@@ -177,6 +177,9 @@ impl Explorer {
         let mut special: Vec<PathBuf> = known_folders().into_iter().filter_map(|(_, _, p)| p).collect();
         special.extend(self.quick.iter().map(|q| q.path.clone()));
         set_special_folders(special);
+        set_custom_folder_icons(
+            self.settings.folder_icons.iter().map(|(k, v)| (PathBuf::from(k), PathBuf::from(v))),
+        );
         // Listings that are already on screen were keyed before the change.
         for t in &mut self.tabs {
             for e in t.entries.iter_mut().chain(t.search_results.iter_mut()).filter(|e| e.is_dir) {

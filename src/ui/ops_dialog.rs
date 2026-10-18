@@ -157,7 +157,7 @@ impl Explorer {
                         hide = true;
                     }
                 }
-                let panel = egui::CentralPanel::default().frame(frame.clone()).show_inside(ui, |ui| {
+                let panel = egui::CentralPanel::default().frame(frame.clone()).show(ui, |ui| {
                     ui.set_width(width);
                     // `CentralPanel` stretches to fill the window, so measure the content in a scope
                     // (otherwise the window could only ever grow).

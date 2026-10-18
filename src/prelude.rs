@@ -44,7 +44,7 @@ pub(crate) use crate::app::*;
 pub(crate) use crate::dragdrop::*;
 pub(crate) use crate::elevate::*;
 pub(crate) use crate::messages::*;
-pub(crate) use crate::model::*;
+pub(crate) use crate::data::*;
 pub(crate) use crate::ops::*;
 pub(crate) use crate::quick::*;
 pub(crate) use crate::search::*;
