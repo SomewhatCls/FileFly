@@ -1,7 +1,8 @@
 [package]
 name = "FileFly"
-version = "0.2.9"
+version = "0.3.0"
 edition = "2024"
+license="AGPL-3.0-or-later"
 
 [target.'cfg(windows)'.dependencies]
 window-vibrancy = "0.8"
