@@ -68,7 +68,7 @@ pub(crate) fn op_line(ui: &mut Ui, m: &Metrics, pal: &Palette, key: &str, value:
 }
 
 impl Explorer {
-    /// One progress dialog per running file operation, in the style of the other dialogs: title,
+    /// One progress window per running file operation (a separate OS window): title,
     /// percent, bar, from/to, current name, Pause/Cancel, and an expandable speed graph.
     pub(crate) fn ui_ops(&mut self, ui: &mut Ui) {
         if self.ops.is_empty() {
@@ -77,51 +77,92 @@ impl Explorer {
         self.ui.request_repaint_after(Duration::from_millis(100));
         let (m, pal) = (self.m, self.pal);
         let now = Instant::now();
-        let center = ui.content_rect().center();
+        let ctx = ui.ctx().clone();
+        let transparency = self.transparency;
         let width = m.s * 440.0;
-        let mut shown = 0.0_f32;
         for op in self.ops.iter_mut() {
             if op.hidden || op.started.elapsed() < Duration::from_millis(500) {
                 continue;
             }
             op.sample(now);
-            let pos = pos2(
-                center.x - width * 0.5 - m.pad * 2.0 + shown * 26.0,
-                center.y - m.s * 120.0 + shown * 26.0,
-            );
-            shown += 1.0;
             let (mut cancel, mut hide, mut pause, mut more) = (false, false, false, false);
             let mut skip: Vec<u64> = Vec::new();
             let paused = op.progress.paused.load(AO::Relaxed);
-            egui::Window::new(op.title.clone())
-                .id(Id::new(("file-op", op.id)))
-                .title_bar(false)
-                .collapsible(false)
-                .resizable(false)
-                .order(egui::Order::Foreground)
-                .default_pos(pos)
-                .frame(
-                    egui::Frame::window(&ui.global_style())
-                        .fill(pal.flyout)
-                        .shadow(popup_shadow(pal.dark))
-                        .stroke(Stroke::new(1.0_f32, pal.divider))
-                        .inner_margin(Margin::same((m.pad * 2.0) as i8)),
-                )
-                .show(ui, |ui| {
+            // Like Explorer's copy dialog, every operation gets a window of its own (a separate OS
+            // window, so it can be moved out of the main window and shows in the taskbar).
+            let win_w = width + m.pad * 4.0;
+            let bar_h = (m.s * 32.0).round();
+            let win_title = format!("{} – FileFly", op.title);
+            // Same look as the main window: no native frame, transparent so the Mica backdrop
+            // shows, with our own caption buttons.
+            let builder = egui::ViewportBuilder::default()
+                .with_title(win_title.clone())
+                .with_inner_size([win_w, m.s * 220.0])
+                .with_resizable(false)
+                .with_maximize_button(false)
+                .with_decorations(false)
+                .with_transparent(true);
+            let pad = (m.pad * 2.0) as i8;
+            let frame = egui::Frame::new().fill(Color32::TRANSPARENT).inner_margin(Margin {
+                left: pad,
+                right: pad,
+                top: (bar_h + m.pad) as i8,
+                bottom: pad,
+            });
+            let vid = egui::ViewportId::from_hash_of(("file-op", op.id));
+            ctx.show_viewport_immediate(vid, builder, |ui, _class| {
+                // The window is tinted like the central panel (a subtle layer over the Mica).
+                // Backdrop over the whole window (the native window only exists once it has been
+                // shown, so this is retried until it works and redone when the theme changes).
+                let key = Id::new(("file-op-backdrop", op.id));
+                let want = (pal.dark, transparency);
+                if ui.ctx().data(|d| d.get_temp::<(bool, bool)>(key)) != Some(want)
+                    && backdrop_by_title(&win_title, pal.dark, transparency)
+                {
+                    ui.ctx().data_mut(|d| d.insert_temp(key, want));
+                }
+                let full = ui.max_rect();
+                ui.layer_painter(egui::LayerId::background())
+                    .rect_filled(full, 0.0, pal.layer);
+
+                // Custom title bar: caption text, drag area, minimize / close.
+                let caption = Rect::from_min_size(
+                    pos2(full.right() - m.s * 46.0 * 2.0, full.top()),
+                    vec2(m.s * 46.0 * 2.0, bar_h),
+                );
+                let drag = ui.interact(
+                    Rect::from_min_max(full.min, pos2(caption.left(), full.top() + bar_h)),
+                    Id::new("file-op-drag"),
+                    Sense::click_and_drag(),
+                );
+                if drag.drag_started_by(egui::PointerButton::Primary) {
+                    ui.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                ui.painter().text(
+                    pos2(full.left() + m.pad * 2.0, full.top() + bar_h * 0.5),
+                    Align2::LEFT_CENTER,
+                    &op.title,
+                    FontId::proportional(m.font * 0.95),
+                    pal.text,
+                );
+                caption_buttons_ex(ui, &m, &pal, caption, false, false);
+
+                // The window's own close button / Alt+F4: cancels a cancelable operation (the
+                // window then stays until it has really stopped), otherwise just hides the window.
+                if ui.ctx().input(|i| i.viewport().close_requested()) {
+                    if op.cancelable {
+                        cancel = true;
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    } else {
+                        hide = true;
+                    }
+                }
+                let panel = egui::CentralPanel::default().frame(frame.clone()).show(ui, |ui| {
                     ui.set_width(width);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&op.title).size(m.font * 1.3).strong());
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let tip = if op.cancelable { "Cancel" } else { "Hide" };
-                            if icon_button(ui, &m, &pal, "close", tip, true, false).clicked() {
-                                if op.cancelable {
-                                    cancel = true;
-                                } else {
-                                    hide = true;
-                                }
-                            }
-                        });
-                    });
+                    // `CentralPanel` stretches to fill the window, so measure the content in a scope
+                    // (otherwise the window could only ever grow).
+                    let content = ui.scope(|ui| {
+                    ui.set_width(width);
                     ui.add_space(m.pad * 0.5);
 
                     let preparing = op.progress.preparing.load(AO::Relaxed);
@@ -239,7 +280,19 @@ impl Explorer {
                             }
                         });
                     });
+                    });
+                    content.response.rect.height()
                 });
+                // Fit the window to its content (it grows with "More details").
+                let need = panel.inner + bar_h + m.pad * 3.0;
+                let key = Id::new(("file-op-height", op.id));
+                let last = ui.ctx().data(|d| d.get_temp::<f32>(key)).unwrap_or(0.0);
+                if (need - last).abs() > 1.0 {
+                    ui.ctx().data_mut(|d| d.insert_temp(key, need));
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(win_w, need)));
+                }
+            });
             if more {
                 op.expanded = !op.expanded;
             }

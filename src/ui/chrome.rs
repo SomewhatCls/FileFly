@@ -61,10 +61,17 @@ pub(crate) fn band_frame(pal: &Palette, nw: u8, l: f32, r: f32, t: f32, b: f32) 
 
 /// Minimize / maximize-restore / close, drawn with the painter so they stay crisp at any scale.
 pub(crate) fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, area: Rect, maximized: bool) {
-    let bw = area.width() / 3.0;
-    for k in 0..3usize {
+    caption_buttons_ex(ui, m, pal, area, maximized, true);
+}
+
+/// Like `caption_buttons`; with `show_max == false` only minimize and close are drawn (fixed-size
+/// dialog windows such as the file-operation progress window).
+pub(crate) fn caption_buttons_ex(ui: &mut Ui, m: &Metrics, pal: &Palette, area: Rect, maximized: bool, show_max: bool) {
+    let kinds: &[usize] = if show_max { &[0, 1, 2] } else { &[0, 2] };
+    let bw = area.width() / kinds.len() as f32;
+    for (slot, &k) in kinds.iter().enumerate() {
         let r = Rect::from_min_size(
-            pos2(area.left() + bw * k as f32, area.top()),
+            pos2(area.left() + bw * slot as f32, area.top()),
             vec2(bw, area.height()),
         );
         let resp = ui.interact(r, Id::new(("caption", k)), Sense::click());
