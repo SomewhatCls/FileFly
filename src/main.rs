@@ -514,6 +514,185 @@ fn save_settings(s: &Settings) {
     }
 }
 
+/// What a background operation tells the user in its progress dialog.
+struct OpSpec {
+    title: String,
+    from: String,
+    to: String,
+    cancelable: bool,
+}
+
+/// A running background operation and the state of its progress dialog.
+struct ActiveOp {
+    id: u64,
+    title: String,
+    from: String,
+    to: String,
+    cancelable: bool,
+    progress: Arc<OpProgress>,
+    started: Instant,
+    /// "More details" (speed graph, time remaining) is open.
+    expanded: bool,
+    /// The user closed the dialog of an operation that can't be cancelled.
+    hidden: bool,
+    cancelling: bool,
+    last_t: Instant,
+    last_bytes: u64,
+    /// Smoothed bytes per second, and the raw samples the graph draws.
+    speed: f32,
+    history: Vec<f32>,
+}
+
+impl ActiveOp {
+    fn new(id: u64, spec: OpSpec, progress: Arc<OpProgress>) -> Self {
+        let now = Instant::now();
+        Self {
+            id,
+            title: spec.title,
+            from: spec.from,
+            to: spec.to,
+            cancelable: spec.cancelable,
+            progress,
+            started: now,
+            expanded: false,
+            hidden: false,
+            cancelling: false,
+            last_t: now,
+            last_bytes: 0,
+            speed: 0.0,
+            history: Vec::new(),
+        }
+    }
+
+    /// Takes a speed sample about four times a second.
+    fn sample(&mut self, now: Instant) {
+        let dt = now.duration_since(self.last_t).as_secs_f32();
+        if dt < 0.25 {
+            return;
+        }
+        let done = self.progress.done_bytes.load(AO::Relaxed);
+        let paused = self.progress.paused.load(AO::Relaxed);
+        let inst = if paused { 0.0 } else { done.saturating_sub(self.last_bytes) as f32 / dt };
+        self.speed = if self.speed <= 0.0 { inst } else { self.speed * 0.7 + inst * 0.3 };
+        if paused {
+            self.speed = 0.0;
+        }
+        self.history.push(inst);
+        if self.history.len() > 120 {
+            self.history.remove(0);
+        }
+        self.last_t = now;
+        self.last_bytes = done;
+    }
+
+    /// 0..=1, or None while the amount of work isn't known (preparing, or a job without progress).
+    fn fraction(&self) -> Option<f32> {
+        let p = &self.progress;
+        if p.preparing.load(AO::Relaxed) {
+            return None;
+        }
+        let (tb, ti) = (p.total_bytes.load(AO::Relaxed), p.total_items.load(AO::Relaxed));
+        if tb > 0 {
+            Some((p.done_bytes.load(AO::Relaxed) as f64 / tb as f64).clamp(0.0, 1.0) as f32)
+        } else if ti > 0 {
+            Some((p.done_items.load(AO::Relaxed) as f64 / ti as f64).clamp(0.0, 1.0) as f32)
+        } else {
+            None
+        }
+    }
+}
+
+/// Shortens the middle of a long name for use in a title.
+fn elide(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_owned();
+    }
+    let keep = max.saturating_sub(1);
+    let head: String = s.chars().take(keep * 2 / 3).collect();
+    let tail: String = s.chars().skip(n - (keep - keep * 2 / 3)).collect();
+    format!("{head}…{tail}")
+}
+
+fn format_eta(secs: f64) -> String {
+    let s = secs.ceil().max(0.0) as u64;
+    if s < 5 {
+        "A few seconds".to_owned()
+    } else if s < 60 {
+        format!("About {} seconds", (s + 2) / 5 * 5)
+    } else if s < 3600 {
+        let mn = (s + 30) / 60;
+        format!("About {mn} minute{}", if mn == 1 { "" } else { "s" })
+    } else {
+        format!("About {} h {} min", s / 3600, (s % 3600 + 30) / 60)
+    }
+}
+
+/// Thin rounded progress bar; a sliding segment when the amount of work isn't known.
+fn progress_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, frac: Option<f32>, paused: bool) {
+    let h = m.s * 6.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let r = CornerRadius::same((h * 0.5) as u8);
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, r, pal.divider);
+    let fill = if paused { pal.accent.gamma_multiply(0.5) } else { pal.accent };
+    match frac {
+        Some(f) => {
+            let w = (rect.width() * f.clamp(0.0, 1.0)).max(if f > 0.0 { h } else { 0.0 });
+            if w > 0.0 {
+                p.rect_filled(egui::Rect::from_min_size(rect.min, vec2(w, h)), r, fill);
+            }
+        }
+        None => {
+            let t = ui.input(|i| i.time) as f32;
+            let seg = rect.width() * 0.3;
+            let x = rect.left() + (t * 0.7 % 1.0) * (rect.width() + seg) - seg;
+            let (a, b) = (x.max(rect.left()), (x + seg).min(rect.right()));
+            if b > a {
+                p.rect_filled(egui::Rect::from_min_max(pos2(a, rect.top()), pos2(b, rect.bottom())), r, fill);
+            }
+        }
+    }
+}
+
+/// Throughput graph of the last samples (newest at the right), like Explorer's "More details".
+fn speed_graph(ui: &mut Ui, m: &Metrics, pal: &Palette, history: &[f32]) {
+    const SLOTS: usize = 60;
+    let h = m.s * 64.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let p = ui.painter_at(rect);
+    let r = CornerRadius::same(m.radius);
+    p.rect_filled(rect, r, pal.control);
+    let shown = &history[history.len().saturating_sub(SLOTS)..];
+    let max = shown.iter().copied().fold(1.0_f32, f32::max) * 1.15;
+    let col = rect.width() / SLOTS as f32;
+    let mut line: Vec<egui::Pos2> = Vec::with_capacity(shown.len());
+    for (i, v) in shown.iter().enumerate() {
+        let x1 = rect.right() - (shown.len() - i - 1) as f32 * col;
+        let top = rect.bottom() - (v / max) * (h - 4.0);
+        p.rect_filled(
+            egui::Rect::from_min_max(pos2((x1 - col).max(rect.left()), top), pos2(x1, rect.bottom())),
+            CornerRadius::ZERO,
+            pal.accent.gamma_multiply(0.28),
+        );
+        line.push(pos2(x1 - col * 0.5, top));
+    }
+    if line.len() > 1 {
+        p.add(egui::Shape::line(line, Stroke::new(1.5_f32, pal.accent)));
+    }
+    p.rect_stroke(rect, r, Stroke::new(1.0_f32, pal.divider), StrokeKind::Inside);
+}
+
+/// "From   <path>" line; the path is cut off with an ellipsis instead of widening the dialog.
+fn op_line(ui: &mut Ui, m: &Metrics, pal: &Palette, key: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(vec2(m.s * 92.0, m.font * 1.5), Layout::left_to_right(Align::Center), |ui| {
+            ui.label(RichText::new(key).color(pal.text_secondary).size(m.font * 0.95));
+        });
+        ui.add(egui::Label::new(RichText::new(value).size(m.font * 0.95)).truncate());
+    });
+}
+
 /// One decided paste operation.
 struct PasteItem {
     src: PathBuf,
@@ -748,7 +927,8 @@ enum AppMsg {
         result: Result<Vec<Entry>, String>,
     },
     Drives(Vec<DriveInfo>),
-    Job(Result<String, String>),
+    /// A background file operation (see `run_op`) finished.
+    Job(u64, Result<String, String>),
     Stats(u64, FolderStats),
     Trash {
         tab: u64,
@@ -1251,6 +1431,9 @@ struct Explorer {
 
     jobs_running: usize,
     job_label: String,
+    /// Background file operations with a progress dialog (see `ui_ops`).
+    ops: Vec<ActiveOp>,
+    next_op: u64,
     conflict: Option<PendingPaste>,
     props: Option<Props>,
     props_gen: Arc<AtomicU64>,
@@ -1376,6 +1559,8 @@ impl Explorer {
             index_dir,
             jobs_running: 0,
             job_label: String::new(),
+            ops: Vec::new(),
+            next_op: 0,
             conflict: None,
             props: None,
             props_gen: Arc::new(AtomicU64::new(0)),
@@ -2046,25 +2231,44 @@ impl Explorer {
 
     // ------------------------------------------------------------------ background work
 
+    /// Runs `f` on a worker thread. It shows up in a progress dialog (after half a second, so quick
+    /// operations never flash one) and reports through the `OpProgress` it is handed.
+    fn run_op(
+        &mut self,
+        spec: OpSpec,
+        f: impl FnOnce(Arc<OpProgress>) -> Result<String, String> + Send + 'static,
+    ) {
+        let id = self.next_op;
+        self.next_op += 1;
+        let progress = Arc::new(OpProgress::default());
+        self.ops.push(ActiveOp::new(id, spec, progress.clone()));
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        std::thread::spawn(move || {
+            // A panic in the job must still report back, otherwise the dialog stays forever.
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(progress))).unwrap_or_else(|_| {
+                Err("The operation failed unexpectedly (details in crash.log).".to_owned())
+            });
+            let _ = tx.send(AppMsg::Job(id, r));
+            ui.request_repaint();
+        });
+    }
+
+    /// `run_op` for jobs that can't report progress: the dialog shows just the title and a moving bar.
     fn run_job(
         &mut self,
         label: &str,
         f: impl FnOnce() -> Result<String, String> + Send + 'static,
     ) {
-        self.jobs_running += 1;
-        self.job_label = label.to_owned();
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
-        std::thread::spawn(move || {
-            // A panic in the job must still report back, otherwise the status bar spins forever.
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
-                Err("The operation failed unexpectedly (details in crash.log).".to_owned())
-            });
-            let _ = tx.send(AppMsg::Job(r));
-            ui.request_repaint();
-        });
+        let spec = OpSpec {
+            title: label.trim_end_matches('…').to_owned(),
+            from: String::new(),
+            to: String::new(),
+            cancelable: false,
+        };
+        self.run_op(spec, move |_| f());
     }
 
-    /// Runs the decided paste items as one background job.
+    /// Runs the decided paste items as one background job with a progress dialog.
     fn run_paste(&mut self, items: Vec<PasteItem>, cut: bool) {
         if items.is_empty() {
             return;
@@ -2072,9 +2276,42 @@ impl Explorer {
         if cut {
             self.clipboard = None;
         }
-        self.run_job(if cut { "Moving…" } else { "Copying…" }, move || {
+        let n = items.len();
+        let verb = if cut { "Moving" } else { "Copying" };
+        let title = if n == 1 {
+            let name = items[0].dst.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            format!("{verb} “{}”", elide(&name, 34))
+        } else {
+            format!("{verb} {n} items")
+        };
+        let dir_of = |p: &Path| p.parent().map(|d| display_path(d).display().to_string()).unwrap_or_default();
+        let spec = OpSpec {
+            title,
+            from: dir_of(&items[0].src),
+            to: dir_of(&items[0].dst),
+            cancelable: true,
+        };
+        self.run_op(spec, move |prog| {
             let mut errors: Vec<String> = Vec::new();
+            prog.total_items.store(n as u64, AO::Relaxed);
+            if !cut {
+                // Measure first, so the bar and the time estimate are real from the start.
+                // (A move is mostly renames; its copy sizes are added only where one is needed.)
+                prog.preparing.store(true, AO::Relaxed);
+                let mut total = 0u64;
+                for it in &items {
+                    match tree_bytes(&it.src, &prog) {
+                        Ok(b) => total += b,
+                        Err(_) => return Ok(String::new()), // cancelled while measuring
+                    }
+                }
+                prog.total_bytes.store(total, AO::Relaxed);
+                prog.preparing.store(false, AO::Relaxed);
+            }
             for it in items {
+                if prog.cancelled() {
+                    break;
+                }
                 let name = it
                     .dst
                     .file_name()
@@ -2090,14 +2327,15 @@ impl Explorer {
                         Err(e) => {
                             backup_settled(&aside);
                             errors.push(format!("Could not replace “{name}”: {e}"));
+                            prog.done_items.fetch_add(1, AO::Relaxed);
                             continue;
                         }
                     }
                 }
                 let r = if cut {
-                    move_item(&it.src, &it.dst)
+                    move_item_with(&it.src, &it.dst, &prog)
                 } else {
-                    copy_item(&it.src, &it.dst)
+                    copy_item_with(&it.src, &it.dst, &prog)
                 };
                 match (&r, backup) {
                     (Ok(()), Some(b)) => {
@@ -2111,9 +2349,12 @@ impl Explorer {
                     }
                     _ => {}
                 }
-                if let Err(e) = r {
-                    errors.push(format!("Could not paste “{name}”: {e}"));
+                match r {
+                    Ok(()) => {}
+                    Err(e) if is_cancelled(&e) => break,
+                    Err(e) => errors.push(format!("Could not paste “{name}”: {e}")),
                 }
+                prog.done_items.fetch_add(1, AO::Relaxed);
             }
             if errors.is_empty() {
                 Ok(String::new())
@@ -2322,11 +2563,8 @@ impl Explorer {
                     self.drives_ready = true;
                     self.apply_quick_availability();
                 }
-                AppMsg::Job(result) => {
-                    self.jobs_running = self.jobs_running.saturating_sub(1);
-                    if self.jobs_running == 0 {
-                        self.job_label.clear();
-                    }
+                AppMsg::Job(id, result) => {
+                    self.ops.retain(|o| o.id != id);
                     let active = self.active;
                     if let Err(e) = result {
                         match self.tabs[active].trash.as_mut() {
@@ -6695,9 +6933,14 @@ impl Explorer {
         if tab.trash.is_none() && tab.search_job.as_ref().is_some_and(|j| !j.done) {
             text.push_str("   |   searching…");
         }
-        let busy =
-            self.jobs_running > 0 || tab.loading || tab.trash.as_ref().is_some_and(|t| t.loading);
-        let job = self.job_label.clone();
+        // File operations have their own progress dialog; the status bar only keeps a spinner for
+        // one whose dialog the user hid.
+        let hidden_op = self.ops.iter().find(|o| o.hidden).map(|o| o.title.clone());
+        let busy = self.jobs_running > 0
+            || hidden_op.is_some()
+            || tab.loading
+            || tab.trash.as_ref().is_some_and(|t| t.loading);
+        let job = if self.job_label.is_empty() { hidden_op.unwrap_or_default() } else { self.job_label.clone() };
         let clip = self.clipboard.as_ref().map(|(p, cut)| {
             let what = if p.len() == 1 {
                 p[0].file_name()
@@ -7780,6 +8023,166 @@ impl Explorer {
         }
     }
 
+    /// One progress dialog per running file operation, in the style of the other dialogs: title,
+    /// percent, bar, from/to, current name, Pause/Cancel, and an expandable speed graph.
+    fn ui_ops(&mut self, ui: &mut Ui) {
+        if self.ops.is_empty() {
+            return;
+        }
+        self.ui.request_repaint_after(Duration::from_millis(100));
+        let (m, pal) = (self.m, self.pal);
+        let now = Instant::now();
+        let center = ui.content_rect().center();
+        let width = m.s * 440.0;
+        let mut shown = 0.0_f32;
+        for op in self.ops.iter_mut() {
+            if op.hidden || op.started.elapsed() < Duration::from_millis(500) {
+                continue;
+            }
+            op.sample(now);
+            let pos = pos2(
+                center.x - width * 0.5 - m.pad * 2.0 + shown * 26.0,
+                center.y - m.s * 120.0 + shown * 26.0,
+            );
+            shown += 1.0;
+            let (mut cancel, mut hide, mut pause, mut more) = (false, false, false, false);
+            let paused = op.progress.paused.load(AO::Relaxed);
+            egui::Window::new(op.title.clone())
+                .id(Id::new(("file-op", op.id)))
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .order(egui::Order::Foreground)
+                .default_pos(pos)
+                .frame(
+                    egui::Frame::window(&ui.global_style())
+                        .fill(pal.flyout)
+                        .shadow(popup_shadow(pal.dark))
+                        .stroke(Stroke::new(1.0_f32, pal.divider))
+                        .inner_margin(Margin::same((m.pad * 2.0) as i8)),
+                )
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&op.title).size(m.font * 1.3).strong());
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let tip = if op.cancelable { "Cancel" } else { "Hide" };
+                            if icon_button(ui, &m, &pal, "close", tip, true, false).clicked() {
+                                if op.cancelable {
+                                    cancel = true;
+                                } else {
+                                    hide = true;
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(m.pad * 0.5);
+
+                    let preparing = op.progress.preparing.load(AO::Relaxed);
+                    let frac = op.fraction();
+                    let headline = if op.cancelling {
+                        "Cancelling…".to_owned()
+                    } else if preparing {
+                        "Calculating…".to_owned()
+                    } else if let Some(f) = frac {
+                        format!("{}% complete{}", (f * 100.0) as u32, if paused { "  (paused)" } else { "" })
+                    } else {
+                        "Working…".to_owned()
+                    };
+                    ui.label(RichText::new(headline).size(m.font * 1.05));
+                    ui.add_space(m.pad * 0.6);
+                    progress_bar(ui, &m, &pal, frac, paused);
+                    ui.add_space(m.pad);
+
+                    if !op.from.is_empty() {
+                        op_line(ui, &m, &pal, "From", &op.from);
+                    }
+                    if !op.to.is_empty() {
+                        op_line(ui, &m, &pal, "To", &op.to);
+                    }
+                    let current = op.progress.current();
+                    if !current.is_empty() {
+                        op_line(ui, &m, &pal, "Name", &current);
+                    }
+
+                    if op.expanded {
+                        ui.add_space(m.pad);
+                        speed_graph(ui, &m, &pal, &op.history);
+                        ui.add_space(m.pad * 0.6);
+                        let (tb, db) = (
+                            op.progress.total_bytes.load(AO::Relaxed),
+                            op.progress.done_bytes.load(AO::Relaxed),
+                        );
+                        let (ti, di) = (
+                            op.progress.total_items.load(AO::Relaxed),
+                            op.progress.done_items.load(AO::Relaxed),
+                        );
+                        if tb > 0 || op.speed > 0.0 {
+                            op_line(ui, &m, &pal, "Speed", &format!("{}/s", format_size(op.speed as u64)));
+                        }
+                        let eta = if preparing {
+                            "Calculating…".to_owned()
+                        } else if tb > db && op.speed > 1.0 {
+                            format_eta((tb - db) as f64 / op.speed as f64)
+                        } else {
+                            "—".to_owned()
+                        };
+                        op_line(ui, &m, &pal, "Time left", &eta);
+                        if ti > 0 {
+                            let mut left = format!("{}", ti.saturating_sub(di));
+                            if tb > db {
+                                left.push_str(&format!("  ({})", format_size(tb - db)));
+                            }
+                            op_line(ui, &m, &pal, "Items left", &left);
+                        }
+                    }
+
+                    ui.add_space(m.pad * 1.2);
+                    ui.horizontal(|ui| {
+                        let label = if op.expanded { "Fewer details" } else { "More details" };
+                        if ui
+                            .add(egui::Button::new(RichText::new(label).color(pal.accent)).frame(false))
+                            .clicked()
+                        {
+                            more = true;
+                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if op.cancelable {
+                                if ui.add_enabled(!op.cancelling, egui::Button::new("Cancel")
+                                    .corner_radius(CornerRadius::same(m.radius))
+                                    .min_size(vec2(m.s * 92.0, m.ctl_h))).clicked()
+                                {
+                                    cancel = true;
+                                }
+                                if ui.add_enabled(!op.cancelling, egui::Button::new(if paused { "Resume" } else { "Pause" })
+                                    .corner_radius(CornerRadius::same(m.radius))
+                                    .min_size(vec2(m.s * 92.0, m.ctl_h))).clicked()
+                                {
+                                    pause = true;
+                                }
+                            } else if secondary_button(ui, &m, "Hide").clicked() {
+                                hide = true;
+                            }
+                        });
+                    });
+                });
+            if more {
+                op.expanded = !op.expanded;
+            }
+            if pause {
+                op.progress.paused.store(!paused, AO::Relaxed);
+            }
+            if cancel && !op.cancelling {
+                op.cancelling = true;
+                op.progress.cancel.store(true, AO::Relaxed);
+                op.progress.paused.store(false, AO::Relaxed);
+            }
+            if hide {
+                op.hidden = true;
+            }
+        }
+    }
+
     /// Asks, one clashing item at a time (like Explorer), whether to replace it, keep both with a
     /// "(n)" suffix, or skip it. "Do this for all" answers the remaining ones the same way.
     fn ui_conflict(&mut self, ui: &mut Ui) {
@@ -8017,6 +8420,7 @@ impl eframe::App for Explorer {
         self.ui_props(ui);
         self.ui_conflict(ui);
         self.ui_confirm(ui);
+        self.ui_ops(ui);
         self.ui_picker(ui);
         self.ui_licenses(ui);
 

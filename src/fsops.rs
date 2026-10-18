@@ -33,6 +33,7 @@ use std::{
     fs, io,
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering as AO},
     time::{Duration, SystemTime},
 };
 
@@ -220,9 +221,122 @@ fn rename_retry(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+/// Live state of a long file operation, shared between the worker thread (which updates it) and the
+/// progress dialog (which reads it). Plain atomics, so neither side ever waits for the other.
+#[derive(Default)]
+pub struct OpProgress {
+    /// Bytes to copy in total / copied so far. Moves on one drive are renames and add no bytes.
+    pub total_bytes: AtomicU64,
+    pub done_bytes: AtomicU64,
+    /// Top-level items to handle / finished so far.
+    pub total_items: AtomicU64,
+    pub done_items: AtomicU64,
+    /// The worker is still measuring what there is to do.
+    pub preparing: AtomicBool,
+    /// Set by the dialog; the worker stops at the next chunk and cleans up its temp item.
+    pub cancel: AtomicBool,
+    /// Set by the dialog; the worker waits (at chunk boundaries) until it is cleared.
+    pub paused: AtomicBool,
+    current: std::sync::Mutex<String>,
+}
+
+const CANCELLED: &str = "cancelled";
+
+/// True for the error a cancelled operation stops with (not something to show the user).
+pub fn is_cancelled(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::Interrupted && e.to_string() == CANCELLED
+}
+
+impl OpProgress {
+    pub fn set_current(&self, name: &str) {
+        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = name.to_owned();
+    }
+
+    pub fn current(&self) -> String {
+        self.current.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(AO::Relaxed)
+    }
+
+    /// Called between chunks / items: waits while paused, fails once cancelled.
+    fn checkpoint(&self) -> io::Result<()> {
+        while self.paused.load(AO::Relaxed) && !self.cancelled() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if self.cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, CANCELLED));
+        }
+        Ok(())
+    }
+}
+
+fn file_label(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Bytes in `path` (a file or a whole folder tree), walked the same way `copy_tree` walks it.
+/// Unreadable parts count as 0 (the copy itself will report them); only a cancel is an error.
+pub fn tree_bytes(path: &Path, prog: &OpProgress) -> io::Result<u64> {
+    fn walk(path: &Path, depth: usize, prog: &OpProgress) -> io::Result<u64> {
+        prog.checkpoint()?;
+        let Ok(md) = fs::metadata(path) else { return Ok(0) };
+        if !md.is_dir() {
+            return Ok(md.len());
+        }
+        if depth > 128 {
+            return Ok(0);
+        }
+        let Ok(rd) = fs::read_dir(path) else { return Ok(0) };
+        let mut sum = 0u64;
+        for item in rd.flatten() {
+            sum += walk(&item.path(), depth + 1, prog)?;
+        }
+        Ok(sum)
+    }
+    walk(path, 0, prog)
+}
+
+/// Files up to this size go through `fs::copy` (the OS copy routine: keeps every attribute and is
+/// fastest); bigger ones are copied in chunks so the progress dialog can follow them and a
+/// pause/cancel takes effect within a moment.
+const FAST_COPY_LIMIT: u64 = 8 * 1024 * 1024;
+const COPY_CHUNK: usize = 4 * 1024 * 1024;
+
+fn copy_file(from: &Path, to: &Path, prog: &OpProgress) -> io::Result<()> {
+    prog.checkpoint()?;
+    let md = fs::metadata(from)?;
+    if md.len() <= FAST_COPY_LIMIT {
+        fs::copy(from, to)?;
+        prog.done_bytes.fetch_add(md.len(), AO::Relaxed);
+        return Ok(());
+    }
+    let mut src = fs::File::open(from)?;
+    let mut dst = fs::File::create(to)?;
+    let mut buf = vec![0u8; COPY_CHUNK];
+    loop {
+        prog.checkpoint()?;
+        let n = match src.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        dst.write_all(&buf[..n])?;
+        prog.done_bytes.fetch_add(n as u64, AO::Relaxed);
+    }
+    if let Ok(t) = md.modified() {
+        let _ = dst.set_modified(t);
+    }
+    drop(dst);
+    let _ = fs::set_permissions(to, md.permissions());
+    Ok(())
+}
+
 /// Recursive copy into `destination` (always a temp folder, so partial results are never visible).
 /// The depth limit turns a junction/symlink loop into an error instead of endless recursion.
-fn copy_tree(source: &Path, destination: &Path, depth: usize) -> io::Result<()> {
+fn copy_tree(source: &Path, destination: &Path, depth: usize, prog: &OpProgress) -> io::Result<()> {
     if depth > 128 {
         return Err(io::Error::other("folders are nested too deeply (possible link loop)"));
     }
@@ -231,9 +345,10 @@ fn copy_tree(source: &Path, destination: &Path, depth: usize) -> io::Result<()> 
         let item = item?;
         let (from, to) = (item.path(), destination.join(item.file_name()));
         if from.is_dir() {
-            copy_tree(&from, &to, depth + 1)?;
+            copy_tree(&from, &to, depth + 1, prog)?;
         } else {
-            fs::copy(&from, &to)?;
+            prog.set_current(&item.file_name().to_string_lossy());
+            copy_file(&from, &to, prog)?;
         }
     }
     Ok(())
@@ -243,6 +358,11 @@ fn copy_tree(source: &Path, destination: &Path, depth: usize) -> io::Result<()> 
 /// whole copy has succeeded, so the real name never points at a half-written file or folder.
 /// Never overwrites: an existing destination is an error (callers move it aside first).
 pub fn copy_item(source: &Path, destination: &Path) -> io::Result<()> {
+    copy_item_with(source, destination, &OpProgress::default())
+}
+
+/// `copy_item` that reports to (and obeys pause/cancel of) `prog`.
+pub fn copy_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> io::Result<()> {
     if fs::symlink_metadata(destination).is_ok() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
     }
@@ -250,12 +370,13 @@ pub fn copy_item(source: &Path, destination: &Path) -> io::Result<()> {
     if is_dir && destination.starts_with(source) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot copy a folder into itself"));
     }
+    prog.set_current(&file_label(source));
     let tmp = free_sibling(destination, "part");
     journal_add("part", &tmp, destination);
     let copied = if is_dir {
-        copy_tree(source, &tmp, 0)
+        copy_tree(source, &tmp, 0, prog)
     } else {
-        fs::copy(source, &tmp).map(|_| ())
+        copy_file(source, &tmp, prog)
     };
     let result = copied.and_then(|_| rename_retry(&tmp, destination));
     if result.is_err() {
@@ -366,13 +487,23 @@ fn is_cross_device(e: &io::Error) -> bool {
 /// the destination is on another drive. Any other failure (item in use, access denied, ...) is
 /// reported as is, without half-moving anything. Never replaces an existing destination.
 pub fn move_item(source: &Path, destination: &Path) -> io::Result<()> {
+    move_item_with(source, destination, &OpProgress::default())
+}
+
+/// `move_item` that reports to (and obeys pause/cancel of) `prog`. A rename adds no bytes; when the
+/// move has to become a copy, its size is added to the total only then.
+pub fn move_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> io::Result<()> {
     if fs::symlink_metadata(destination).is_ok() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
     }
+    prog.checkpoint()?;
+    prog.set_current(&file_label(source));
     match fs::rename(source, destination) {
         Ok(()) => Ok(()),
         Err(e) if is_cross_device(&e) => {
-            copy_item(source, destination)?; // source stays untouched until this fully succeeded
+            let bytes = tree_bytes(source, prog)?;
+            prog.total_bytes.fetch_add(bytes, AO::Relaxed);
+            copy_item_with(source, destination, prog)?; // source stays untouched until this fully succeeded
             remove_existing(source)
         }
         Err(e) => Err(e),
