@@ -160,7 +160,7 @@ impl Explorer {
                                 let c = if resp.hovered() {
                                     pal.subtle_hover
                                 } else {
-                                    pal.subtle_pressed
+                                    Color32::TRANSPARENT
                                 };
                                 ui.painter().rect_filled(
                                     rect.shrink2(vec2(0.0, m.s * 3.0)),
