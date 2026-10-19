@@ -158,7 +158,7 @@ impl Explorer {
                             } else {
                                 // Resting tabs get a very faint plate; hovering strengthens it.
                                 let c = if resp.hovered() {
-                                    pal.subtle_hover
+                                    pal.subtle_pressed
                                 } else {
                                     Color32::TRANSPARENT
                                 };
@@ -222,9 +222,9 @@ impl Explorer {
                             if show_close {
                                 if close.hovered() || close.is_pointer_button_down_on() {
                                     let c = if close.is_pointer_button_down_on() {
-                                        pal.subtle_hover
+                                        pal.subtle_pressed
                                     } else {
-                                        pal.control_hover
+                                        pal.subtle_pressed
                                     };
                                     ui.painter().rect_filled(
                                         close_rect,
