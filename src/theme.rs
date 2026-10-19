@@ -215,7 +215,7 @@ impl Palette {
             Self {
                 dark, mica, accent: acc, on_accent,
                 base: Color32::from_rgb(60, 60, 60),
-                layer: if mica { a(50, 0.15) } else { Color32::from_rgb(40, 40, 40) },
+                layer: if mica { a(50, 0.3) } else { Color32::from_rgb(40, 40, 40) },
                 flyout: Color32::from_rgb(80, 80, 80),
                 text: Color32::WHITE,
                 text_secondary: a(255, 0.785),
