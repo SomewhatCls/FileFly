@@ -2,7 +2,7 @@
 //!
 //! Compared with the previous version:
 //!  * the cache is shared (`Arc<RwLock<..>>`) instead of being cloned on every navigation;
-//!  * scanning is iterative, runs at background thread priority and yields regularly;
+//!  * scanning is iterative, runs on a small worker pool at below-normal priority and yields regularly;
 //!  * every finished sub-folder is stored immediately, so cancelled scans keep their progress;
 //!  * entries are only trusted while the folder's mtime matches *and* they are younger than `TTL_SECS`
 //!    (a directory's mtime does not change when a file deeper down grows, so mtime alone goes stale);
@@ -13,11 +13,11 @@ use eframe::egui;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::Sender,
         Arc, Mutex, RwLock,
     },
@@ -55,10 +55,23 @@ pub enum IndexMsg {
 
 type Cache = Arc<RwLock<HashMap<PathBuf, CachedFolder>>>;
 
+/// Number of scan worker threads per `start()`.
+const WORKERS: usize = 3;
+
+/// Counts a live scan worker: incremented before the thread is spawned, decremented when the
+/// thread ends for any reason (finished, cancelled, channel closed, panic).
+struct Live(Arc<AtomicUsize>);
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub struct Indexer {
     cache: Cache,
     generation: Arc<AtomicU64>,
     cache_dirty: Arc<AtomicBool>,
+    live: Arc<AtomicUsize>,
     tx: Sender<IndexMsg>,
     ctx: egui::Context,
 }
@@ -76,6 +89,7 @@ impl Indexer {
             cache: Arc::new(RwLock::new(HashMap::new())),
             generation: Arc::new(AtomicU64::new(0)),
             cache_dirty: Arc::new(AtomicBool::new(false)),
+            live: Arc::new(AtomicUsize::new(0)),
             tx,
             ctx,
         };
@@ -102,6 +116,25 @@ impl Indexer {
             }
             self.cache_dirty.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// Drop `dir`, everything below it and all its ancestors (used when too many changes happened
+    /// to list them individually).
+    pub fn invalidate_tree(&self, dir: &Path) {
+        if let Ok(mut c) = self.cache.write() {
+            c.retain(|k, _| !k.starts_with(dir));
+            let mut p = dir.parent();
+            while let Some(cur) = p {
+                c.remove(cur);
+                p = cur.parent();
+            }
+            self.cache_dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// True while a scan started by `start()` still has a live worker thread.
+    pub fn is_running(&self) -> bool {
+        self.live.load(Ordering::SeqCst) > 0
     }
 
     /// Forgets everything: stops a running scan, empties the cache and removes the saved file.
@@ -132,33 +165,44 @@ impl Indexer {
         if folders.is_empty() {
             return;
         }
-        let cache = Arc::clone(&self.cache);
-        let generation = Arc::clone(&self.generation);
-        let dirty = Arc::clone(&self.cache_dirty);
-        let tx = self.tx.clone();
-        let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
-            lower_priority();
-            for folder in folders {
-                if generation.load(Ordering::Relaxed) != my_gen {
-                    return;
+        // A small worker pool takes folders from a shared queue, so one huge folder (Windows,
+        // AppData, ...) no longer holds up every row behind it.
+        let workers = WORKERS.min(folders.len());
+        let queue = Arc::new(Mutex::new(folders.into_iter().collect::<VecDeque<_>>()));
+        for _ in 0..workers {
+            let queue = Arc::clone(&queue);
+            let cache = Arc::clone(&self.cache);
+            let generation = Arc::clone(&self.generation);
+            let dirty = Arc::clone(&self.cache_dirty);
+            let tx = self.tx.clone();
+            let ctx = self.ctx.clone();
+            self.live.fetch_add(1, Ordering::SeqCst);
+            let guard = Live(Arc::clone(&self.live));
+            std::thread::spawn(move || {
+                let _guard = guard;
+                lower_priority();
+                loop {
+                    if generation.load(Ordering::Relaxed) != my_gen {
+                        return;
+                    }
+                    let Some(folder) = queue.lock().ok().and_then(|mut q| q.pop_front()) else { return };
+                    let stamp = fs::metadata(&folder).and_then(|m| m.modified()).map(ns).unwrap_or(0);
+                    let now = now_secs();
+                    let fresh = cache.read().ok().and_then(|c| c.get(&folder).cloned()).filter(|c| is_fresh(c, stamp, now));
+                    let size = match fresh {
+                        Some(c) => c.size,
+                        None => match scan(&folder, stamp, &cache, &generation, my_gen, &dirty) {
+                            Some(s) => s,
+                            None => return, // cancelled
+                        },
+                    };
+                    if tx.send(IndexMsg::Size(folder, size)).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
                 }
-                let stamp = fs::metadata(&folder).and_then(|m| m.modified()).map(ns).unwrap_or(0);
-                let now = now_secs();
-                let fresh = cache.read().ok().and_then(|c| c.get(&folder).cloned()).filter(|c| is_fresh(c, stamp, now));
-                let size = match fresh {
-                    Some(c) => c.size,
-                    None => match scan(&folder, stamp, &cache, &generation, my_gen, &dirty) {
-                        Some(s) => s,
-                        None => return, // cancelled
-                    },
-                };
-                if tx.send(IndexMsg::Size(folder, size)).is_err() {
-                    return;
-                }
-                ctx.request_repaint();
-            }
-        });
+            });
+        }
     }
 
     // ---------------------------------------------------------------- persistence
@@ -309,14 +353,16 @@ fn scan(root: &Path, root_stamp: u128, cache: &Cache, generation: &AtomicU64, my
 
 #[cfg(windows)]
 fn lower_priority() {
-    // THREAD_MODE_BACKGROUND_BEGIN lowers CPU *and* I/O priority of this thread.
+    // THREAD_PRIORITY_BELOW_NORMAL (-1): keeps the UI responsive without starving the scan.
+    // (THREAD_MODE_BACKGROUND_BEGIN also drops I/O to "very low", which can make a scan crawl
+    // whenever anything else touches the disk.)
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentThread() -> isize;
         fn SetThreadPriority(h: isize, p: i32) -> i32;
     }
     unsafe {
-        SetThreadPriority(GetCurrentThread(), 0x0001_0000);
+        SetThreadPriority(GetCurrentThread(), -1);
     }
 }
 #[cfg(not(windows))]

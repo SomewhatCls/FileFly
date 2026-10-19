@@ -24,7 +24,8 @@ impl Explorer {
     }
 
     pub(crate) fn pump_messages(&mut self) {
-        let active_id = self.tabs[self.active].id;
+        // Every pane on screen needs sizes, not just the active tab.
+        let visible_ids: Vec<_> = self.visible_tabs().into_iter().map(|i| self.tabs[i].id).collect();
         let mut reindex = false;
         let mut reindex_force = false;
 
@@ -84,7 +85,7 @@ impl Explorer {
                                 t.error = Some(e);
                             }
                         }
-                        if t.id == active_id {
+                        if visible_ids.contains(&t.id) {
                             reindex = true;
                         }
                     }
@@ -233,7 +234,9 @@ impl Explorer {
             let dir = self.tabs[self.active].dir.clone();
             for p in changed {
                 if p.as_os_str().is_empty() {
-                    // Too many changes to list: refresh everything.
+                    // Too many changes to list: refresh everything, and forget the cached sizes
+                    // of this folder tree (a forced rescan would otherwise just reuse them).
+                    self.indexer.invalidate_tree(&dir);
                     self.list_debounce.poke();
                     self.size_debounce.poke();
                     continue;
@@ -268,8 +271,14 @@ impl Explorer {
             .size_debounce
             .ready(Duration::from_millis(1500), Duration::from_secs(10))
         {
-            reindex = true;
-            reindex_force = true; // something below the folder changed: sizes really are stale
+            if self.indexer.is_running() {
+                // Restarting now would cancel the running scan and, under constant file activity,
+                // none would ever finish. Look again once it has had some time.
+                self.size_debounce.poke();
+            } else {
+                reindex = true;
+                reindex_force = true; // something below the folder changed: sizes really are stale
+            }
         }
         if self.list_debounce.pending() || self.size_debounce.pending() {
             self.ui.request_repaint_after(Duration::from_millis(250));
