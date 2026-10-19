@@ -341,9 +341,19 @@ impl Explorer {
         } else if let Some(p) = pos {
             let already = panes.iter().any(|(t, _)| *t == dragged);
             let can_split = already || panes.len() < 4;
+            let dragged_special = self.tabs.iter().any(|t| t.id == dragged && t.special());
             if let Some((tid, rect)) = panes.iter().find(|(_, r)| r.contains(p)) {
                 let same = *tid == dragged;
-                let zone = drop_zone(*rect, p, can_split && (!same || panes.len() == 1));
+                // Dropping a tab on an edge of its own pane duplicates it into a new pane, as long as
+                // there is room (and it is a normal folder tab when other panes are already open).
+                let zone_ok = if !same {
+                    can_split
+                } else if panes.len() == 1 {
+                    true
+                } else {
+                    panes.len() < 4 && !dragged_special
+                };
+                let zone = drop_zone(*rect, p, zone_ok);
                 if !(same && zone == DropZone::Center) {
                     target = Some((*tid, zone));
                 }

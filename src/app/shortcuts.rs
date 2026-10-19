@@ -26,6 +26,7 @@ impl Explorer {
         self.prev_paste_key.set(key_down);
 
         //Keyboard Shortcuts
+        let mut split = false;
         ui.input_mut(|i| {
             if i.consume_key(M::CTRL | M::SHIFT, Key::Tab) {
                 actions.push(Action::StepTab(-1));
@@ -37,6 +38,11 @@ impl Explorer {
             }
             if i.consume_key(M::CTRL, Key::W) {
                 actions.push(Action::CloseTab(active));
+            }
+            if i.consume_key(M::CTRL, Key::S) && !modal {
+                // Handled after this closure: splitting touches egui state, which must not happen
+                // while the input is locked.
+                split = true;
             }
             if i.consume_key(M::CTRL, Key::L) || i.consume_key(M::ALT, Key::D) {
                 actions.push(Action::FocusAddress);
@@ -147,6 +153,9 @@ impl Explorer {
                 actions.push(Action::SelectEdge(true));
             }
         });
+        if split {
+            self.split_focused();
+        }
     }
 
     // ------------------------------------------------------------------ actions

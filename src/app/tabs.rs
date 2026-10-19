@@ -83,6 +83,36 @@ impl Explorer {
         let Some(di) = self.tabs.iter().position(|t| t.id == dragged) else {
             return;
         };
+        if dragged == target && zone != DropZone::Center && self.tiles.is_some() {
+            // Tiled mode: dragging a tab onto an edge of its own pane duplicates it into a new pane
+            // (the same thing the single-pane branch below does), as long as there is room.
+            if self.tabs[di].special() {
+                return;
+            }
+            let mut tree = self.tiles.take().unwrap();
+            let mut ids = Vec::new();
+            tree.leaf_ids(&mut ids);
+            if ids.len() < 4 {
+                let id = self.next_tab_id;
+                self.next_tab_id += 1;
+                let dir = self.tabs[di].dir.clone();
+                self.tabs.push(Tab::new(id, dir));
+                let last = self.tabs.len() - 1;
+                self.load_tab(last);
+                let (new_first, side_by_side) = match zone {
+                    DropZone::Left => (true, true),
+                    DropZone::Right => (false, true),
+                    DropZone::Top => (true, false),
+                    _ => (false, false),
+                };
+                tree.split_leaf(target, id, new_first, side_by_side);
+                self.active = last;
+                self.on_active_changed();
+            }
+            self.tiles = Some(tree);
+            self.fix_tiles();
+            return;
+        }
         if dragged == target && zone != DropZone::Center && self.tiles.is_none() {
             // Dragging the tab you are looking at onto the edge of the view: it becomes the new
             // pane, and the pane it leaves behind shows another tab (a fresh one if there is none).
@@ -144,6 +174,43 @@ impl Explorer {
             self.on_active_changed();
         }
         self.load_tab(di);
+        self.fix_tiles();
+    }
+
+    /// Ctrl+S: splits the focused pane and opens a copy of its folder in the new pane. The split
+    /// cuts across the longer side, so both halves end up closer to square: a wide pane is split
+    /// left/right, a tall one top/bottom. Does nothing at the 4-pane limit.
+    pub(crate) fn split_focused(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        if tab.special() {
+            return;
+        }
+        let (cur, dir) = (tab.id, tab.dir.clone());
+        let mut ids = Vec::new();
+        match &self.tiles {
+            Some(t) => t.leaf_ids(&mut ids),
+            None => ids.push(cur),
+        }
+        if ids.len() >= 4 {
+            return;
+        }
+        let Some(rect) = self.pane_rects.iter().find(|(id, _)| *id == cur).map(|(_, r)| *r) else {
+            return;
+        };
+        // Flip `>=` to `<` to cut along the other axis instead.
+        let side_by_side = rect.width() >= rect.height();
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        self.tabs.push(Tab::new(id, dir));
+        let last = self.tabs.len() - 1;
+        self.load_tab(last);
+        let mut tree = self.tiles.take().unwrap_or(Tile::Leaf(cur));
+        tree.split_leaf(cur, id, false, side_by_side);
+        self.tiles = Some(tree);
+        self.active = last;
+        self.on_active_changed();
         self.fix_tiles();
     }
 
