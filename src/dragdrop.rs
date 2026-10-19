@@ -2,9 +2,91 @@
 
 use crate::prelude::*;
 
-/// 1x1 transparent PNG used as the OS drag preview (the in-window ghost is drawn by egui itself).
+/// Image shown by the OS while items are dragged out of (and back into) the window: a small stack
+/// of accent-coloured cards (up to three, one per item). The OS keeps it attached to the cursor
+/// everywhere, which the in-window egui ghost cannot do while the OS drag blocks the UI loop.
 #[cfg(target_os = "windows")]
-pub(crate) const DRAG_PREVIEW_PNG: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0xFC, 0xCF, 0xC0, 0x50, 0x0F, 0x00, 0x04, 0x85, 0x01, 0x80, 0x84, 0xA9, 0x8C, 0x21, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
+pub(crate) fn drag_preview_png(accent: Color32, count: usize) -> Vec<u8> {
+    const W: usize = 72;
+    const H: usize = 44;
+    let [r, g, b, _] = accent.to_array();
+    let mut px = vec![0u8; W * H * 4];
+    for c in (0..count.clamp(1, 3)).rev() {
+        let (x0, y0) = (c * 6, c * 6);
+        let (x1, y1) = (x0 + 48, y0 + 26);
+        let rad = 5usize;
+        let alpha = if c == 0 { 215 } else { 150 };
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let cx = if x < x0 + rad {
+                    x0 + rad
+                } else if x >= x1 - rad {
+                    x1 - rad - 1
+                } else {
+                    x
+                };
+                let cy = if y < y0 + rad {
+                    y0 + rad
+                } else if y >= y1 - rad {
+                    y1 - rad - 1
+                } else {
+                    y
+                };
+                let (dx, dy) = (x as i32 - cx as i32, y as i32 - cy as i32);
+                if dx * dx + dy * dy <= (rad * rad) as i32 {
+                    px[(y * W + x) * 4..][..4].copy_from_slice(&[r, g, b, alpha]);
+                }
+            }
+        }
+    }
+
+    // Minimal PNG writer (stored deflate blocks), so no extra crate is needed.
+    fn crc32(data: &[u8]) -> u32 {
+        let mut c = !0u32;
+        for &byte in data {
+            c ^= byte as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            }
+        }
+        !c
+    }
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend((data.len() as u32).to_be_bytes());
+        let mut body = kind.to_vec();
+        body.extend_from_slice(data);
+        out.extend_from_slice(&body);
+        out.extend(crc32(&body).to_be_bytes());
+    }
+    let mut raw = Vec::with_capacity((W * 4 + 1) * H);
+    for row in px.chunks(W * 4) {
+        raw.push(0); // filter type: none
+        raw.extend_from_slice(row);
+    }
+    let mut z = vec![0x78, 0x01];
+    let mut blocks = raw.chunks(65535).peekable();
+    while let Some(c) = blocks.next() {
+        z.push(if blocks.peek().is_none() { 1 } else { 0 });
+        z.extend((c.len() as u16).to_le_bytes());
+        z.extend((!(c.len() as u16)).to_le_bytes());
+        z.extend_from_slice(c);
+    }
+    let (mut a, mut s2) = (1u32, 0u32);
+    for &x in &raw {
+        a = (a + x as u32) % 65521;
+        s2 = (s2 + a) % 65521;
+    }
+    z.extend(((s2 << 16) | a).to_be_bytes());
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let mut ihdr = Vec::new();
+    ihdr.extend((W as u32).to_be_bytes());
+    ihdr.extend((H as u32).to_be_bytes());
+    ihdr.extend([8u8, 6, 0, 0, 0]); // 8 bit RGBA
+    chunk(&mut png, b"IHDR", &ihdr);
+    chunk(&mut png, b"IDAT", &z);
+    chunk(&mut png, b"IEND", &[]);
+    png
+}
 
 /// State of one item drag. Lives in egui's temp data under `item_drag_id()` so the file table, the
 /// sidebar and `Explorer::drive_item_drag` can all see it.
@@ -187,11 +269,24 @@ impl Explorer {
         });
         #[cfg(target_os = "windows")]
         if outside {
+            // The OS drag blocks the UI loop, so whatever was painted last stays on screen.
+            // Let one frame without the ghost go out first.
+            let handoff_id = Id::new("item_drag_handoff");
+            if !ctx.data(|d| d.get_temp::<bool>(handoff_id)).unwrap_or(false) {
+                ctx.data_mut(|d| {
+                    d.insert_temp(handoff_id, true);
+                    d.insert_temp(id, st);
+                });
+                ctx.request_repaint();
+                return;
+            }
+            ctx.data_mut(|d| d.remove_temp::<bool>(handoff_id));
             clear(&ctx);
             self.drag_lock = true;
             self.start_os_drag(frame, (*st.paths).clone());
             return;
         }
+        ctx.data_mut(|d| d.remove_temp::<bool>(Id::new("item_drag_handoff")));
 
         // Feedback inside the window.
         let (m, pal) = (self.m, self.pal);
@@ -267,6 +362,7 @@ impl Explorer {
         if paths.is_empty() {
             return;
         }
+        let preview = drag_preview_png(self.pal.accent, paths.len());
         let Some(window) = frame.winit_window() else {
             return;
         };
@@ -276,7 +372,7 @@ impl Explorer {
             drag::start_drag(
                 window,
                 drag::DragItem::Files(paths),
-                drag::Image::Raw(DRAG_PREVIEW_PNG.to_vec()),
+                drag::Image::Raw(preview),
                 |_, _| {},
                 drag::Options::default(),
             )
