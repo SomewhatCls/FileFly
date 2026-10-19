@@ -137,6 +137,7 @@ impl Explorer {
     pub(crate) fn start_indexing(&mut self, force: bool) {
         let mut paths = Vec::new();
         let mut acc = 0u64;
+        let mut missing = false; // some visible folder still has no size
         for ti in self.visible_tabs() {
             let tab = &mut self.tabs[ti];
             let mut h = DefaultHasher::new();
@@ -151,6 +152,9 @@ impl Explorer {
                 if e.dir_size.is_none() {
                     e.dir_size = self.indexer.lookup(&e.path);
                 }
+                if e.dir_size.is_none() {
+                    missing = true;
+                }
                 let mut h = DefaultHasher::new();
                 e.path.hash(&mut h);
                 acc ^= h.finish().rotate_left(13);
@@ -158,7 +162,10 @@ impl Explorer {
             }
         }
         let sig = (acc, paths.len());
-        if !force && self.index_sig == Some(sig) {
+        // The same set of folders is only skipped while a scan for it is still running, or when
+        // every row already has a size. Otherwise (e.g. a folder was invalidated by the watcher and
+        // its listing reloaded) rows would sit on "calculating" forever with no scan to fill them.
+        if !force && self.index_sig == Some(sig) && (self.indexer.is_running() || !missing) {
             return;
         }
         self.index_sig = Some(sig);
