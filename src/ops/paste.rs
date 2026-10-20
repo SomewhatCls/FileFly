@@ -20,6 +20,7 @@ pub(crate) struct PendingPaste {
     pub(crate) todo: VecDeque<(PathBuf, PathBuf)>,
     /// "Do this for all remaining conflicts" was ticked.
     pub(crate) apply_all: bool,
+    pub(crate) merged_dirs: Vec<PathBuf>,
 }
 
 /// True if one path is the other or lies inside it (case-insensitive on Windows).
@@ -36,6 +37,60 @@ pub(crate) fn paths_related(a: &Path, b: &Path) -> bool {
 /// other's source or destination. Items that overlap must not run at the same time.
 pub(crate) fn paste_overlaps(a: &PasteItem, b: &PasteItem) -> bool {
     [&a.src, &a.dst].iter().any(|x| [&b.src, &b.dst].iter().any(|y| paths_related(x, y)))
+}
+
+/// True for a real directory (a symlink to a directory does not count, so we never merge through links).
+pub(crate) fn is_real_dir(p: &Path) -> bool {
+    fs::symlink_metadata(p).map(|m| m.is_dir()).unwrap_or(false)
+}
+
+/// The result of planning a paste.
+#[derive(Default)]
+pub(crate) struct PastePlan {
+    /// Items with no clash.
+    pub(crate) ready: Vec<PasteItem>,
+    /// Real clashes that need a user decision.
+    pub(crate) todo: VecDeque<(PathBuf, PathBuf)>,
+    /// Source folders that were merged into existing ones (parents before children).
+    /// For a cut, remove these afterwards if they ended up empty.
+    pub(crate) merged_dirs: Vec<PathBuf>,
+}
+
+/// Decides what to do with `src` -> `dst`, merging folders that already exist at the destination.
+pub(crate) fn plan_item(
+    src: PathBuf,
+    dst: PathBuf,
+    claimed: &mut HashSet<PathBuf>,
+    plan: &mut PastePlan,
+) -> std::io::Result<()> {
+    if claimed.contains(&dst) {
+        plan.todo.push_back((src, dst));
+        return Ok(());
+    }
+    if !occupied(&dst) {
+        claimed.insert(dst.clone());
+        plan.ready.push(PasteItem { src, dst, replace: false });
+        return Ok(());
+    }
+    // Same-named real folders: merge. Never when one lies in the other (same-folder copy).
+    if is_real_dir(&src) && is_real_dir(&dst) && !paths_related(&src, &dst) {
+        plan.merged_dirs.push(src.clone());
+        for entry in fs::read_dir(&src)? {
+            let entry = entry?;
+            plan_item(entry.path(), dst.join(entry.file_name()), claimed, plan)?;
+        }
+        return Ok(());
+    }
+    plan.todo.push_back((src, dst)); // real conflict
+    Ok(())
+}
+
+/// After a cut has finished: drop source folders that were merged away and are now empty.
+/// Folders that still hold skipped items are left alone (remove_dir fails on non-empty dirs).
+pub(crate) fn cleanup_merged_dirs(dirs: &[PathBuf]) {
+    for d in dirs.iter().rev() {
+        let _ = fs::remove_dir(d);
+    }
 }
 
 /// How many pasted items are worked on at the same time.

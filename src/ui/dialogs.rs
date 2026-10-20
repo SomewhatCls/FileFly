@@ -47,7 +47,7 @@ impl Explorer {
             return;
         };
         let Some((src, dst)) = c.todo.front().cloned() else {
-            self.run_paste(c.ready, c.cut);
+            self.run_paste(c.ready, c.cut, c.merged_dirs);
             return;
         };
         let (m, pal) = (self.m, self.pal);
@@ -158,7 +158,7 @@ impl Explorer {
                     }
                 }
                 if c.todo.is_empty() {
-                    self.run_paste(c.ready, c.cut);
+                    self.run_paste(c.ready, c.cut, c.merged_dirs);
                 } else {
                     c.apply_all = all;
                     self.conflict = Some(c);
