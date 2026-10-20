@@ -33,6 +33,11 @@ impl Explorer {
             v
         };
         let mut drag_start: Option<u64> = None;
+        // Tab being dragged (set by a previous frame) and where the pointer is: used to reorder tabs.
+        let dragging = self.tab_drag;
+        let pointer = ui.input(|i| i.pointer.latest_pos());
+        let mut reorder: Option<(usize, usize)> = None;
+        let mut start_move = false;
         let bar_h = m.tab_h + m.s * 6.0;
         let caption_w = m.s * 46.0 * 3.0;
         let r_tab = m.radius + 2;
@@ -59,7 +64,7 @@ impl Explorer {
                 let drag =
                     ui.interact(drag_rect, Id::new("titlebar_drag"), Sense::click_and_drag());
                 if drag.drag_started_by(egui::PointerButton::Primary) {
-                    ui.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    start_move = true; // sent after the panel, see below
                 }
                 if drag.double_clicked() {
                     ui.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
@@ -126,9 +131,11 @@ impl Explorer {
                                 ui.scroll_with_delta(vec2(dx * TAB_SCROLL_SPEED, 0.0));
                             }
                         }
+                        let mut tab_rects: Vec<Rect> = Vec::with_capacity(info.len());
                         for (i, (id, title, full_path, tab_icon)) in info.iter().enumerate() {
                             let (rect, resp) = ui
                                 .allocate_exact_size(vec2(tab_w, m.tab_h), Sense::click_and_drag());
+                            tab_rects.push(rect);
                             if i == active && strip_changed && overflow {
                                 ui.scroll_to_rect(rect.expand2(vec2(gap, 0.0)), None);
                             }
@@ -157,7 +164,7 @@ impl Explorer {
                                 );
                             } else {
                                 // Resting tabs get a very faint plate; hovering strengthens it.
-                                let c = if resp.hovered() {
+                                let c = if resp.hovered() || dragging == Some(*id) {
                                     pal.subtle_pressed
                                 } else {
                                     Color32::TRANSPARENT
@@ -254,6 +261,26 @@ impl Explorer {
                             }
                             close.on_hover_text("Close tab (Ctrl+W)");
                         }
+                        // Reorder: while a tab is dragged over the title bar it swaps places with a
+                        // neighbour as soon as the pointer passes that neighbour's centre.
+                        if let (Some(d), Some(p)) = (dragging, pointer) {
+                            if full.contains(p) {
+                                if let Some(i) = info.iter().position(|t| t.0 == d) {
+                                    let to = if i > 0 && p.x < tab_rects[i - 1].center().x {
+                                        i - 1
+                                    } else if i + 1 < tab_rects.len()
+                                        && p.x > tab_rects[i + 1].center().x
+                                    {
+                                        i + 1
+                                    } else {
+                                        i
+                                    };
+                                    if to != i {
+                                        reorder = Some((i, to));
+                                    }
+                                }
+                            }
+                        }
                             },
                         );
                             });
@@ -282,6 +309,33 @@ impl Explorer {
         if let Some(id) = drag_start {
             self.tab_drag = Some(id);
         }
+        if start_move {
+            ui.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            // The OS move loop swallows the button/touch release; make egui let go of it afterwards
+            // (see `sync_pointer` in window.rs).
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(Id::new("pointer_reset"), true));
+            ui.request_repaint();
+        }
+        if let Some((from, to)) = reorder {
+            self.move_tab(from, to);
+            ui.request_repaint();
+        }
+    }
+
+    /// Moves a tab to a new position and keeps `active` pointing at the same tab.
+    pub(crate) fn move_tab(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        let active_id = self.tabs.get(self.active).map(|t| t.id);
+        let t = self.tabs.remove(from);
+        self.tabs.insert(to, t);
+        if let Some(id) = active_id {
+            if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                self.active = i;
+            }
+        }
     }
 
     /// While a tab is being dragged: shows where it would land (clearly, in the accent colour) and
@@ -306,6 +360,11 @@ impl Explorer {
             Id::new("tile_drop_preview"),
         ));
         let mut target: Option<(u64, DropZone)> = None;
+        // Over the title bar (above all panes) a dragged tab only reorders: no split overlay there.
+        let panes_top = panes
+            .iter()
+            .map(|(_, r)| r.top())
+            .fold(f32::INFINITY, f32::min);
 
         if outside {
             if self.peer_under.0.elapsed() > Duration::from_millis(150) {
@@ -338,7 +397,7 @@ impl Explorer {
                 FontId::proportional(m.font * 1.05),
                 pal.on_accent,
             );
-        } else if let Some(p) = pos {
+        } else if let Some(p) = pos.filter(|p| panes.is_empty() || p.y >= panes_top) {
             let already = panes.iter().any(|(t, _)| *t == dragged);
             let can_split = already || panes.len() < 4;
             let dragged_special = self.tabs.iter().any(|t| t.id == dragged && t.special());

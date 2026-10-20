@@ -4,8 +4,11 @@ use crate::prelude::*;
 
 impl Explorer {
     /// Runs the decided paste items as one background job with a progress dialog.
-    pub(crate) fn run_paste(&mut self, items: Vec<PasteItem>, cut: bool) {
+    pub(crate) fn run_paste(&mut self, items: Vec<PasteItem>, cut: bool, merged_dirs: Vec<PathBuf>) {
         if items.is_empty() {
+            if cut {
+                cleanup_merged_dirs(&merged_dirs);
+            }
             return;
         }
         if cut {
@@ -122,6 +125,11 @@ impl Explorer {
                 }
             });
 
+            if cut {
+                // Only empty folders go; ones still holding skipped or failed items stay.
+                cleanup_merged_dirs(&merged_dirs);
+            }
+
             let mut errors = errors.into_inner().unwrap_or_else(|e| e.into_inner());
             errors.sort_by_key(|e| e.0);
             let failed: Vec<(usize, String)> = errors.clone();
@@ -162,8 +170,7 @@ impl Explorer {
         if self.conflict.is_some() {
             return; // a question is already on screen
         }
-        let mut ready: Vec<PasteItem> = Vec::new();
-        let mut todo: VecDeque<(PathBuf, PathBuf)> = VecDeque::new();
+        let mut plan = PastePlan::default();
         let mut claimed: HashSet<PathBuf> = HashSet::new();
         for source in sources {
             let Some(name) = source.file_name() else {
@@ -181,26 +188,31 @@ impl Explorer {
                 ));
                 continue;
             }
-            // Same-folder copies land here too (source == dest): they are asked about like any other clash.
-            if occupied(&dest) || claimed.contains(&dest) {
-                todo.push_back((source, dest));
-            } else {
-                claimed.insert(dest.clone());
-                ready.push(PasteItem {
-                    src: source,
-                    dst: dest,
-                    replace: false,
-                });
+            let label = name.to_string_lossy().into_owned();
+            // Same-named folders are merged (their children are planned one by one); only real
+            // clashes (file vs file, file vs folder, same-folder copies) end up in `todo`.
+            // Plan into a scratch plan so a folder that can't be read adds nothing half-done.
+            let mut sub = PastePlan::default();
+            match plan_item(source, dest, &mut claimed, &mut sub) {
+                Ok(()) => {
+                    plan.ready.extend(sub.ready);
+                    plan.todo.extend(sub.todo);
+                    plan.merged_dirs.extend(sub.merged_dirs);
+                }
+                Err(e) => {
+                    self.tabs[self.active].error = Some(format!("Can't read “{label}”: {e}"));
+                }
             }
         }
-        if todo.is_empty() {
-            self.run_paste(ready, cut);
+        if plan.todo.is_empty() {
+            self.run_paste(plan.ready, cut, plan.merged_dirs);
         } else {
             self.conflict = Some(PendingPaste {
                 cut,
-                ready,
-                todo,
+                ready: plan.ready,
+                todo: plan.todo,
                 apply_all: false,
+                merged_dirs: plan.merged_dirs,
             });
         }
     }
