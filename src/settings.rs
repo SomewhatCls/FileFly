@@ -84,6 +84,8 @@ pub(crate) struct Settings {
     pub(crate) custom_accent: [u8; 3],
     pub(crate) theme: ThemeChoice,
     pub(crate) show_hidden: bool,
+    /// Determines whether window will have a drag space
+    pub(crate) left_drag_space: bool,
     /// List mapped network drives / network mounts in the sidebar.
     pub(crate) network_drives: bool,
     /// Folders pinned to Quick access. `None`: the default list (Home, Desktop, Downloads, ...).
@@ -121,12 +123,25 @@ impl Default for Settings {
             max_search_results: 100_000_usize,
             index_dir: None,
             col_widths: [150.0, 110.0, 90.0],
+            left_drag_space: false,
             window_size: None,
             window_pos: None,
             session: Session::default(),
             maximized: false,
             folder_icons: HashMap::new(),
             use_mica: true,
+        }
+    }
+}
+
+///Implements the Settings functions.
+impl Settings {   // <- new, separate block
+    /// Size the UI actually uses. Following the system replaces the custom size.
+    pub(crate) fn effective_font_size(&self, system_scale: f32) -> f32 {
+        if self.follow_text_scale {
+            14.0 * system_scale
+        } else {
+            self.font_size
         }
     }
 }

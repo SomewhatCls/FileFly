@@ -288,7 +288,7 @@ impl Explorer {
                         );
                         let cr = ui.interact(close_rect, Id::unique(("pane_close", tid)), Sense::click());
                         hover_fill(ui, close_rect, &cr, &pal, &m);
-                        draw_icon(ui, close_rect.center(), m.small_icon * 0.8, "close", pal.text_secondary);
+                        draw_icon(ui, close_rect.center(), m.icon * 0.8, "close", pal.text_secondary);
                         cr.clone().on_hover_text("Close this pane");
                         if cr.clicked() {
                             actions.push(Action::ClosePane(tid));
