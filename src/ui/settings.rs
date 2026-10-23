@@ -272,6 +272,15 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             ui,
             m,
             pal,
+            "Drag space in tab bar",
+            Some("Leave an empty area at the left of the tabs for moving the window"),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.left_drag_space),
+        );
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
             "Use Windows accent color",
             Some("Turn off to pick your own accent color"),
             |ui| fl_switch(ui, m, pal, &mut sp.s.use_system_accent),
@@ -481,6 +490,7 @@ impl Explorer {
             st.theme = s.theme;
             st.font_size = s.font_size;
             st.follow_text_scale = s.follow_text_scale;
+            st.left_drag_space = s.left_drag_space;
             st.use_system_accent = s.use_system_accent;
             st.custom_accent = s.custom_accent;
             st.use_mica = s.use_mica;

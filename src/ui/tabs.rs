@@ -7,9 +7,13 @@ impl Explorer {
     pub(crate) fn ui_tabs(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
         let active = self.active;
+        let left_gap = if self.settings.left_drag_space { m.s * 40.0 } else { 0.0 };
         // 1.0 while the first tab is selected: the band below then has a square corner and the tab's wing meets the window edge.
-        self.first_anim =
-            ui.animate_bool_with_time(Id::unique("first_tab_active"), active == 0, 0.15);
+        self.first_anim = ui.animate_bool_with_time(
+            Id::unique("first_tab_active"),
+            active == 0 && !self.settings.left_drag_space,
+            0.15,
+        );
         let info: Vec<(u64, String, String, &'static str)> = self
             .tabs
             .iter()
@@ -72,7 +76,7 @@ impl Explorer {
 
                 // The first tab is inset by exactly one wing radius so its left wing ends at the window edge.
                 let tabs_rect = Rect::from_min_max(
-                    pos2(full.left() + wing, full.bottom() - m.tab_h),
+                    pos2(full.left() + left_gap + wing, full.bottom() - m.tab_h),
                     pos2(caption.left(), full.bottom()),
                 );
                 let mut wings: Vec<(Rect, f32)> = Vec::new();
