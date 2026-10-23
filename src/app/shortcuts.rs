@@ -74,8 +74,11 @@ impl Explorer {
             if i.pointer.button_pressed(egui::PointerButton::Extra2) {
                 actions.push(Action::Forward);
             }
-            if i.consume_key(M::CTRL | M::SHIFT, Key::N) {
+            if i.consume_key(M::CTRL | M::SHIFT, Key::F) {
                 actions.push(Action::NewFolder);
+            }
+            if i.consume_key(M::CTRL | M::SHIFT, Key::N) {
+                actions.push(Action::NewFile);
             }
             if i.consume_key(M::CTRL, Key::Comma) {
                 actions.push(Action::OpenSettings);
