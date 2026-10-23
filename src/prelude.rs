@@ -24,6 +24,7 @@ pub(crate) use std::{
     },
     time::{Duration, Instant, SystemTime},
 };
+pub(crate) use num_format::{Locale, ToFormattedString};
 
 // Sibling crate modules that are referenced by path (`trashbin::Item`, `defaultapp::is_default()`, ...).
 pub(crate) use crate::{defaultapp, drives, picker, trashbin};

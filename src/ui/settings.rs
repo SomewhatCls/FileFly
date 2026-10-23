@@ -337,7 +337,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             Some("Default: 100,000"),
             |ui| {
                 ui.add(
-                    egui::Slider::new(&mut sp.s.max_search_results, 1_usize..=1_000_000_usize)
+                    egui::Slider::new(&mut sp.s.max_search_results, 1_usize..=10_000_000_usize)
                         .logarithmic(true),
                 );
             },

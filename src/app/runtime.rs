@@ -36,6 +36,14 @@ impl eframe::App for Explorer {
             self.mica = false;
         }
 
+        // Sets number dividers globally.
+        ctx.all_styles_mut(|style| {
+            style.number_formatter = egui::style::NumberFormatter::new(|val, _decimal_range| {
+                // This needs to be changed when different locales are supported.
+                (val as i64).to_formatted_string(&Locale::en)
+            });
+        });
+
         // Handle closing the app before the UI is drawn.
         if ctx.input(|i| i.viewport().close_requested()) {
             // Vanish first, then save.
