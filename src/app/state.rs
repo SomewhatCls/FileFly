@@ -82,6 +82,9 @@ pub(crate) struct Explorer {
     /// Windows transparency effects available (off in Battery Saver / when disabled in Settings).
     pub(crate) transparency: bool,
     pub(crate) backdrop_transp: Option<bool>,
+    /// Number of frames since app start.
+    pub(crate) was_focused: bool,
+    pub(crate) started: Instant,
     /// (when checked, whether another FileFly window is under the pointer) while dragging a tab.
     pub(crate) peer_under: (Instant, bool),
     /// Pane rectangles (tab id, screen rect) from the last frame: drop targets.
@@ -167,7 +170,7 @@ impl Explorer {
             props: None,
             props_gen: Arc::new(AtomicU64::new(0)),
             settings_dirty: false,
-            default_on: defaultapp::is_default(),
+            default_on: default_app::is_default(),
             default_error: None,
             licenses_open: false,
             sys_accent: system_accent(),
@@ -195,6 +198,8 @@ impl Explorer {
             info_stamp: Instant::now(),
             transparency: system_transparency(),
             backdrop_transp: None,
+            was_focused: false,
+            started: Instant::now(),
             peer_under: (Instant::now(), false),
             pane_rects: Vec::new(),
             drag_lock: false,

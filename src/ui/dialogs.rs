@@ -32,7 +32,7 @@ impl Explorer {
             (1, _) => {
                 let items = c.items;
                 self.run_job("Deleting permanently…", move || {
-                    trashbin::purge(items).map(|_| String::new())
+                    trash_bin::purge(items).map(|_| String::new())
                 });
             }
             (2, _) | (_, true) => {}

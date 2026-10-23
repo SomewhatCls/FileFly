@@ -358,7 +358,7 @@ impl Explorer {
             Action::PinQuick(p) => self.pin_quick(p),
             Action::UnpinQuick(p) => self.unpin_quick(&p),
             Action::OpenRecycleBin => {
-                if trashbin::SUPPORTED {
+                if trash_bin::SUPPORTED {
                     self.open_trash(ti);
                 } else if let Err(e) = open_recycle_bin() {
                     self.tabs[ti].error = Some(format!("Could not open the Recycle Bin: {e}"));
@@ -368,7 +368,7 @@ impl Explorer {
                 let items = self.trash_items(ti, false);
                 if !items.is_empty() {
                     self.run_job("Restoring…", move || {
-                        trashbin::restore(items).map(|_| String::new())
+                        trash_bin::restore(items).map(|_| String::new())
                     });
                 }
             }

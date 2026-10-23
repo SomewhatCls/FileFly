@@ -28,7 +28,7 @@ impl Explorer {
         let (id, seq) = (tab.id, tr.seq);
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
-            let result = trashbin::load(fmt);
+            let result = trash_bin::load(fmt);
             let _ = tx.send(AppMsg::Trash {
                 tab: id,
                 seq,
@@ -38,7 +38,7 @@ impl Explorer {
         });
     }
 
-    pub(crate) fn trash_items(&self, ti: usize, all: bool) -> Vec<trashbin::Item> {
+    pub(crate) fn trash_items(&self, ti: usize, all: bool) -> Vec<trash_bin::Item> {
         self.tabs[ti]
             .trash
             .as_ref()

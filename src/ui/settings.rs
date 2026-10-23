@@ -436,7 +436,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
 impl Explorer {
     /// Opens the Settings tab (or focuses it if it is already open; pressing the button again closes it).
     pub(crate) fn open_settings(&mut self) {
-        self.default_on = defaultapp::is_default();
+        self.default_on = default_app::is_default();
         self.default_error = None;
         if let Some(i) = self.tabs.iter().position(|t| t.settings) {
             if i == self.active && self.tabs.len() > 1 {
@@ -500,9 +500,9 @@ impl Explorer {
         }
         //Sets new default app with registry key, or reverts to default windows explorer.
         if let Some(on) = default_request {
-            let result = if on { defaultapp::set_default() } else { defaultapp::restore_default() };
+            let result = if on { default_app::set_default() } else { default_app::restore_default() };
             self.default_error = result.err().map(|e| e.to_string());
-            self.default_on = defaultapp::is_default();
+            self.default_on = default_app::is_default();
         }
         if reset_quick {
             self.settings.quick_access = None;

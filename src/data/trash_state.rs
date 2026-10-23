@@ -11,7 +11,7 @@ pub(crate) enum TrashSort {
 }
 
 pub(crate) struct TrashState {
-    pub(crate) rows: Vec<trashbin::TrashRow>,
+    pub(crate) rows: Vec<trash_bin::TrashRow>,
     pub(crate) view: Vec<usize>,
     pub(crate) selected: HashSet<usize>,
     pub(crate) anchor: Option<usize>,
@@ -43,7 +43,7 @@ impl TrashState {
 }
 
 pub(crate) struct ConfirmPurge {
-    pub(crate) items: Vec<trashbin::Item>,
+    pub(crate) items: Vec<trash_bin::Item>,
     pub(crate) text: String,
 }
 
