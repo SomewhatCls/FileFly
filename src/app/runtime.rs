@@ -197,7 +197,6 @@ impl eframe::App for Explorer {
                 pressed: false,
                 modifiers: Default::default(),
             });
-            raw_input.events.push(egui::Event::PointerGone);
         }
     }
 

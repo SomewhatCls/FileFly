@@ -164,6 +164,37 @@ pub fn apply_backdrop(_window: &impl raw_window_handle::HasWindowHandle, _dark: 
     false
 }
 
+/// Clears the backdrop and applies it again. Re-applying an unchanged backdrop does nothing,
+/// which is why a blank window only recovered after minimise/restore.
+#[cfg(windows)]
+pub fn reapply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool) -> bool {
+    let _ = window_vibrancy::clear_tabbed(window);
+    let _ = window_vibrancy::clear_mica(window);
+    apply_backdrop(window, dark)
+}
+#[cfg(not(windows))]
+pub fn reapply_backdrop(_w: &impl raw_window_handle::HasWindowHandle, _dark: bool) -> bool {
+    false
+}
+
+/// Makes DWM recompute the window frame (the same recomposition a minimise/restore causes).
+#[cfg(windows)]
+pub fn nudge_frame(window: &impl raw_window_handle::HasWindowHandle) {
+    use raw_window_handle::RawWindowHandle;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn SetWindowPos(hwnd: isize, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+    }
+    if let Ok(handle) = window.window_handle() {
+        if let RawWindowHandle::Win32(w) = handle.as_raw() {
+            // NOMOVE | NOSIZE | NOZORDER | NOACTIVATE | FRAMECHANGED
+            unsafe { SetWindowPos(w.hwnd.get(), 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020) };
+        }
+    }
+}
+#[cfg(not(windows))]
+pub fn nudge_frame(_w: &impl raw_window_handle::HasWindowHandle) {}
+
 // ----------------------------------------------------------------------------------------------
 // Palette (Fluent 2 tokens, approximated)
 
