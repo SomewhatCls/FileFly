@@ -345,12 +345,27 @@ impl Explorer {
 
                 // Concave "wings" blend the selected tab into the band below it.
                 // A tab cut off by the edge of the scrolled strip gets no wing on that side.
+                // The wings are tucked `overlap` px under the tab body (and grown by the same amount) so the
+                // anti-aliased edges of the two shapes can't leave a hairline seam between them.
                 for (rect, k) in &wings {
+                    let overlap = 0.75 * k;
                     if rect.left() >= scroll_rect.left() - 0.5 {
-                        tab_wing(ui, rect.left_bottom(), wing * k, true, pal.layer);
+                        tab_wing(
+                            ui,
+                            rect.left_bottom() + vec2(overlap, 0.0),
+                            wing * k + overlap,
+                            true,
+                            pal.layer,
+                        );
                     }
                     if rect.right() <= scroll_rect.right() + 0.5 {
-                        tab_wing(ui, rect.right_bottom(), wing * k, false, pal.layer);
+                        tab_wing(
+                            ui,
+                            rect.right_bottom() - vec2(overlap, 0.0),
+                            wing * k + overlap,
+                            false,
+                            pal.layer,
+                        );
                     }
                 }
 
