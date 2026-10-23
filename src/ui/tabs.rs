@@ -242,7 +242,7 @@ impl Explorer {
                                 draw_icon(
                                     ui,
                                     close_rect.center(),
-                                    m.small_icon * 0.85,
+                                    m.icon * 0.8,
                                     "close",
                                     if close.hovered() {
                                         pal.text

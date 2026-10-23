@@ -236,29 +236,35 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                     }
                 });
         });
+
+        // Text scaling settings.
         fl_divider(ui, m, pal);
         fl_row(ui, m, pal, "Text size", Some("Scales text and interface elements"), |ui| {
             // The whole UI is sized from this value, so applying it mid-drag would move the slider
             // under the cursor. Preview in the handle, apply on release.
-            let resp = ui.add(
-                egui::Slider::new(&mut sp.font, 10.0..=24.0)
-                    .step_by(0.5)
-                    .suffix(" pt"),
-            );
-            if resp.dragged() {
-                sp.font_edit = Some(sp.font);
-            } else if resp.drag_stopped() || resp.changed() {
-                sp.s.font_size = sp.font;
-                sp.font_edit = None;
-            }
+            ui.add_enabled_ui(!sp.s.follow_text_scale, |ui| {
+                let resp = ui.add(
+                    egui::Slider::new(&mut sp.font, 10.0..=24.0)
+                        .step_by(1.0)
+                        .suffix(" pt"),
+                );
+                if resp.dragged() {
+                    sp.font_edit = Some(sp.font);
+                } else if resp.drag_stopped() || resp.changed() {
+                    eprintln!("commit: sp.font = {}", sp.font);
+                    sp.s.font_size = sp.font;
+                    sp.font_edit = None;
+                }
+            });
         });
+
         fl_divider(ui, m, pal);
         fl_row(
             ui,
             m,
             pal,
             "Follow system text size",
-            Some("Also apply the “Text size” setting from Windows Accessibility"),
+            Some("Also applies the “Text size” scaling setting from Windows Accessibility"),
             |ui| fl_switch(ui, m, pal, &mut sp.s.follow_text_scale),
         );
         fl_divider(ui, m, pal);

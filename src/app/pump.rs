@@ -316,17 +316,26 @@ impl Explorer {
             let c = self.settings.custom_accent;
             Accent::from_base(Color32::from_rgb(c[0], c[1], c[2]))
         };
-        let font = self.settings.font_size
-            * if self.settings.follow_text_scale {
-                self.text_scale
-            } else {
-                1.0
-            };
+
+        //Calls function to determine font size.
+        let font = self.settings.effective_font_size(self.text_scale);
         self.m = Metrics::new(font, ctx.pixels_per_point());
         if self.applied_style != Some((font, accent)) {
             apply_style(ctx, &self.m, accent);
             self.applied_style = Some((font, accent));
         }
+
+        // Checks and changes the font size based on system accessibility settings if activated.
+        if self.text_scale_checked.elapsed() >= Duration::from_secs(1) {
+            self.text_scale_checked = Instant::now();
+            let s = system_text_scale();
+            if (s - self.text_scale).abs() > f32::EPSILON {
+                self.text_scale = s;
+                ctx.request_repaint();
+            }
+        }
+        ctx.request_repaint_after(Duration::from_secs(1));
+
         let theme = ctx.theme();
         let want_mica = self.settings.use_mica && self.transparency;
         let changed = self.backdrop_theme != Some(theme)
@@ -340,7 +349,6 @@ impl Explorer {
 
         if changed || (want_mica && (early || focus_gained)) {
             let ok = want_mica && apply_backdrop(frame, theme == egui::Theme::Dark);
-            eprintln!("time {} backdrop applied: {ok}", self.started.elapsed().as_millis());
             style_frameless(frame);
             self.mica = ok;
             self.backdrop_theme = Some(theme);

@@ -131,6 +131,18 @@ impl Default for Settings {
     }
 }
 
+///Implements the Settings functions.
+impl Settings {   // <- new, separate block
+    /// Size the UI actually uses. Following the system replaces the custom size.
+    pub(crate) fn effective_font_size(&self, system_scale: f32) -> f32 {
+        if self.follow_text_scale {
+            14.0 * system_scale
+        } else {
+            self.font_size
+        }
+    }
+}
+
 pub(crate) fn app_dir() -> PathBuf {
     dirs::data_local_dir()
         .or_else(dirs::data_dir)

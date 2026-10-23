@@ -85,6 +85,7 @@ pub(crate) struct Explorer {
     /// Number of frames since app start.
     pub(crate) was_focused: bool,
     pub(crate) started: Instant,
+    pub(crate) text_scale_checked: Instant,
     /// (when checked, whether another FileFly window is under the pointer) while dragging a tab.
     pub(crate) peer_under: (Instant, bool),
     /// Pane rectangles (tab id, screen rect) from the last frame: drop targets.
@@ -200,6 +201,7 @@ impl Explorer {
             backdrop_transp: None,
             was_focused: false,
             started: Instant::now(),
+            text_scale_checked: Instant::now(),
             peer_under: (Instant::now(), false),
             pane_rects: Vec::new(),
             drag_lock: false,
