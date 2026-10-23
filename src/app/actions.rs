@@ -130,7 +130,7 @@ impl Explorer {
             }
             Action::FocusSearch => self
                 .ui
-                .memory_mut(|m| m.request_focus(Id::new("search_box"))),
+                .memory_mut(|m| m.request_focus(Id::unique("search_box"))),
             Action::Open(p) => self.open_path(&p),
             Action::Compress(p) => self.compress(ti, p),
             Action::Extract(p) => self.extract(ti, p),

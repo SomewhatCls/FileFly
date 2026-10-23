@@ -114,7 +114,7 @@ impl Explorer {
                 // The window is tinted like the central panel (a subtle layer over the Mica).
                 // Backdrop over the whole window (the native window only exists once it has been
                 // shown, so this is retried until it works and redone when the theme changes).
-                let key = Id::new(("file-op-backdrop", op.id));
+                let key = Id::unique(("file-op-backdrop", op.id));
                 let want = (pal.dark, transparency);
                 if ui.ctx().data(|d| d.get_temp::<(bool, bool)>(key)) != Some(want)
                     && backdrop_by_title(&win_title, pal.dark, transparency)
@@ -132,7 +132,7 @@ impl Explorer {
                 );
                 let drag = ui.interact(
                     Rect::from_min_max(full.min, pos2(caption.left(), full.top() + bar_h)),
-                    Id::new("file-op-drag"),
+                    Id::unique("file-op-drag"),
                     Sense::click_and_drag(),
                 );
                 if drag.drag_started_by(egui::PointerButton::Primary) {
@@ -285,7 +285,7 @@ impl Explorer {
                 });
                 // Fit the window to its content (it grows with "More details").
                 let need = panel.inner + bar_h + m.pad * 3.0;
-                let key = Id::new(("file-op-height", op.id));
+                let key = Id::unique(("file-op-height", op.id));
                 let last = ui.ctx().data(|d| d.get_temp::<f32>(key)).unwrap_or(0.0);
                 if (need - last).abs() > 1.0 {
                     ui.ctx().data_mut(|d| d.insert_temp(key, need));

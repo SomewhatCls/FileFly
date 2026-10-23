@@ -27,7 +27,7 @@ impl Explorer {
         // the (undecorated) window would be unreachable, so bring it back to the primary one.
         let mut off_screen = false;
         if !maxi && !mini && !full {
-            let id = Id::new("onscreen_checked");
+            let id = Id::unique("onscreen_checked");
             let done = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
             if !done {
                 if let Some(r) = outer.or(inner) {
@@ -77,7 +77,7 @@ impl Explorer {
         // crash, kill or power loss doesn't lose it (the clean-exit save still runs too).
         {
             type Geo = (Option<[f32; 2]>, Option<[f32; 2]>, bool);
-            let id = Id::new("saved_window_geo");
+            let id = Id::unique("saved_window_geo");
             let geo: Geo = (
                 self.settings.window_pos,
                 self.settings.window_size,

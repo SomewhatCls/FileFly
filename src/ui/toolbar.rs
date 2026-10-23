@@ -39,13 +39,13 @@ pub(crate) fn address_bar(
     let inner = pill.shrink2(vec2(m.pad * 0.4, 0.0));
 
     if tab.editing_addr {
-        let id = Id::new(("addr_edit", tab.id));
+        let id = Id::unique(("addr_edit", tab.id));
         let te = egui::TextEdit::singleline(&mut tab.address)
             .id(id)
             .frame(egui::Frame::NONE)
             .margin(Margin::symmetric(4, 0))
             .desired_width(inner.width())
-            .vertical_align(Align::Center)
+            .align(Align2::LEFT_CENTER)
             .hint_text("Type a folder path and press Enter");
 
         //Layout shift fix: Using a child instead of put prevents
@@ -113,7 +113,7 @@ pub(crate) fn address_bar(
     let mut x = inner.left();
     if first > 0 {
         let rect = Rect::from_min_size(pos2(x, top), vec2(more_w, h));
-        let resp = ui.interact(rect, Id::new(("crumb_more", tab.id)), Sense::click());
+        let resp = ui.interact(rect, Id::unique(("crumb_more", tab.id)), Sense::click());
         hover_fill(ui, rect, &resp, pal, m);
         paint_text(ui, rect, "…", FontId::proportional(m.font), pal.text, false);
         if resp.clicked() {
@@ -146,7 +146,7 @@ pub(crate) fn address_bar(
             pos2(x, top),
             vec2(widths[i].min((inner.right() - x).max(0.0)), h),
         );
-        let resp = ui.interact(rect, Id::new(("crumb", tab.id, i)), Sense::click());
+        let resp = ui.interact(rect, Id::unique(("crumb", tab.id, i)), Sense::click());
         hover_fill(ui, rect, &resp, pal, m);
         paint_text(
             ui,
@@ -197,11 +197,11 @@ pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab,
         SearchScope::System => "Search entire system".to_owned(),
     };
     let te = egui::TextEdit::singleline(&mut tab.search)
-        .id(Id::new("search_box"))
+        .id(Id::unique("search_box"))
         .frame(egui::Frame::NONE)
         .margin(Margin::symmetric(4, 0))
         .desired_width(te_rect.width())
-        .vertical_align(Align::Center)
+        .align(Align2::LEFT_CENTER)
         .hint_text(hint);
     let resp = ui.put(te_rect, te);
     if resp.changed() {
@@ -224,7 +224,7 @@ pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab,
 
     // Clear button
     if !tab.search.is_empty() {
-        let cr = ui.interact(clear_rect, Id::new("search_clear"), Sense::click());
+        let cr = ui.interact(clear_rect, Id::unique("search_clear"), Sense::click());
         hover_fill(ui, clear_rect, &cr, pal, m);
         draw_icon(ui, clear_rect.center(), m.small_icon * 0.8, "close", pal.text);
         if cr.clicked() {
@@ -234,7 +234,7 @@ pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab,
     }
 
     // SearchScope dropdown menu
-    let mr = ui.interact(menu_rect, Id::new("search_scope_btn"), Sense::click());
+    let mr = ui.interact(menu_rect, Id::unique("search_scope_btn"), Sense::click());
     hover_fill(ui, menu_rect, &mr, pal, m);
     let icon_c = pos2(
         menu_rect.left() + m.pad * 0.5 + m.small_icon / 2.0,

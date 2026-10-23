@@ -9,7 +9,7 @@ impl Explorer {
         let active = self.active;
         // 1.0 while the first tab is selected: the band below then has a square corner and the tab's wing meets the window edge.
         self.first_anim =
-            ui.animate_bool_with_time(Id::new("first_tab_active"), active == 0, 0.15);
+            ui.animate_bool_with_time(Id::unique("first_tab_active"), active == 0, 0.15);
         let info: Vec<(u64, String, String, &'static str)> = self
             .tabs
             .iter()
@@ -62,7 +62,7 @@ impl Explorer {
                 // Empty title-bar space moves the window; double-click maximizes. Registered first so tabs sit on top.
                 let drag_rect = Rect::from_min_max(full.min, pos2(caption.left(), full.bottom()));
                 let drag =
-                    ui.interact(drag_rect, Id::new("titlebar_drag"), Sense::click_and_drag());
+                    ui.interact(drag_rect, Id::unique("titlebar_drag"), Sense::click_and_drag());
                 if drag.drag_started_by(egui::PointerButton::Primary) {
                     start_move = true; // sent after the panel, see below
                 }
@@ -99,7 +99,7 @@ impl Explorer {
 
                         // Bring the active tab into view when it (or the tab count) changes.
                         let strip_key = (info.get(active).map(|t| t.0).unwrap_or(0), info.len());
-                        let strip_id = Id::new("tab_strip_last");
+                        let strip_id = Id::unique("tab_strip_last");
                         let strip_changed =
                             ui.data(|d| d.get_temp::<(u64, usize)>(strip_id)) != Some(strip_key);
                         ui.data_mut(|d| d.insert_temp(strip_id, strip_key));
@@ -144,7 +144,7 @@ impl Explorer {
                                 drag_start = Some(*id);
                             }
                             let k = ui.animate_bool_with_time(
-                                Id::new(("tab_wing", *id)),
+                                Id::unique(("tab_wing", *id)),
                                 is_active,
                                 0.12,
                             );
@@ -192,7 +192,7 @@ impl Explorer {
                             );
                             let close = ui.interact(
                                 close_rect,
-                                Id::new(("tab_close", *id)),
+                                Id::unique(("tab_close", *id)),
                                 Sense::click(),
                             );
                             let show_close = is_active || resp.hovered() || close.hovered();
@@ -314,7 +314,7 @@ impl Explorer {
             // The OS move loop swallows the button/touch release; make egui let go of it afterwards
             // (see `sync_pointer` in window.rs).
             ui.ctx()
-                .data_mut(|d| d.insert_temp(Id::new("pointer_reset"), true));
+                .data_mut(|d| d.insert_temp(Id::unique("pointer_reset"), true));
             ui.request_repaint();
         }
         if let Some((from, to)) = reorder {
@@ -357,7 +357,7 @@ impl Explorer {
         let outside = self.cursor_outside_window() == Some(true);
         let overlay = ui.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
-            Id::new("tile_drop_preview"),
+            Id::unique("tile_drop_preview"),
         ));
         let mut target: Option<(u64, DropZone)> = None;
         // Over the title bar (above all panes) a dragged tab only reorders: no split overlay there.
@@ -458,7 +458,7 @@ impl Explorer {
                 .unwrap_or_default();
             let tip = ui.layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
-                Id::new("tile_drag_ghost"),
+                Id::unique("tile_drag_ghost"),
             ));
             let galley = tip.layout_no_wrap(title, FontId::proportional(m.font), pal.text);
             let r = Rect::from_min_size(p + vec2(14.0, 14.0), galley.size() + vec2(m.pad * 2.0, m.pad));

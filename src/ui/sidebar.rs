@@ -26,7 +26,7 @@ pub(crate) fn quick_header(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str, 
     );
     let resp = ui.interact(
         btn,
-        ui.id().with("quick_add_btn"),
+        ui.scope_id().with("quick_add_btn"),
         if can_add { Sense::click() } else { Sense::hover() },
     );
     if can_add {
@@ -208,7 +208,7 @@ impl Explorer {
         // Folder context menus (file list) need to know what is pinned.
         ui.data_mut(|d| {
             d.insert_temp(
-                Id::new("pinned_paths"),
+                Id::unique("pinned_paths"),
                 Arc::new(quick.iter().map(|q| q.path.clone()).collect::<HashSet<PathBuf>>()),
             )
         });

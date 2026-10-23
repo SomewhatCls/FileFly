@@ -73,7 +73,7 @@ impl eframe::App for Explorer {
             self.admin_retry = None;
         }
         let retry_tab = if self.admin_retry.is_some() { self.tabs[self.active].id } else { u64::MAX };
-        ui.data_mut(|d| d.insert_temp(Id::new("admin_retry_tab"), retry_tab));
+        ui.data_mut(|d| d.insert_temp(Id::unique("admin_retry_tab"), retry_tab));
         let painter = ui.layer_painter(egui::LayerId::background());
 
         if self.mica {
@@ -138,7 +138,7 @@ impl eframe::App for Explorer {
         // (the clean-exit save also includes it).
         if !SESSION_READONLY.load(AtomicOrdering::Relaxed) {
             let snap = self.session_snapshot();
-            let id = Id::new("saved_session");
+            let id = Id::unique("saved_session");
             let (mut seen, mut at, mut saved) = ui
                 .data(|d| d.get_temp::<(Session, Instant, Session)>(id))
                 .unwrap_or_else(|| (snap.clone(), Instant::now(), snap.clone()));
@@ -162,7 +162,7 @@ impl eframe::App for Explorer {
 
         // Save column widths as soon as a resize drag ends, not only on a clean exit.
         {
-            let id = Id::new("saved_col_widths");
+            let id = Id::unique("saved_col_widths");
             let cols = self.settings.col_widths;
             match ui.data(|d| d.get_temp::<[f32; 3]>(id)) {
                 None => {

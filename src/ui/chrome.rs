@@ -74,7 +74,7 @@ pub(crate) fn caption_buttons_ex(ui: &mut Ui, m: &Metrics, pal: &Palette, area: 
             pos2(area.left() + bw * slot as f32, area.top()),
             vec2(bw, area.height()-14.0),
         );
-        let resp = ui.interact(r, Id::new(("caption", k)), Sense::click());
+        let resp = ui.interact(r, Id::unique(("caption", k)), Sense::click());
         let close = k == 2;
         let bg = if resp.is_pointer_button_down_on() {
             if close {

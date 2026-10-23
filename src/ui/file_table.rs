@@ -211,7 +211,7 @@ pub(crate) fn table_ui(
 
     // ---- error bar (Fluent InfoBar)
     if let Some(msg) = error.clone() {
-        let offer = ui.data(|d| d.get_temp::<u64>(Id::new("admin_retry_tab"))) == Some(tab_id);
+        let offer = ui.data(|d| d.get_temp::<u64>(Id::unique("admin_retry_tab"))) == Some(tab_id);
         let btn_w = if offer { m.s * 150.0 } else { 0.0 };
         let (r, _) = ui.allocate_exact_size(vec2(avail, m.row_h * 1.1), Sense::hover());
         ui.painter()
@@ -238,7 +238,7 @@ pub(crate) fn table_ui(
                 pos2(right - btn_w + m.pad, r.top() + m.row_h * 0.15),
                 pos2(right, r.bottom() - m.row_h * 0.15),
             );
-            let resp = ui.interact(br, Id::new(("err_admin", tab_id)), Sense::click());
+            let resp = ui.interact(br, Id::unique(("err_admin", tab_id)), Sense::click());
             hover_fill(ui, br, &resp, pal, m);
             ui.painter().text(
                 br.center(),
@@ -251,7 +251,7 @@ pub(crate) fn table_ui(
                 actions.push(Action::RetryAsAdmin);
             }
         }
-        let resp = ui.interact(cr, Id::new(("err_close", tab_id)), Sense::click());
+        let resp = ui.interact(cr, Id::unique(("err_close", tab_id)), Sense::click());
         hover_fill(ui, cr, &resp, pal, m);
         draw_icon(ui, cr.center(), m.small_icon * 0.8, "close", pal.danger);
         if resp.clicked() {
@@ -265,7 +265,7 @@ pub(crate) fn table_ui(
     // one shared set made a column vanish in a narrower pane when another pane was resized.
     // A pane starts from the shared widths; the most recent resize anywhere becomes the
     // shared default (used for new panes and saved to settings).
-    let cols_id = Id::new(("tab_cols", tab_id));
+    let cols_id = Id::unique(("tab_cols", tab_id));
     let base_cols = ui.data(|d| d.get_temp::<[f32; 3]>(cols_id)).unwrap_or(*cols);
     // No column is ever hidden. When the pane is too narrow for the stored widths, the data
     // columns are squeezed (never below `col_floor`) so Name keeps its preferred width; a wider
@@ -311,7 +311,7 @@ pub(crate) fn table_ui(
         let cw = if c == 0 { name_w } else { w(c - 1) };
         let crect = Rect::from_min_size(pos2(x, hrect.top()), vec2(cw, header_h));
         x += cw;
-        let resp = ui.interact(crect, Id::new(("hdr", tab_id, c)), Sense::click());
+        let resp = ui.interact(crect, Id::unique(("hdr", tab_id, c)), Sense::click());
         hover_fill(ui, crect.shrink2(vec2(m.s * 2.0, m.s * 2.0)), &resp, pal, m);
         let active = *sort_col == sorts[c];
         let color = if active { pal.text } else { pal.text_secondary };
@@ -379,7 +379,7 @@ pub(crate) fn table_ui(
                 pos2(crect.right(), crect.center().y),
                 vec2(m.s * 8.0, header_h),
             );
-            let hid = Id::new(("resize", tab_id, c));
+            let hid = Id::unique(("resize", tab_id, c));
             let h = ui.interact(hr, hid, Sense::drag());
             let hot = h.hovered() || h.dragged();
             if hot {
@@ -450,7 +450,7 @@ pub(crate) fn table_ui(
     // The click/drag area reaches into the blank side margins, so a selection drag (or a click that
     // clears the selection) can start next to the rows instead of having to hit a row exactly.
     let band_hit = Rect::from_min_max(pos2(hit.left(), body_rect.top()), hit.max);
-    let body_resp = ui.interact(band_hit, Id::new(("body", tab_id)), Sense::click());
+    let body_resp = ui.interact(band_hit, Id::unique(("body", tab_id)), Sense::click());
     if body_resp.clicked() {
         selected.clear();
         *anchor = None;
@@ -486,7 +486,7 @@ pub(crate) fn table_ui(
             }
         }
         let dir_pinned = ui
-            .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::new("pinned_paths")))
+            .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::unique("pinned_paths")))
             .is_some_and(|s| s.contains(dir));
         if dir_pinned {
             if menu_item(ui, m, pal, Some("close"), "Remove folder from Quick access", None, true) {
@@ -563,7 +563,7 @@ pub(crate) fn table_ui(
             let band = rubber_band(
                 ui,
                 m,
-                Id::new(("rubber", tab_id)),
+                Id::unique(("rubber", tab_id)),
                 content_top,
                 row_h,
                 view.len(),
@@ -571,7 +571,7 @@ pub(crate) fn table_ui(
                 band_hit,
             );
             if let Some(u) = &band {
-                let base_id = Id::new(("rubber_base", tab_id));
+                let base_id = Id::unique(("rubber_base", tab_id));
                 if u.started {
                     let base: Vec<PathBuf> = if u.additive {
                         selected.iter().cloned().collect()
@@ -677,13 +677,13 @@ pub(crate) fn table_ui(
                 let renaming_here = rename.as_ref().is_some_and(|r| r.path == e.path);
                 if renaming_here {
                     let rs = rename.as_mut().unwrap();
-                    let id = Id::new(("rename_edit", tab_id));
+                    let id = Id::unique(("rename_edit", tab_id));
                     let er = name_rect.shrink2(vec2(0.0, m.s * 2.0));
                     let te = egui::TextEdit::singleline(&mut rs.text)
                         .id(id)
                         .margin(Margin::symmetric(4, 0))
                         .desired_width(er.width())
-                        .vertical_align(Align::Center);
+                        .align(Align2::LEFT_CENTER);
                     let tr = ui.put(er, te);
                     if rs.focus_pending {
                         tr.request_focus();
@@ -843,7 +843,7 @@ pub(crate) fn table_ui(
                     }
                     if e.is_dir {
                         let pinned = ui
-                            .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::new("pinned_paths")))
+                            .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::unique("pinned_paths")))
                             .is_some_and(|s| s.contains(p));
                         if pinned {
                             if menu_item(ui, m, pal, Some("close"), "Remove from Quick access", None, true) {

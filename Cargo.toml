@@ -13,8 +13,8 @@ file_icon_provider = "1"
 device_query = "4"
 clipboard-rs = "0.3"
 url = "2"
-eframe = { version = "0.36", features = ["glow"] }
-egui_extras = { version = "0.36", features = ["svg"] }
+eframe = { version = "0.37", features = ["glow"] }
+egui_extras = { version = "0.37", features = ["svg"] }
 dirs = "7"
 drag = "2"
 dunce = "1"
