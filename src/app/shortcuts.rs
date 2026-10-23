@@ -27,6 +27,7 @@ impl Explorer {
 
         //Keyboard Shortcuts
         let mut split = false;
+        let mut close_active = false;
         ui.input_mut(|i| {
             if i.consume_key(M::CTRL | M::SHIFT, Key::Tab) {
                 actions.push(Action::StepTab(-1));
@@ -37,7 +38,7 @@ impl Explorer {
                 actions.push(Action::NewTab);
             }
             if i.consume_key(M::CTRL, Key::W) {
-                actions.push(Action::CloseTab(active));
+                close_active = true;
             }
             if i.consume_key(M::CTRL, Key::S) && !modal {
                 // Handled after this closure: splitting touches egui state, which must not happen
@@ -158,6 +159,24 @@ impl Explorer {
         });
         if split {
             self.split_focused();
+        }
+
+        // Adds smooth closing animation to ctrl+w close tab shortcut.
+        if close_active {
+            if self.tabs.len() > 1 {
+                let tab_id = self.tabs[active].id;
+                let closing_id = Id::unique("tabs_closing");
+                ui.data_mut(|d| {
+                    let mut v: Vec<u64> = d.get_temp(closing_id).unwrap_or_default();
+                    if !v.contains(&tab_id) {
+                        v.push(tab_id);
+                    }
+                    d.insert_temp(closing_id, v);
+                });
+                ui.request_repaint();
+            } else {
+                actions.push(Action::CloseTab(active)); // last tab: nothing to animate
+            }
         }
     }
 

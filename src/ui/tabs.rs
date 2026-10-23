@@ -42,6 +42,8 @@ impl Explorer {
         let pointer = ui.input(|i| i.pointer.latest_pos());
         let mut reorder: Option<(usize, usize)> = None;
         let mut start_move = false;
+        let closing_id = Id::unique("tabs_closing");
+        let mut closing: Vec<u64> = ui.data(|d| d.get_temp(closing_id)).unwrap_or_default();
         let bar_h = m.tab_h + m.s * 6.0;
         let caption_w = m.s * 46.0 * 3.0;
         let r_tab = m.radius + 2;
@@ -91,9 +93,40 @@ impl Explorer {
                         let n = info.len().max(1);
                         // Room for the tabs: everything left of the pinned "+" button.
                         let avail = (ui.available_width() - m.ctl_h - gap).max(0.0);
-                        let tab_w = ((avail - gap * (n as f32 - 1.0)) / n as f32)
-                            .clamp(m.s * 90.0, m.s * 240.0);
-                        let content_w = tab_w * n as f32 + gap * (n as f32 - 1.0);
+
+                        // New tabs grow in from zero width. Tabs seen for the first time (not on the very first
+                        // frame, so a restored session doesn't animate) are seeded at 0 and eased to 1.
+                        let known_id = Id::unique("tabs_known_ids");
+                        let known: Vec<u64> = ui.data(|d| d.get_temp(known_id)).unwrap_or_default();
+                        let first_frame = known.is_empty();
+                        let grow: Vec<f32> = info
+                            .iter()
+                            .map(|(id, ..)| {
+                                let gid = Id::unique(("tab_grow", *id));
+                                if !first_frame && !known.contains(id) {
+                                    ui.ctx().animate_value_with_time(gid, 0.0, 0.0);
+                                }
+                                let is_closing = closing.contains(id);
+                                let target = if is_closing { 0.0 } else { 1.0 };
+                                let animation_time = if is_closing { 0.1 } else { 0.15 };
+                                let t = ui.ctx().animate_value_with_time(gid, target, animation_time);
+                                // Ease-out both ways: fast at the start, settling gently at the end.
+                                if is_closing { t * t * t } else { 1.0 - (1.0 - t).powi(3) }
+                            })
+                            .collect();
+                        ui.data_mut(|d| d.insert_temp(known_id, info.iter().map(|t| t.0).collect::<Vec<u64>>()));
+
+                        // Close down tabs only if they have shrunken enough.
+                        for (i, (id, ..)) in info.iter().enumerate() {
+                            if closing.contains(id) && grow[i] < 0.02 {
+                                actions.push(Action::CloseTab(i));
+                                closing.retain(|c| c != id);
+                            }
+                        }
+
+                        let sum_k = grow.iter().sum::<f32>().max(0.01);
+                        let tab_w = ((avail - gap * (n as f32 - 1.0)) / sum_k).clamp(m.s * 90.0, m.s * 240.0);
+                        let content_w = tab_w * sum_k + gap * (n as f32 - 1.0);
                         let overflow = content_w > avail + 0.5;
                         //When there are too many tabs, the overflow becomes scrollable.
                         // The scroll area is exactly as wide as the tabs (so the rest of the title bar
@@ -137,8 +170,10 @@ impl Explorer {
                         }
                         let mut tab_rects: Vec<Rect> = Vec::with_capacity(info.len());
                         for (i, (id, title, full_path, tab_icon)) in info.iter().enumerate() {
-                            let (rect, resp) = ui
-                                .allocate_exact_size(vec2(tab_w, m.tab_h), Sense::click_and_drag());
+                            let w = tab_w * grow[i];
+                            let (rect, resp) = ui.allocate_exact_size(vec2(w, m.tab_h), Sense::click_and_drag());
+                            let old_clip = ui.clip_rect();
+                            ui.set_clip_rect(rect.intersect(old_clip)); // icon/title/close must not spill while narro
                             tab_rects.push(rect);
                             if i == active && strip_changed && overflow {
                                 ui.scroll_to_rect(rect.expand2(vec2(gap, 0.0)), None);
@@ -199,8 +234,9 @@ impl Explorer {
                                 Id::unique(("tab_close", *id)),
                                 Sense::click(),
                             );
-                            let show_close = is_active || resp.hovered() || close.hovered();
-                            //Unlike the fetched icons, the settings icon is a white svg and therefore needs to be colored in properly.
+                            // Only show close button if tab is almost fully grown.
+                            let show_close = (is_active || resp.hovered() || close.hovered()) && grow[i] > 0.95;
+                            // Unlike the fetched icons, the settings icon is a white svg and therefore needs to be colored in properly.
                             let color = if *tab_icon == "settings" {pal.text_secondary} else {Color32::WHITE};
                             draw_icon(
                                 ui,
@@ -255,15 +291,25 @@ impl Explorer {
                                     },
                                 );
                             }
-                            if close.clicked() || resp.middle_clicked() {
-                                actions.push(Action::CloseTab(i));
-                            } else if resp.clicked() {
-                                actions.push(Action::SwitchTab(i));
+
+                            // Starts the closing animation for tabs.
+                            let is_closing = closing.contains(id);
+                            if !is_closing {
+                                if close.clicked() || resp.middle_clicked() {
+                                    if info.len() > 1 {
+                                        closing.push(*id); // shrink first, closed in step 2
+                                    } else {
+                                        actions.push(Action::CloseTab(i)); // last tab: nothing to animate
+                                    }
+                                } else if resp.clicked() {
+                                    actions.push(Action::SwitchTab(i));
+                                }
                             }
                             if !close.clone().hovered() {
                                 resp.on_hover_text(full_path);
                             }
                             close.on_hover_text("Close tab (Ctrl+W)");
+                            ui.set_clip_rect(old_clip);
                         }
                         // Reorder: while a tab is dragged over the title bar it swaps places with a
                         // neighbour as soon as the pointer passes that neighbour's centre.
@@ -310,6 +356,9 @@ impl Explorer {
 
                 caption_buttons(ui, &m, &pal, caption, maximized);
             });
+
+        ui.data_mut(|d| d.insert_temp(closing_id, closing));
+
         if let Some(id) = drag_start {
             self.tab_drag = Some(id);
         }
