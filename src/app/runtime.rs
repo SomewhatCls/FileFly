@@ -29,13 +29,6 @@ impl eframe::App for Explorer {
         sync_fonts(ctx);
         icons_begin_frame(ctx);
 
-        // Keep the Mica state synchronized with settings and system state.
-        if system_transparency() {
-            self.mica = self.settings.use_mica;
-        }else{
-            self.mica = false;
-        }
-
         // Sets number dividers globally.
         ctx.all_styles_mut(|style| {
             style.number_formatter = egui::style::NumberFormatter::new(|val, _decimal_range| {

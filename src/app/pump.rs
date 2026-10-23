@@ -328,12 +328,26 @@ impl Explorer {
             self.applied_style = Some((font, accent));
         }
         let theme = ctx.theme();
-        if self.backdrop_theme != Some(theme) || self.backdrop_transp != Some(self.transparency) {
-            // Without transparency effects (Battery Saver etc.) Windows draws no Mica: paint opaque instead.
-            self.mica = self.transparency && apply_backdrop(frame, theme == egui::Theme::Dark);
+        let want_mica = self.settings.use_mica && self.transparency;
+        let changed = self.backdrop_theme != Some(theme)
+            || self.backdrop_transp != Some(want_mica);
+
+        // field: started: Instant (set in Explorer::new)
+        // Push the background for 3 seconds to ensure proper drawing.
+        let early = self.started.elapsed() < Duration::from_secs(3);
+        let focus_gained = ctx.input(|i| i.focused) && !self.was_focused;
+        self.was_focused = ctx.input(|i| i.focused);
+
+        if changed || (want_mica && (early || focus_gained)) {
+            let ok = want_mica && apply_backdrop(frame, theme == egui::Theme::Dark);
+            eprintln!("time {} backdrop applied: {ok}", self.started.elapsed().as_millis());
             style_frameless(frame);
+            self.mica = ok;
             self.backdrop_theme = Some(theme);
-            self.backdrop_transp = Some(self.transparency);
+            self.backdrop_transp = Some(want_mica);
+        }
+        if want_mica && early {
+            ctx.request_repaint_after(Duration::from_millis(100)); // keep ticking during the window
         }
         self.pal = Palette::new(theme, accent, self.mica);
     }

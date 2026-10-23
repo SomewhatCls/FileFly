@@ -1,19 +1,19 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 //! FileFly - a tabbed, tiling file explorer built on egui.
 //!
 //! Layout of the source tree:
 //!   app/        the `Explorer` state, navigation, jobs, clipboard, actions, frame loop
 //!   ui/         all drawing code (title bar, sidebar, toolbar, file table, dialogs, settings, ...)
-//!   model/      plain data: listing entries, tabs, the tiling tree, Recycle Bin state
+//!   data/      plain data: listing entries, tabs, the tiling tree, Recycle Bin state
 //!   ops/        file-operation progress and the paste workers
-//!   search.rs, quick.rs, settings.rs, messages.rs, dragdrop.rs, startup.rs
-//!   drives.rs, fsops.rs, icons.rs, indexer.rs, peers.rs, picker.rs, theme.rs, trashbin.rs,
-//!   defaultapp.rs   (platform / file-system helpers)
+//!   search.rs, quick.rs, settings.rs, messages.rs, drag_drop, startup.rs
+//!   drives.rs, fsops.rs, icons.rs, indexer.rs, peers.rs, picker.rs, theme.rs, trash_bin,
+//!   default_app   (platform / file-system helpers)
 
 mod app;
-mod defaultapp;
-mod dragdrop;
+mod default_app;
+mod drag_drop;
 mod drives;
 mod elevate;
 mod fsops;
@@ -30,7 +30,7 @@ mod search;
 mod settings;
 mod startup;
 mod theme;
-mod trashbin;
+mod trash_bin;
 mod ui;
 
 fn main() -> eframe::Result<()> {

@@ -28,7 +28,7 @@ pub(crate) use std::{
 pub(crate) use num_format::{Locale, ToFormattedString};
 
 // Sibling crate modules that are referenced by path (`trashbin::Item`, `defaultapp::is_default()`, ...).
-pub(crate) use crate::{defaultapp, drives, picker, trashbin};
+pub(crate) use crate::{default_app, drives, picker, trash_bin};
 pub(crate) use crate::drives::{
     clean_path, is_network_path, load_drives, path_available, spawn_watcher, DriveInfo, DriveKind,
     DriveWatchCtl,
@@ -43,7 +43,7 @@ pub(crate) use crate::theme::*;
 
 // ... and of the modules split out of the old main.rs.
 pub(crate) use crate::app::*;
-pub(crate) use crate::dragdrop::*;
+pub(crate) use crate::drag_drop::*;
 pub(crate) use crate::elevate::*;
 pub(crate) use crate::messages::*;
 pub(crate) use crate::data::*;

@@ -17,7 +17,7 @@ pub(crate) enum AppMsg {
     Trash {
         tab: u64,
         seq: u64,
-        result: Result<Vec<trashbin::TrashRow>, String>,
+        result: Result<Vec<trash_bin::TrashRow>, String>,
     },
     /// A zip file was unpacked for browsing (see `fsops::mount_archive`); `target` is the path
     /// (through the zip) the tab should now open.
