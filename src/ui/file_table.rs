@@ -457,9 +457,13 @@ pub(crate) fn table_ui(
     }
     scroll_context_menu(&body_resp, |ui| {
         let ro = archive_of(dir).is_some(); // inside an opened zip: nothing can be added
-        if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+N"), !ro, ) {
+        if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+F"), !ro, ) {
             actions.push(Action::NewFolder);
             
+        }
+        if menu_item(ui, m, pal, Some("new_file"), "New file", Some("Ctrl+Shift+N"), !ro, ) {
+            actions.push(Action::NewFile);
+
         }
         if menu_item(
             ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), can_paste && !ro, ) {

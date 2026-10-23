@@ -15,6 +15,7 @@ pub(crate) use std::{
     cmp::Ordering,
     collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque},
     fs,
+    fs::File,
     hash::{Hash, Hasher},
     path::{Component, Path, PathBuf},
     sync::{

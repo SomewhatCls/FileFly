@@ -287,6 +287,27 @@ impl Explorer {
                     }
                 }
             }
+            // Attempts to create empty, extensionless file.
+            Action::NewFile => {
+                let target = unique_copy_name(&self.tabs[ti].dir.join("New File"));
+                match File::create_new(&target) {
+                    Ok(_) => {
+                        self.tabs[ti].pending_rename = Some(target);
+                        self.load_tab(ti);
+                    }
+                    Err(e) => {
+                        let message = format!("Could not create file: {e}");
+
+                        // Permission errors can be retried with elevated rights.
+                        if is_denied_io(&e) {
+                            let op = AdminOp::NewFile { path: target };
+                            self.admin_retry = Some((message.clone(), AdminRetry::Op(op)));
+                        }
+
+                        self.tabs[ti].error = Some(message);
+                    }
+                }
+            }
             Action::Properties(p) => {
                 let seq = self.props_gen.fetch_add(1, AO::SeqCst) + 1;
                 let mut props = build_props(&p);
