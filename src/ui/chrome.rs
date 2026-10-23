@@ -200,5 +200,8 @@ pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
     ctx.set_cursor_icon(cursor);
     if ctx.input(|i| i.pointer.primary_pressed()) {
         ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+        // The OS resize loop swallows the button/touch release (see `raw_input_hook`).
+        ctx.data_mut(|d| d.insert_temp(Id::unique("pointer_reset"), true));
+        ctx.request_repaint();
     }
 }
