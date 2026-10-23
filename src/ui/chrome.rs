@@ -15,15 +15,25 @@ pub(crate) fn corner_fillet(
     if r < 0.5 {
         return;
     }
+    // The fillet meets its neighbours along its two straight sides (the ones through `apex`), which
+    // usually sit between physical pixels. Two separately anti-aliased edges that merely touch leave a
+    // hairline seam, so the shape is extended one pixel past both sides, into the neighbours (which
+    // share its colour). The arc itself is untouched.
+    let ov = 1.0 / painter.pixels_per_point();
     let c = pos2(apex.x + sx * r, apex.y + sy * r);
     let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(apex, color);
+    // Fan centre: the apex pushed out into both neighbours.
+    mesh.colored_vertex(pos2(apex.x - sx * ov, apex.y - sy * ov), color);
+    // Start of the arc, extended along the first straight side.
+    mesh.colored_vertex(pos2(apex.x - sx * ov, apex.y + sy * r), color);
     const N: usize = 10;
     for i in 0..=N {
         let a = std::f32::consts::FRAC_PI_2 * i as f32 / N as f32;
         mesh.colored_vertex(pos2(c.x - sx * r * a.cos(), c.y - sy * r * a.sin()), color);
     }
-    for i in 0..N {
+    // End of the arc, extended along the second straight side.
+    mesh.colored_vertex(pos2(apex.x + sx * r, apex.y - sy * ov), color);
+    for i in 0..(N + 2) {
         mesh.add_triangle(0, 1 + i as u32, 2 + i as u32);
     }
     painter.add(egui::Shape::mesh(mesh));
