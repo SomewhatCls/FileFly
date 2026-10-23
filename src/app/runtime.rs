@@ -185,6 +185,22 @@ impl eframe::App for Explorer {
         }
     }
 
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let reset = ctx
+            .data_mut(|d| d.remove_temp::<bool>(Id::unique("pointer_reset")))
+            .unwrap_or(false);
+        if reset {
+            let pos = ctx.input(|i| i.pointer.latest_pos()).unwrap_or_default();
+            raw_input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            });
+            raw_input.events.push(egui::Event::PointerGone);
+        }
+    }
+
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         // Every panel paints its own background; Mica shows through
         // the transparent parts.

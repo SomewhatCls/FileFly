@@ -364,8 +364,6 @@ impl Explorer {
         }
         if start_move {
             ui.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-            // The OS move loop swallows the button/touch release; make egui let go of it afterwards
-            // (see `sync_pointer` in window.rs).
             ui.ctx()
                 .data_mut(|d| d.insert_temp(Id::unique("pointer_reset"), true));
             ui.request_repaint();
