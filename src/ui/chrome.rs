@@ -15,15 +15,25 @@ pub(crate) fn corner_fillet(
     if r < 0.5 {
         return;
     }
+    // The fillet meets its neighbours along its two straight sides (the ones through `apex`), which
+    // usually sit between physical pixels. Two separately anti-aliased edges that merely touch leave a
+    // hairline seam, so the shape is extended one pixel past both sides, into the neighbours (which
+    // share its colour). The arc itself is untouched.
+    let ov = 1.0 / painter.pixels_per_point();
     let c = pos2(apex.x + sx * r, apex.y + sy * r);
     let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(apex, color);
+    // Fan centre: the apex pushed out into both neighbours.
+    mesh.colored_vertex(pos2(apex.x - sx * ov, apex.y - sy * ov), color);
+    // Start of the arc, extended along the first straight side.
+    mesh.colored_vertex(pos2(apex.x - sx * ov, apex.y + sy * r), color);
     const N: usize = 10;
     for i in 0..=N {
         let a = std::f32::consts::FRAC_PI_2 * i as f32 / N as f32;
         mesh.colored_vertex(pos2(c.x - sx * r * a.cos(), c.y - sy * r * a.sin()), color);
     }
-    for i in 0..N {
+    // End of the arc, extended along the second straight side.
+    mesh.colored_vertex(pos2(apex.x + sx * r, apex.y - sy * ov), color);
+    for i in 0..(N + 2) {
         mesh.add_triangle(0, 1 + i as u32, 2 + i as u32);
     }
     painter.add(egui::Shape::mesh(mesh));
@@ -60,20 +70,21 @@ pub(crate) fn band_frame(pal: &Palette, nw: u8, l: f32, r: f32, t: f32, b: f32) 
 }
 
 /// Minimize / maximize-restore / close, drawn with the painter so they stay crisp at any scale.
-pub(crate) fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, area: Rect, maximized: bool) {
-    caption_buttons_ex(ui, m, pal, area, maximized, true);
+pub(crate) fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized: bool) {
+    caption_buttons_ex(ui, m, pal, maximized, true);
 }
 
 /// Like `caption_buttons`; with `show_max == false` only minimize and close are drawn (fixed-size
 /// dialog windows such as the file-operation progress window).
-pub(crate) fn caption_buttons_ex(ui: &mut Ui, m: &Metrics, pal: &Palette, area: Rect, maximized: bool, show_max: bool) {
+pub(crate) fn caption_buttons_ex(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized: bool, show_max: bool) {
     let kinds: &[usize] = if show_max { &[0, 1, 2] } else { &[0, 2] };
-    let bw = area.width() / kinds.len() as f32;
+    let ppp = ui.ctx().pixels_per_point();
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let (bw, bh) = (snap(46.0 * m.s), snap(28.0 * m.s));
+    let origin = ui.ctx().content_rect().right_top();   // flush top-right, like #controls in the CSS
+    let left = origin.x - bw * kinds.len() as f32;
     for (slot, &k) in kinds.iter().enumerate() {
-        let r = Rect::from_min_size(
-            pos2(area.left() + bw * slot as f32, area.top()),
-            vec2(bw, area.height()-14.0),
-        );
+        let r = Rect::from_min_size(pos2(left + bw * slot as f32, origin.y), vec2(bw, bh));
         let resp = ui.interact(r, Id::unique(("caption", k)), Sense::click());
         let close = k == 2;
         let bg = if resp.is_pointer_button_down_on() {
@@ -113,8 +124,8 @@ pub(crate) fn caption_buttons_ex(ui: &mut Ui, m: &Metrics, pal: &Palette, area: 
             pal.text
         };
         let stroke = Stroke::new(1.0_f32, fg);
+        let s = snap(5.0 * m.s);        // half of the 10x10 glyph
         let c = r.center();
-        let s = (m.s * 5.0).round();
         let p = ui.painter();
         match k {
             0 => {
