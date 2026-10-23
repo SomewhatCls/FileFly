@@ -252,6 +252,7 @@ impl Explorer {
                             );
                         }
                         let in_bin = tabs[idx].trash.is_some();
+                        //draws icon as non-white only for the settings icon.
                         draw_icon(
                             ui,
                             pos2(hdr.left() + m.pad + m.small_icon / 2.0, hdr.center().y),
@@ -263,7 +264,7 @@ impl Explorer {
                             } else {
                                 "folder"
                             },
-                            Color32::WHITE,
+                            if tabs[idx].settings {pal.text_secondary} else {Color32::WHITE},
                         );
                         let close_rect = Rect::from_center_size(
                             pos2(hdr.right() - m.pad - m.small_icon / 2.0, hdr.center().y),

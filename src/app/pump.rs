@@ -340,6 +340,7 @@ impl Explorer {
 
         if changed || (want_mica && (early || focus_gained)) {
             let ok = want_mica && apply_backdrop(frame, theme == egui::Theme::Dark);
+            eprintln!("time {} backdrop applied: {ok}", self.started.elapsed().as_millis());
             style_frameless(frame);
             self.mica = ok;
             self.backdrop_theme = Some(theme);
