@@ -82,6 +82,7 @@ pub(crate) struct Explorer {
     /// Windows transparency effects available (off in Battery Saver / when disabled in Settings).
     pub(crate) transparency: bool,
     pub(crate) backdrop_transp: Option<bool>,
+    pub(crate) backdrop_kicks: usize,
     /// Number of frames since app start.
     pub(crate) was_focused: bool,
     pub(crate) started: Instant,
@@ -179,6 +180,7 @@ impl Explorer {
             last_poll: Instant::now(),
             applied_style: None,
             backdrop_theme: None,
+            backdrop_kicks: 0,
             mica: false,
             admin_retry: None,
             m: Metrics::new(14.0, 1.0),

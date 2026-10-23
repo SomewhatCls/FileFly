@@ -341,21 +341,33 @@ impl Explorer {
         let changed = self.backdrop_theme != Some(theme)
             || self.backdrop_transp != Some(want_mica);
 
-        // field: started: Instant (set in Explorer::new)
-        // Push the background for 3 seconds to ensure proper drawing.
-        let early = self.started.elapsed() < Duration::from_secs(3);
+        // Start-up kicks: the first apply can land before DWM has the window's surface ready, and
+        // repeating an identical apply does nothing, so each kick forces a rebuild. Each runs once.
+        const KICKS_MS: [u128; 4] = [150, 600, 1500, 3000];
+        let kick = want_mica
+            && KICKS_MS
+            .get(self.backdrop_kicks)
+            .is_some_and(|&t| self.started.elapsed().as_millis() >= t);
+        if kick {
+            self.backdrop_kicks += 1;
+        }
         let focus_gained = ctx.input(|i| i.focused) && !self.was_focused;
         self.was_focused = ctx.input(|i| i.focused);
 
-        if changed || (want_mica && (early || focus_gained)) {
-            let ok = want_mica && apply_backdrop(frame, theme == egui::Theme::Dark);
+        if changed || kick || (want_mica && focus_gained) {
+            let dark = theme == egui::Theme::Dark;
+            let ok = want_mica
+                && if kick { reapply_backdrop(frame, dark) } else { apply_backdrop(frame, dark) };
             style_frameless(frame);
+            if kick {
+                nudge_frame(frame);
+            }
             self.mica = ok;
             self.backdrop_theme = Some(theme);
             self.backdrop_transp = Some(want_mica);
         }
-        if want_mica && early {
-            ctx.request_repaint_after(Duration::from_millis(100)); // keep ticking during the window
+        if want_mica && self.backdrop_kicks < KICKS_MS.len() {
+            ctx.request_repaint_after(Duration::from_millis(100)); // keep ticking until the kicks are done
         }
         self.pal = Palette::new(theme, accent, self.mica);
     }
