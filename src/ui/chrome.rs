@@ -72,7 +72,7 @@ pub(crate) fn caption_buttons_ex(ui: &mut Ui, m: &Metrics, pal: &Palette, area: 
     for (slot, &k) in kinds.iter().enumerate() {
         let r = Rect::from_min_size(
             pos2(area.left() + bw * slot as f32, area.top()),
-            vec2(bw, area.height()),
+            vec2(bw, area.height()-14.0),
         );
         let resp = ui.interact(r, Id::new(("caption", k)), Sense::click());
         let close = k == 2;
