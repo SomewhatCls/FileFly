@@ -293,7 +293,7 @@ pub(crate) fn dialog_shell(
 ) -> bool {
     if modal {
         let screen = ui.content_rect();
-        egui::Area::new(Id::new((id, "scrim")))
+        egui::Area::new(Id::unique((id, "scrim")))
             .order(egui::Order::Middle)
             .fixed_pos(screen.min)
             .show(ui, |ui| {
@@ -307,7 +307,7 @@ pub(crate) fn dialog_shell(
     }
     let mut closed = false;
     egui::Window::new(title)
-        .id(Id::new(id))
+        .id(Id::unique(id))
         .title_bar(false)
         .collapsible(false)
         .resizable(false)

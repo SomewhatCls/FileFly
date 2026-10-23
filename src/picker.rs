@@ -393,7 +393,7 @@ impl Explorer {
         let screen = ui.content_rect();
         let chrome = m.pad * 6.0;
         let width = (screen.width() - chrome).clamp(m.s * 200.0, m.s * 720.0);
-        let rest_id = Id::new("picker_rest_h");
+        let rest_id = Id::unique("picker_rest_h");
         let rest_h = ui.data(|d| d.get_temp::<f32>(rest_id)).unwrap_or(m.s * 330.0);
         let body_h = (screen.height() - chrome - rest_h).clamp(m.row_h * 2.0, m.s * 340.0);
         // In a narrow window the navigation pane goes; the path field and Up still get anywhere.
@@ -446,14 +446,14 @@ impl Explorer {
                         input.go = up;
                     }
                     ui.add_space(m.pad * 0.5);
-                    let addr_id = Id::new("picker_address");
+                    let addr_id = Id::unique("picker_address");
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut p.address)
                             .id(addr_id)
                             .background_color(pal.control)
                             .desired_width(ui.available_width())
                             .min_size(vec2(0.0, m.ctl_h))
-                            .vertical_align(Align::Center)
+                            .align(Align2::LEFT_CENTER)
                             .hint_text("Type a folder path"),
                     );
                     focus_underline(ui, &resp, &m, &pal);
@@ -592,11 +592,11 @@ impl Explorer {
                                 );
                                 let resp = ui.add(
                                     egui::TextEdit::singleline(name)
-                                        .id(Id::new("picker_name"))
+                                        .id(Id::unique("picker_name"))
                                         .background_color(pal.control)
                                         .desired_width(ui.available_width())
                                         .min_size(vec2(0.0, m.ctl_h))
-                                        .vertical_align(Align::Center),
+                                        .align(Align2::LEFT_CENTER),
                                 );
                                 focus_underline(ui, &resp, &m, &pal);
                                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -795,12 +795,12 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, he
             }
             match &mut p.new_folder {
                 Some(nf) if &nf.path == path => {
-                    let id = Id::new("picker_new_folder");
+                    let id = Id::unique("picker_new_folder");
                     let te = egui::TextEdit::singleline(&mut nf.text)
                         .id(id)
                         .background_color(pal.control)
                         .desired_width(text_rect.width())
-                        .vertical_align(Align::Center);
+                        .align(Align2::LEFT_CENTER);
                     let r = ui.put(text_rect.shrink2(vec2(0.0, m.s * 3.0)), te);
                     if nf.focus {
                         nf.focus = false;

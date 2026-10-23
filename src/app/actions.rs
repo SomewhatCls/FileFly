@@ -130,7 +130,7 @@ impl Explorer {
             }
             Action::FocusSearch => self
                 .ui
-                .memory_mut(|m| m.request_focus(Id::new("search_box"))),
+                .memory_mut(|m| m.request_focus(Id::unique("search_box"))),
             Action::Open(p) => self.open_path(&p),
             Action::Compress(p) => self.compress(ti, p),
             Action::Extract(p) => self.extract(ti, p),
@@ -284,6 +284,27 @@ impl Explorer {
                             self.admin_retry = Some((msg.clone(), AdminRetry::Op(op)));
                         }
                         self.tabs[ti].error = Some(msg);
+                    }
+                }
+            }
+            // Attempts to create empty, extensionless file.
+            Action::NewFile => {
+                let target = unique_copy_name(&self.tabs[ti].dir.join("New File"));
+                match File::create_new(&target) {
+                    Ok(_) => {
+                        self.tabs[ti].pending_rename = Some(target);
+                        self.load_tab(ti);
+                    }
+                    Err(e) => {
+                        let message = format!("Could not create file: {e}");
+
+                        // Permission errors can be retried with elevated rights.
+                        if is_denied_io(&e) {
+                            let op = AdminOp::NewFile { path: target };
+                            self.admin_retry = Some((message.clone(), AdminRetry::Op(op)));
+                        }
+
+                        self.tabs[ti].error = Some(message);
                     }
                 }
             }

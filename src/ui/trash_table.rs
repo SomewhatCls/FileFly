@@ -46,7 +46,7 @@ pub(crate) fn trash_table_ui(
             pos2(r.right() - m.pad - m.small_icon / 2.0, r.center().y),
             vec2(m.ctl_h * 0.8, m.ctl_h * 0.8),
         );
-        let resp = ui.interact(cr, Id::new("trash_err_close"), Sense::click());
+        let resp = ui.interact(cr, Id::unique("trash_err_close"), Sense::click());
         hover_fill(ui, cr, &resp, pal, m);
         draw_icon(ui, cr.center(), m.small_icon * 0.8, "close", pal.danger);
         if resp.clicked() {
@@ -84,7 +84,7 @@ pub(crate) fn trash_table_ui(
         let cw = if c == 0 { name_w } else { widths[c - 1] };
         let crect = Rect::from_min_size(pos2(x, hrect.top()), vec2(cw, header_h));
         x += cw;
-        let resp = ui.interact(crect, Id::new(("trash_hdr", c)), Sense::click());
+        let resp = ui.interact(crect, Id::unique(("trash_hdr", c)), Sense::click());
         hover_fill(ui, crect.shrink2(vec2(m.s * 2.0, m.s * 2.0)), &resp, pal, m);
         let active = *sort_col == sorts[c];
         let color = if active { pal.text } else { pal.text_secondary };
@@ -145,7 +145,7 @@ pub(crate) fn trash_table_ui(
     );
 
     let body_rect = ui.available_rect_before_wrap();
-    let body_resp = ui.interact(body_rect, Id::new("trash_body"), Sense::click());
+    let body_resp = ui.interact(body_rect, Id::unique("trash_body"), Sense::click());
     if body_resp.clicked() {
         selected.clear();
     }
@@ -200,7 +200,7 @@ pub(crate) fn trash_table_ui(
             let band = rubber_band(
                 ui,
                 m,
-                Id::new("trash_rubber"),
+                Id::unique("trash_rubber"),
                 content_top,
                 row_h,
                 view.len(),
@@ -208,7 +208,7 @@ pub(crate) fn trash_table_ui(
                 band_hit,
             );
             if let Some(u) = &band {
-                let base_id = Id::new("trash_rubber_base");
+                let base_id = Id::unique("trash_rubber_base");
                 if u.started {
                     let base: Vec<usize> = if u.additive {
                         selected.iter().copied().collect()

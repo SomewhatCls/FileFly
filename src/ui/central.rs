@@ -120,7 +120,7 @@ pub(crate) fn layout_tiles(
                     Rect::from_min_max(pos2(rect.left(), y), pos2(rect.right(), y + gap)),
                 )
             };
-            let id = Id::new(("tile_divider", a.first_leaf(), b.first_leaf()));
+            let id = Id::unique(("tile_divider", a.first_leaf(), b.first_leaf()));
             let resp = ui.interact(handle, id, Sense::drag());
             let hot = resp.hovered() || resp.dragged();
             if hot {
@@ -285,7 +285,7 @@ impl Explorer {
                             },
                             false,
                         );
-                        let cr = ui.interact(close_rect, Id::new(("pane_close", tid)), Sense::click());
+                        let cr = ui.interact(close_rect, Id::unique(("pane_close", tid)), Sense::click());
                         hover_fill(ui, close_rect, &cr, &pal, &m);
                         draw_icon(ui, close_rect.center(), m.small_icon * 0.8, "close", pal.text_secondary);
                         cr.clone().on_hover_text("Close this pane");

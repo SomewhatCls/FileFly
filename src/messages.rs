@@ -77,6 +77,7 @@ pub(crate) enum Action {
     CancelRename,
     Delete(Vec<PathBuf>),
     NewFolder,
+    NewFile,
     Properties(PathBuf),
     OpenContaining(PathBuf),
     PeaOpen(PathBuf),

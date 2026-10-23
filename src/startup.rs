@@ -151,6 +151,7 @@ pub(crate) fn run() -> eframe::Result<()> {
             viewport = viewport.with_maximized(true);
         }
     }
+
     let options = eframe::NativeOptions {
         viewport,
         renderer: eframe::Renderer::Glow,

@@ -87,45 +87,73 @@ pub(crate) fn fl_divider(ui: &mut Ui, m: &Metrics, pal: &Palette) {
 /// One setting: title and optional description on the left, `control` vertically centred on the right.
 pub(crate) fn fl_row(
     ui: &mut Ui,
-    m: &Metrics,
-    pal: &Palette,
+    metrics: &Metrics,
+    palette: &Palette,
     title: &str,
-    desc: Option<&str>,
-    control: impl FnOnce(&mut Ui),
+    description: Option<&str>,
+    add_control: impl FnOnce(&mut Ui),
 ) {
-    let w = ui.available_width();
-    let pad_x = m.pad * 1.6;
-    let pad_y = m.pad * 0.9;
-    let gap = m.s * 2.0;
-    let text_w = ((w - pad_x * 3.0) * 0.55).max(m.s * 120.0);
-    let tg = ui
-        .painter()
-        .layout(title.to_owned(), FontId::proportional(m.font), pal.text, text_w);
-    let dg = desc.map(|d| {
-        ui.painter()
-            .layout(d.to_owned(), FontId::proportional(m.font * 0.88), pal.text_secondary, text_w)
+    // ---- Layout constants ----
+    let row_width = ui.available_width();
+    let padding_x = metrics.pad * 1.6;
+    let padding_y = metrics.pad * 0.9;
+    let title_description_gap = metrics.s * 2.0;
+
+    // Left ~55% of the row is the text column; the control goes to its right.
+    let text_column_width = ((row_width - padding_x * 3.0) * 0.55).max(metrics.s * 120.0);
+
+    // ---- Measure the text ----
+    let title_galley = ui.painter().layout(
+        title.to_owned(),
+        FontId::proportional(metrics.font),
+        palette.text,
+        text_column_width,
+    );
+    let description_galley = description.map(|text| {
+        ui.painter().layout(
+            text.to_owned(),
+            FontId::proportional(metrics.font * 0.88),
+            palette.text_secondary,
+            text_column_width,
+        )
     });
-    let title_h = tg.size().y;
-    let text_h = title_h + dg.as_ref().map_or(0.0, |g| g.size().y + gap);
-    let h = (text_h + pad_y * 2.0).max(m.row_h * 1.55);
-    let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
-    let top = rect.center().y - text_h / 2.0;
+
+    let title_height = title_galley.size().y;
+    let text_block_height = match &description_galley {
+        Some(desc) => title_height + title_description_gap + desc.size().y,
+        None => title_height,
+    };
+
+    // ---- Allocate the row ----
+    let row_height = (text_block_height + padding_y * 2.0).max(metrics.row_h * 1.55);
+    let (row_rect, _response) = ui.allocate_exact_size(vec2(row_width, row_height), Sense::hover());
+
+    // ---- Paint the text, vertically centered in the row ----
+    let text_left = row_rect.left() + padding_x;
+    let text_top = row_rect.center().y - text_block_height / 2.0;
+
     ui.painter()
-        .galley(pos2(rect.left() + pad_x, top), tg, pal.text);
-    if let Some(dg) = dg {
+        .galley(pos2(text_left, text_top), title_galley, palette.text);
+
+    if let Some(desc) = description_galley {
+        let desc_top = text_top + title_height + title_description_gap;
         ui.painter()
-            .galley(pos2(rect.left() + pad_x, top + title_h + gap), dg, pal.text_secondary);
+            .galley(pos2(text_left, desc_top), desc, palette.text_secondary);
     }
-    let ctl = Rect::from_min_max(
-        pos2(rect.left() + pad_x * 2.0 + text_w, rect.top()),
-        pos2(rect.right() - pad_x, rect.bottom()),
+
+    // ---- Control area: right of the text column, full row height ----
+    let control_rect = Rect::from_min_max(
+        pos2(row_rect.left() + padding_x * 2.0 + text_column_width, row_rect.top()),
+        pos2(row_rect.right() - padding_x, row_rect.bottom()),
     );
-    ui.scope_builder(
+
+    // new_child does NOT advance the parent's cursor (scope_builder did).
+    let mut control_ui = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(ctl)
+            .max_rect(control_rect)
             .layout(Layout::right_to_left(Align::Center)),
-        control,
     );
+    add_control(&mut control_ui);
 }
 
 /// Fluent toggle switch with its "On" / "Off" label to the left.
@@ -337,9 +365,12 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             Some("Default: 100,000"),
             |ui| {
                 ui.add(
-                    egui::Slider::new(&mut sp.s.max_search_results, 1_usize..=1_000_000_usize)
+                    egui::Slider::new(&mut sp.s.max_search_results, 1_usize..=10_000_000_usize)
                         .logarithmic(true),
                 );
+                if sp.s.max_search_results != 100_000_usize && ui.button("⟲").on_hover_text("Reset to default").clicked() {
+                    sp.s.max_search_results = 100_000_usize;
+                }
             },
         );
         fl_divider(ui, m, pal);

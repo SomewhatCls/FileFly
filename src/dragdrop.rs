@@ -107,7 +107,7 @@ pub(crate) struct ItemDrag {
 }
 
 pub(crate) fn item_drag_id() -> Id {
-    Id::new("item_drag_state")
+    Id::unique("item_drag_state")
 }
 
 /// The paths being dragged right now (None when no drag is in progress).
@@ -271,7 +271,7 @@ impl Explorer {
         if outside {
             // The OS drag blocks the UI loop, so whatever was painted last stays on screen.
             // Let one frame without the ghost go out first.
-            let handoff_id = Id::new("item_drag_handoff");
+            let handoff_id = Id::unique("item_drag_handoff");
             if !ctx.data(|d| d.get_temp::<bool>(handoff_id)).unwrap_or(false) {
                 ctx.data_mut(|d| {
                     d.insert_temp(handoff_id, true);
@@ -286,7 +286,7 @@ impl Explorer {
             self.start_os_drag(frame, (*st.paths).clone());
             return;
         }
-        ctx.data_mut(|d| d.remove_temp::<bool>(Id::new("item_drag_handoff")));
+        ctx.data_mut(|d| d.remove_temp::<bool>(Id::unique("item_drag_handoff")));
 
         // Feedback inside the window.
         let (m, pal) = (self.m, self.pal);
@@ -299,7 +299,7 @@ impl Explorer {
         if let Some(r) = pane_rect {
             ui.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,
-                Id::new("item_drop_preview"),
+                Id::unique("item_drop_preview"),
             ))
             .rect_stroke(
                 r.shrink(1.5),
@@ -329,7 +329,7 @@ impl Explorer {
             };
             let tip = ui.layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
-                Id::new("item_drag_ghost"),
+                Id::unique("item_drag_ghost"),
             ));
             let galley = tip.layout_no_wrap(label, FontId::proportional(m.font), pal.text);
             let r = Rect::from_min_size(

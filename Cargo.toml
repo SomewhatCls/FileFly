@@ -1,6 +1,6 @@
 [package]
 name = "FileFly"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 license="AGPL-3.0-or-later"
 
@@ -13,8 +13,8 @@ file_icon_provider = "1"
 device_query = "4"
 clipboard-rs = "0.3"
 url = "2"
-eframe = { version = "0.36", features = ["glow"] }
-egui_extras = { version = "0.36", features = ["svg"] }
+eframe = { version = "0.37", features = ["glow"] }
+egui_extras = { version = "0.37", features = ["svg"] }
 dirs = "7"
 drag = "2"
 dunce = "1"
@@ -29,6 +29,7 @@ chrono = "0.4"
 notify = "8.2"
 raw-window-handle = "0.6"
 jwalk = "0.9"
+num-format = "0.4.4"
 
 [build-dependencies]
 winres = "0.1"

@@ -19,6 +19,7 @@ pub(crate) enum AdminOp {
     /// Move to the Recycle Bin.
     Delete { paths: Vec<PathBuf> },
     NewFolder { path: PathBuf },
+    NewFile { path: PathBuf },
     /// `(source, destination, replace an existing destination)`
     Paste { items: Vec<(PathBuf, PathBuf, bool)>, cut: bool },
 }
@@ -64,6 +65,9 @@ fn execute(op: AdminOp) -> Result<(), String> {
             .map_err(|e| format!("Could not move item to the Recycle Bin: {e}")),
         AdminOp::NewFolder { path } => {
             fs::create_dir(&path).map_err(|e| format!("Could not create folder: {e}"))
+        }
+        AdminOp::NewFile { path } => {
+            File::create_new(&path).map(|_| ()).map_err(|e| format!("Could not create file: {e}"))
         }
         AdminOp::Paste { items, cut } => {
             let prog = OpProgress::default();
