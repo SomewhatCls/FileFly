@@ -3,27 +3,27 @@ Each section gives a license, the packages that are distributed under it, and th
 including the copyright notice of the authors.
 
 OVERVIEW
-  MIT License (420)
+  MIT License (435)
   Unicode License v3 (19)
   Apache License 2.0 (18)
   BSD 3-Clause "New" or "Revised" License (6)
   BSD 2-Clause "Simplified" License (5)
   Boost Software License 1.0 (3)
   ISC License (3)
+  zlib License (2)
   GNU Affero General Public License v3.0 or later (1)
   Creative Commons Zero v1.0 Universal (1)
   MIT No Attribution (1)
   Mozilla Public License 2.0 (1)
   SIL Open Font License 1.1 (1)
   Ubuntu Font Licence v1.0 (1)
-  zlib License (1)
 
 ================================================================================
 GNU Affero General Public License v3.0 or later
 ================================================================================
 
 Used by:
-  - FileFly 0.3.1
+  - FileFly 0.3.3
 
 --------------------------------------------------------------------------------
 
@@ -1975,7 +1975,7 @@ Apache License 2.0
 Used by:
   - ab_glyph 0.2.32  https://github.com/alexheretic/ab-glyph
   - ab_glyph_rasterizer 0.1.10  https://github.com/alexheretic/ab-glyph
-  - accesskit_winit 0.32.2  https://github.com/AccessKit/accesskit
+  - accesskit_winit 0.34.1  https://github.com/AccessKit/accesskit
   - owned_ttf_parser 0.25.1  https://github.com/alexheretic/owned-ttf-parser
   - spirv 0.4.0+sdk-1.4.341.0  https://github.com/gfx-rs/rspirv
 
@@ -3295,6 +3295,7 @@ Used by:
   - either 1.19.0  https://github.com/rayon-rs/either
   - itertools 0.14.0  https://github.com/rust-itertools/itertools
   - itertools 0.15.0  https://github.com/rust-itertools/itertools
+  - petgraph 0.8.3  https://github.com/petgraph/petgraph
 
 --------------------------------------------------------------------------------
 
@@ -3474,6 +3475,7 @@ MIT License
 Used by:
   - heck 0.4.1  https://github.com/withoutboats/heck
   - heck 0.5.0  https://github.com/withoutboats/heck
+  - unicode-properties 0.1.4  https://github.com/unicode-rs/unicode-properties
   - unicode-segmentation 1.13.3  https://github.com/unicode-rs/unicode-segmentation
   - unicode-width 0.1.14  https://github.com/unicode-rs/unicode-width
 
@@ -3576,6 +3578,42 @@ Used by:
 --------------------------------------------------------------------------------
 
 Copyright (c) 2015 nwin
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - fixedbitset 0.5.7  https://github.com/petgraph/fixedbitset
+
+--------------------------------------------------------------------------------
+
+Copyright (c) 2015-2017
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -3716,6 +3754,7 @@ MIT License
 ================================================================================
 
 Used by:
+  - hashbrown 0.15.5  https://github.com/rust-lang/hashbrown
   - hashbrown 0.16.1  https://github.com/rust-lang/hashbrown
   - hashbrown 0.17.1  https://github.com/rust-lang/hashbrown
 
@@ -4555,6 +4594,7 @@ MIT License
 ================================================================================
 
 Used by:
+  - poll-promise 0.3.0  https://github.com/EmbarkStudios/poll-promise
   - presser 0.3.1  https://github.com/EmbarkStudios/presser
 
 --------------------------------------------------------------------------------
@@ -4598,6 +4638,42 @@ Used by:
 --------------------------------------------------------------------------------
 
 Copyright (c) 2019 Fontations Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - wl-clipboard-rs 0.9.4  https://github.com/YaLTeR/wl-clipboard-rs
+
+--------------------------------------------------------------------------------
+
+Copyright (c) 2019 Ivan Molodetskikh
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -5693,8 +5769,44 @@ MIT License
 ================================================================================
 
 Used by:
-  - vello_common 0.1.0  https://github.com/linebender/vello
-  - vello_cpu 0.1.0  https://github.com/linebender/vello
+  - parlance 0.1.1  https://github.com/linebender/parley
+
+--------------------------------------------------------------------------------
+
+Copyright 2020 the Parley Authors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - vello_common 0.2.0  https://github.com/linebender/vello
+  - vello_cpu 0.2.0  https://github.com/linebender/vello
 
 --------------------------------------------------------------------------------
 
@@ -5761,6 +5873,78 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - fontique 0.11.1  https://github.com/linebender/parley
+
+--------------------------------------------------------------------------------
+
+Copyright 2024 the Parley Authors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - glifo 0.3.0  https://github.com/linebender/vello
+
+--------------------------------------------------------------------------------
+
+Copyright 2025 the Vello Authors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
 
 
 ================================================================================
@@ -5896,7 +6080,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - epaint_default_fonts 0.36.2  https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts
+  - epaint_default_fonts 0.37.0  https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts
 
 --------------------------------------------------------------------------------
 
@@ -5948,6 +6132,38 @@ MIT License
 ================================================================================
 
 Used by:
+  - tree_magic_mini 3.2.2  https://github.com/mbrubeck/tree_magic/
+
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2017 Aaron Hancock
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
   - static_assertions 1.1.0  https://github.com/nvzqz/static-assertions-rs
 
 --------------------------------------------------------------------------------
@@ -5955,6 +6171,38 @@ Used by:
 MIT License
 
 Copyright (c) 2017 Nikolai Vazquez
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - num-format 0.4.4  https://github.com/bcmyers/num-format
+
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2018 Brian Myers
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -6386,6 +6634,38 @@ MIT License
 ================================================================================
 
 Used by:
+  - sys-locale 0.3.2  https://github.com/1Password/sys-locale
+
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2021 1Password
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
   - maybe-rayon 0.1.1  https://github.com/shssoichiro/maybe-rayon
 
 --------------------------------------------------------------------------------
@@ -6749,24 +7029,24 @@ MIT License
 ================================================================================
 
 Used by:
-  - accesskit 0.24.1  https://github.com/AccessKit/accesskit
-  - accesskit_atspi_common 0.18.1  https://github.com/AccessKit/accesskit
-  - accesskit_consumer 0.35.0  https://github.com/AccessKit/accesskit
-  - accesskit_consumer 0.36.0  https://github.com/AccessKit/accesskit
-  - accesskit_unix 0.21.1  https://github.com/AccessKit/accesskit
-  - accesskit_windows 0.32.1  https://github.com/AccessKit/accesskit
+  - accesskit 0.25.1  https://github.com/AccessKit/accesskit
+  - accesskit_atspi_common 0.21.0  https://github.com/AccessKit/accesskit
+  - accesskit_consumer 0.39.1  https://github.com/AccessKit/accesskit
+  - accesskit_unix 0.24.0  https://github.com/AccessKit/accesskit
+  - accesskit_windows 0.35.1  https://github.com/AccessKit/accesskit
   - chrono 0.4.45  https://github.com/chronotope/chrono
   - dpi 0.1.2  https://github.com/rust-windowing/winit
   - drag 2.1.1
-  - ecolor 0.36.2  https://github.com/emilk/egui
-  - eframe 0.36.2  https://github.com/emilk/egui/tree/main/crates/eframe
-  - egui-wgpu 0.36.2  https://github.com/emilk/egui/tree/main/crates/egui-wgpu
-  - egui-winit 0.36.2  https://github.com/emilk/egui/tree/main/crates/egui-winit
-  - egui 0.36.2  https://github.com/emilk/egui
-  - egui_extras 0.36.2  https://github.com/emilk/egui
-  - egui_glow 0.36.2  https://github.com/emilk/egui/tree/main/crates/egui_glow
-  - emath 0.36.2  https://github.com/emilk/egui/tree/main/crates/emath
-  - epaint 0.36.2  https://github.com/emilk/egui/tree/main/crates/epaint
+  - ecolor 0.37.0  https://github.com/emilk/egui
+  - eframe 0.37.0  https://github.com/emilk/egui/tree/main/crates/eframe
+  - egui-wgpu 0.37.0  https://github.com/emilk/egui/tree/main/crates/egui-wgpu
+  - egui-winit 0.37.0  https://github.com/emilk/egui/tree/main/crates/egui-winit
+  - egui 0.37.0  https://github.com/emilk/egui
+  - egui_extras 0.37.0  https://github.com/emilk/egui
+  - egui_glow 0.37.0  https://github.com/emilk/egui/tree/main/crates/egui_glow
+  - egui_system_font_provider 0.37.0  https://github.com/emilk/egui/tree/main/crates/egui_system_font_provider
+  - emath 0.37.0  https://github.com/emilk/egui/tree/main/crates/emath
+  - epaint 0.37.0  https://github.com/emilk/egui/tree/main/crates/epaint
   - file_icon_provider 1.0.2  https://github.com/IohannRabeson/file_icon_provider
   - libm 0.2.16  https://github.com/rust-lang/compiler-builtins
   - profiling-procmacros 1.0.18  https://github.com/aclysma/profiling
@@ -6844,8 +7124,8 @@ MIT License
 ================================================================================
 
 Used by:
-  - enum-map-derive 0.17.0  https://codeberg.org/xfix/enum-map
-  - enum-map 2.7.3  https://codeberg.org/xfix/enum-map
+  - enum-map-derive 1.0.1  https://codeberg.org/sugar700/enum-map
+  - enum-map 3.1.0  https://codeberg.org/sugar700/enum-map
 
 --------------------------------------------------------------------------------
 
@@ -7098,6 +7378,44 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - unicode-script 0.5.8  https://github.com/unicode-rs/unicode-script
+
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2019 Manish Goregaokar
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
 
 
 ================================================================================
@@ -7501,10 +7819,10 @@ MIT License
 ================================================================================
 
 Used by:
-  - phf 0.13.1  https://github.com/rust-phf/rust-phf
-  - phf_generator 0.13.1  https://github.com/rust-phf/rust-phf
-  - phf_macros 0.13.1  https://github.com/rust-phf/rust-phf
-  - phf_shared 0.13.1  https://github.com/rust-phf/rust-phf
+  - phf 0.14.0  https://github.com/rust-phf/rust-phf
+  - phf_generator 0.14.0  https://github.com/rust-phf/rust-phf
+  - phf_macros 0.14.0  https://github.com/rust-phf/rust-phf
+  - phf_shared 0.14.0  https://github.com/rust-phf/rust-phf
 
 --------------------------------------------------------------------------------
 
@@ -8229,6 +8547,72 @@ MIT License
 ================================================================================
 
 Used by:
+  - yeslogic-fontconfig-sys 6.0.1  https://github.com/yeslogic/fontconfig-rs
+
+--------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright 2019 YesLogic Pty. Ltd.
+Copyright 2016 Manuel Reinhardt
+Copyright 2014 Austin Bonander
+Copyright 2013 The Servo Project Developers.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - os_pipe 1.2.3  https://github.com/oconnor663/os_pipe.rs
+
+--------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
   - open 5.4.4  https://github.com/Byron/open-rs
 
 --------------------------------------------------------------------------------
@@ -8759,7 +9143,7 @@ SIL Open Font License 1.1
 ================================================================================
 
 Used by:
-  - epaint_default_fonts 0.36.2  https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts
+  - epaint_default_fonts 0.37.0  https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts
 
 --------------------------------------------------------------------------------
 
@@ -8862,7 +9246,7 @@ Ubuntu Font Licence v1.0
 ================================================================================
 
 Used by:
-  - epaint_default_fonts 0.36.2  https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts
+  - epaint_default_fonts 0.37.0  https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts
 
 --------------------------------------------------------------------------------
 
@@ -9093,6 +9477,7 @@ zlib License
 ================================================================================
 
 Used by:
+  - foldhash 0.1.5  https://github.com/orlp/foldhash
   - foldhash 0.2.0  https://github.com/orlp/foldhash
 
 --------------------------------------------------------------------------------
