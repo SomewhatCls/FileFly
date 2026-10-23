@@ -354,7 +354,7 @@ impl Explorer {
                     }
                 }
 
-                caption_buttons(ui, &m, &pal, caption, maximized);
+                caption_buttons(ui, &m, &pal, maximized);
             });
 
         ui.data_mut(|d| d.insert_temp(closing_id, closing));
