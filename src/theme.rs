@@ -185,10 +185,6 @@ pub fn clear_backdrop(frame: &eframe::Frame) {
     let _ = window_vibrancy::clear_mica(frame);
     let _ = window_vibrancy::clear_acrylic(frame);
 }
-#[cfg(not(windows))]
-pub fn reapply_backdrop(_w: &impl raw_window_handle::HasWindowHandle, _dark: bool) -> bool {
-    false
-}
 
 /// Makes DWM recompute the window frame (the same recomposition a minimise/restore causes).
 #[cfg(windows)]
@@ -666,6 +662,6 @@ pub fn backdrop_by_title(title: &str, dark: bool, transparency_effect: Transpare
     !s.found.is_empty()
 }
 #[cfg(not(windows))]
-pub fn backdrop_by_title(_title: &str, _dark: bool, _mica: bool) -> bool {
+pub fn backdrop_by_title(_title: &str, _dark: bool, transparency_effect: TransparencyEffect) -> bool {
     true
 }

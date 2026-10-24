@@ -387,7 +387,7 @@ impl Explorer {
                 }
             }
         }
-
+        #[cfg(windows)]
         if changed_backdrop {
             clear_backdrop(frame);
             if let Some(effect) = want {

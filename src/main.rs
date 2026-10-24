@@ -1,15 +1,14 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-//! FileFly - a tabbed, tiling file explorer built on egui.
+//! FileFly - a tabbed, tiling file explorer built with the egui framework.
 //!
 //! Layout of the source tree:
-//!   app/        the `Explorer` state, navigation, jobs, clipboard, actions, frame loop
-//!   ui/         all drawing code (title bar, sidebar, toolbar, file table, dialogs, settings, ...)
-//!   data/      plain data: listing entries, tabs, the tiling tree, Recycle Bin state
-//!   ops/        file-operation progress and the paste workers
-//!   search.rs, quick.rs, settings.rs, messages.rs, drag_drop, startup.rs
-//!   drives.rs, fsops.rs, icons.rs, indexer.rs, peers.rs, picker.rs, theme.rs, trash_bin,
-//!   default_app   (platform / file-system helpers)
+//!   app/          the `Explorer` state, navigation, jobs, clipboard, actions, frame loop
+//!   ui/           all drawing code (title bar, sidebar, toolbar, file table, dialogs, settings, ...)
+//!   data/         plain data: listing entries, tabs, the tiling tree, Recycle Bin state
+//!   ops/          file-operation progress and the paste workers
+//!   indexer/      the Indexing logic behind the folder size index
+//!   indexer/store the logic behind storing the indexed folders in a compressed binary format
 
 mod app;
 mod default_app;
