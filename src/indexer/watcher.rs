@@ -58,14 +58,8 @@ pub struct DirWatcher {
 }
 
 impl DirWatcher {
-    /// UI refresh only. Use `with_sink` to also get live folder-size updates.
-    pub fn new(ctx: egui::Context) -> Option<Self> {
-        Self::build(ctx, None)
-    }
-
-    /// Like `new`, and additionally reports every change to the indexer's live updater.
-    /// `sink` comes from `Indexer::change_sink()`.
-    pub fn with_sink(ctx: egui::Context, sink: Arc<ChangeSink>) -> Option<Self> {
+    /// Refreshes the UI because of changes and reports folder/file size changes.
+    pub fn new(ctx: egui::Context, sink: Arc<ChangeSink>) -> Option<Self> {
         Self::build(ctx, Some(sink))
     }
 
@@ -93,18 +87,15 @@ impl DirWatcher {
                 }
                 return;
             }
-            let paths: Vec<PathBuf> = match &live {
-                Some(s) => ev.paths.into_iter().filter(|p| s.accepts(p)).collect(),
-                None => ev.paths,
-            };
-            if paths.is_empty() {
-                return;
-            }
+            // The updater ignores the index file and system noise; the UI sees everything.
             if let Some(s) = &live {
-                s.push(paths.iter().cloned());
+                let fwd: Vec<PathBuf> = ev.paths.iter().filter(|p| s.accepts(p)).cloned().collect();
+                if !fwd.is_empty() {
+                    s.push(fwd);
+                }
             }
             if let Ok(mut set) = ui_set.lock() {
-                for p in paths {
+                for p in ev.paths {
                     if set.len() < MAX_PENDING {
                         set.insert(p);
                     } else {

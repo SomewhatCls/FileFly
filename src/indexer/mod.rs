@@ -47,6 +47,5 @@ mod store;
 mod watcher;
 
 pub use engine::Indexer;
-pub use live::ChangeSink;
-pub use model::{CachedFolder, IndexMsg};
+pub use model::IndexMsg;
 pub use watcher::DirWatcher;

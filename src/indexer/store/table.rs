@@ -17,7 +17,7 @@ use std::{
     },
 };
 
-const DB_FILE: &str = "folder_sizes.ffx";
+pub const DB_FILE: &str = "folder_sizes.ffx";
 const MAGIC: &[u8; 8] = b"FFSIZE02";
 
 // ------------------------------------------------------------------------------------------

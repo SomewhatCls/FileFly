@@ -1,11 +1,12 @@
 //! The folder walk: sums file sizes, reuses fresh cached sub-folders, stores what it finishes.
 
 use super::{
-    hot::HotFiles,
+    hot::{same_name, HotFiles},
     model::{is_fresh, ns, now_secs, CachedFolder},
     store::Cache,
 };
 use std::{
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -17,6 +18,8 @@ struct Frame {
     rd: fs::ReadDir,
     total: u64,
     stamp: u64,
+    /// Name of a file in this folder that must be read exactly (the index file), if any.
+    exact: Option<OsString>,
 }
 
 enum Step {
@@ -29,14 +32,21 @@ enum Step {
 /// Size of one file. A file that changed a moment ago ("hot", see `hot.rs`) is asked directly,
 /// because the size that came with the directory listing may be stale; everything else uses the
 /// listing, which costs no extra system call.
-fn file_len(de: &fs::DirEntry, hot: &HotFiles) -> u64 {
-    if hot.is_active() {
-        let p = de.path();
-        if hot.contains(&p) {
-            return fs::symlink_metadata(&p).map(|m| m.len()).unwrap_or(0);
+fn file_len(de: &fs::DirEntry, hot: &HotFiles, pinned: Option<&OsStr>) -> u64 {
+    if let Some(n) = pinned {
+        if same_name(&de.file_name(), n) {
+            return exact_len(de);
         }
     }
+    if hot.is_active() && hot.contains(&de.path()) {
+        return exact_len(de);
+    }
     de.metadata().map(|m| m.len()).unwrap_or(0)
+}
+
+/// Asks the file itself (a handle-based stat); falls back to the listing if that is refused.
+fn exact_len(de: &fs::DirEntry) -> u64 {
+    fs::symlink_metadata(de.path()).or_else(|_| de.metadata()).map(|m| m.len()).unwrap_or(0)
 }
 
 /// Iterative post-order walk. Returns None if cancelled. Every folder that is finished is stored.
@@ -60,7 +70,7 @@ pub fn scan(
     };
 
     let Ok(rd) = fs::read_dir(root) else { return Some(0) };
-    let mut stack = vec![Frame { path: root.to_path_buf(), rd, total: 0, stamp: root_stamp }];
+    let mut stack = vec![Frame { path: root.to_path_buf(), rd, total: 0, stamp: root_stamp, exact: hot.pinned_name_in(root) }];
     let mut counter = 0u32;
 
     loop {
@@ -85,7 +95,7 @@ pub fn scan(
                 Some(Err(_)) => Step::Skip,
                 Some(Ok(de)) => match de.file_type() {
                     Ok(ft) if ft.is_symlink() => Step::Skip, // symlinks & junctions: avoid loops/double counting
-                    Ok(ft) if ft.is_file() => Step::Add(file_len(&de, hot)),
+                    Ok(ft) if ft.is_file() => Step::Add(file_len(&de, hot, top.exact.as_deref())),
                     Ok(ft) if ft.is_dir() => {
                         let stamp = de.metadata().and_then(|m| m.modified()).map(ns).unwrap_or(0);
                         Step::Descend(de.path(), stamp)
@@ -109,7 +119,8 @@ pub fn scan(
                         top.total = top.total.saturating_add(hit.size);
                     }
                 } else if let Ok(rd) = fs::read_dir(&path) {
-                    stack.push(Frame { path, rd, total: 0, stamp });
+                    let exact = hot.pinned_name_in(&path);
+                    stack.push(Frame { path, rd, total: 0, stamp, exact });
                 }
             }
             Step::End => {

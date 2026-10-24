@@ -46,6 +46,8 @@ mod util;
 
 /// Pending (not yet written) entries that trigger a write.
 pub use format::FLUSH_AT;
+/// Name of the index file inside the index folder.
+pub use table::DB_FILE;
 
 /// The index shared between the UI, the scan workers and the live updater.
 pub type Cache = Arc<Store>;
@@ -96,6 +98,8 @@ pub struct Store {
     pub max_ram: AtomicUsize,
     /// Set while a background flush is running.
     pub bg_flush: AtomicBool,
+    /// Called when the index file doubled (or was reset): its length is part of the folder it lives in.
+    on_resize: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl Store {
@@ -117,6 +121,18 @@ impl Store {
             flush_lock: Mutex::new(()),
             max_ram: AtomicUsize::new(max_ram),
             bg_flush: AtomicBool::new(false),
+            on_resize: Mutex::new(None),
+        }
+    }
+
+    /// Registers what to do when the index file changes size (see `on_resize`).
+    pub fn set_on_resize(&self, f: impl Fn() + Send + Sync + 'static) {
+        *self.on_resize.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
+    }
+
+    fn notify_resize(&self) {
+        if let Some(f) = &*self.on_resize.lock().unwrap_or_else(|e| e.into_inner()) {
+            f();
         }
     }
 
@@ -234,6 +250,8 @@ impl Store {
         if let Some(table) = &self.table {
             let mut t = table.write().unwrap_or_else(|e| e.into_inner());
             let _ = reset(&mut t);
+            drop(t);
+            self.notify_resize(); // the file shrank back
         }
     }
 
@@ -268,8 +286,13 @@ impl Store {
             (b, g.tombs.clone())
         };
         // (On an I/O error the batch is dropped: this is only a cache, the folders get rescanned.)
+        let bits = |t: &RwLock<Table>| t.read().unwrap_or_else(|e| e.into_inner()).bits;
+        let before = bits(table);
         let _ = apply(table, &batch, &tombs);
         self.inner().flushing = None;
+        if bits(table) != before {
+            self.notify_resize(); // the file doubled
+        }
     }
 
     /// Flush + fsync: everything written so far survives a crash or power loss.

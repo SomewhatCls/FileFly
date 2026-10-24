@@ -10,7 +10,7 @@ use std::{
 /// This is only the *safety net* for places the live updater cannot see (folders that are not
 /// being watched, network shares, changes made while the app was closed). Folders under an active
 /// watch are corrected within about a second by `live`, not after this time.
-pub const TTL_SECS: u64 = 6 * 3600;
+pub const TTL_SECS: u64 = 3600;
 /// Entries not refreshed for this long are dropped from the file (checked at most once a day).
 pub const PRUNE_SECS: u64 = 30 * 24 * 3600;
 

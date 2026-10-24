@@ -35,11 +35,17 @@ impl Drop for Live {
 
 /// Opens the index in `dir`, clears out leftovers of older formats and starts the background
 /// pruning of entries that haven't been refreshed for `PRUNE_SECS`.
-fn open_store(dir: &Path, max_entries: usize) -> Cache {
+fn open_store(dir: &Path, max_entries: usize, sink: &Arc<ChangeSink>, hot: &HotFiles) -> Cache {
     for old in OLD_FILES {
         let _ = fs::remove_file(dir.join(old));
     }
     let store = Arc::new(Store::open(dir, max_entries));
+    // The index file is open for as long as we run, so its listed size is never refreshed: always
+    // read it exactly, and when it changes size, invalidate the folders above it right away.
+    let file = dir.join(store::DB_FILE);
+    hot.pin(&file);
+    let s = Arc::clone(sink);
+    store.set_on_resize(move || s.push([file.clone()]));
     let pruner = Arc::clone(&store);
     std::thread::spawn(move || pruner.prune(now_secs().saturating_sub(PRUNE_SECS)));
     store
@@ -68,15 +74,16 @@ impl Indexer {
         let max_entries = if limit_mb == 0 { usize::MAX } else { entries_for_mb(limit_mb) };
         let sink = ChangeSink::new();
         sink.set_ignored_dir(dir);
+        let hot = Arc::new(HotFiles::default());
         let ix = Self {
-            cache: open_store(dir, max_entries),
+            cache: open_store(dir, max_entries, &sink, &hot),
             dir: dir.to_path_buf(),
             generation: Arc::new(AtomicU64::new(0)),
             cache_dirty: Arc::new(AtomicBool::new(false)),
             live: Arc::new(AtomicUsize::new(0)),
             tx,
             ctx,
-            hot: Arc::new(HotFiles::default()),
+            hot,
             sink,
             tracked: Arc::new(Mutex::new(Arc::new(HashSet::new()))),
         };
@@ -118,7 +125,7 @@ impl Indexer {
         self.generation.fetch_add(1, Ordering::SeqCst); // stop scans that still write to the old index
         self.cache.sync(); // make the old index's last writes permanent
         let max_entries = self.cache.max_ram.load(Ordering::Relaxed);
-        self.cache = open_store(dir, max_entries);
+        self.cache = open_store(dir, max_entries, &self.sink, &self.hot);
         self.dir = dir.to_path_buf();
         self.cache_dirty.store(false, Ordering::Relaxed);
         self.sink.set_ignored_dir(dir);
@@ -198,6 +205,11 @@ impl Indexer {
     /// `folders` also become the set the live updater keeps correct while files change.
     pub fn start(&self, folders: Vec<PathBuf>) {
         let my_gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        // Catch-up: if the index file has a different size than last time (e.g. it grew while the
+        // app was closed), the folders above it are out of date.
+        if let Some((p, _)) = self.sink.index_file_changed() {
+            self.cache.remove_with_ancestors(&p);
+        }
         *self.tracked.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(folders.iter().cloned().collect());
         if folders.is_empty() {
             return;

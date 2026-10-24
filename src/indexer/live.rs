@@ -101,6 +101,8 @@ pub struct ChangeSink {
     cv: Condvar,
     /// The folder of the index file: its own writes must not count as changes.
     index_dir: Mutex<Option<PathBuf>>,
+    /// Last seen size of the index file (see `index_file_changed`).
+    index_size: Mutex<Option<u64>>,
     /// Bumped to retire an updater thread (new index folder, shutdown).
     epoch: AtomicU64,
 }
@@ -111,6 +113,7 @@ impl ChangeSink {
             state: Mutex::new(SinkState::default()),
             cv: Condvar::new(),
             index_dir: Mutex::new(None),
+            index_size: Mutex::new(None),
             epoch: AtomicU64::new(0),
         })
     }
@@ -121,6 +124,23 @@ impl ChangeSink {
 
     pub fn set_ignored_dir(&self, dir: &Path) {
         *self.index_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.to_path_buf());
+        *self.index_size.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// The index file's events are ignored (its own writes would cause endless rescans), but its
+    /// *size* matters: it is part of the folder it lives in. The store reports every size change
+    /// (`Store::set_on_resize`); this comparison is only the catch-up for changes made while the
+    /// app was closed. Returns (path, new size) if it changed since the last call.
+    pub fn index_file_changed(&self) -> Option<(PathBuf, u64)> {
+        let dir = self.index_dir.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+        let path = dir.join(super::store::DB_FILE);
+        let size = file_size(&path)?;
+        let mut last = self.index_size.lock().unwrap_or_else(|e| e.into_inner());
+        if *last == Some(size) {
+            return None;
+        }
+        *last = Some(size);
+        Some((path, size))
     }
 
     /// False for paths that must not be reported (index file, system noise).

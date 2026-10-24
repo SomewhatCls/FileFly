@@ -14,6 +14,7 @@
 
 use std::{
     collections::HashMap,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -37,8 +38,21 @@ struct Hot {
     every: Duration,
 }
 
+/// File names compare case-insensitively on Windows.
+#[cfg(windows)]
+pub fn same_name(a: &OsStr, b: &OsStr) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+#[cfg(not(windows))]
+pub fn same_name(a: &OsStr, b: &OsStr) -> bool {
+    a == b
+}
+
 #[derive(Default)]
 pub struct HotFiles {
+    /// One file that is ALWAYS read exactly, never from the listing: the index file. The app keeps
+    /// it open for its whole life, so NTFS never refreshes its listed size while we run.
+    pinned: Mutex<Option<(PathBuf, OsString)>>,
     map: Mutex<HashMap<PathBuf, Hot>>,
     /// Mirror of `map.len()`, so scan threads can skip the lock while nothing is hot.
     len: AtomicUsize,
@@ -47,6 +61,22 @@ pub struct HotFiles {
 impl HotFiles {
     fn map(&self) -> MutexGuard<'_, HashMap<PathBuf, Hot>> {
         self.map.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Marks `file` as always-exact (replaces an earlier pin).
+    pub fn pin(&self, file: &Path) {
+        let v = match (file.parent(), file.file_name()) {
+            (Some(d), Some(n)) => Some((d.to_path_buf(), n.to_os_string())),
+            _ => None,
+        };
+        *self.pinned.lock().unwrap_or_else(|e| e.into_inner()) = v;
+    }
+
+    /// The pinned file's name, if it lives directly in `dir`. Asked once per folder by the scan.
+    pub fn pinned_name_in(&self, dir: &Path) -> Option<OsString> {
+        let g = self.pinned.lock().unwrap_or_else(|e| e.into_inner());
+        let (d, n) = g.as_ref()?;
+        same_name(d.as_os_str(), dir.as_os_str()).then(|| n.clone())
     }
 
     /// Cheap check for the scan loop: is anything hot at all?

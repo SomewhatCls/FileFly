@@ -114,7 +114,7 @@ impl Explorer {
             .filter(|p| p.is_dir())
             .unwrap_or_else(app_dir);
         let indexer = Indexer::new(ui.clone(), idx_tx, &index_dir, settings.index_ram);
-        let watcher = DirWatcher::new(ui.clone());
+        let watcher =    DirWatcher::new(ui.clone(), indexer.change_sink());
         std::thread::spawn(|| {
             // Leftovers of a crashed run: unpacked zips, and half-finished copy/move/zip temp items.
             sweep_old_archive_caches();
