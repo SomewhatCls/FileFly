@@ -1203,6 +1203,11 @@ pub fn resolve_archive_path(path: &Path) -> ArchivePath {
     ArchivePath::Real(path)
 }
 
+/// True if `path` lies inside the temporary unpacked copy of a zip.
+pub fn is_archive_path(path: &Path) -> bool {
+    archive_of(path).is_some()
+}
+
 /// Unpacks `zip` (or reuses the unpacking from earlier) and returns the folder it was unpacked to.
 /// Blocking: call it from a worker thread.
 pub fn mount_archive(zip: &Path) -> io::Result<PathBuf> {
