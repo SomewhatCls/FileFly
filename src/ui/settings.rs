@@ -291,6 +291,8 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 ui.color_edit_button_srgb(&mut sp.s.custom_accent);
             });
         }
+
+        #[cfg(windows)]
         let is_windows_11:bool =
             if cfg!(target_os = "windows") && System::kernel_version()
                     .unwrap().as_str()
@@ -303,6 +305,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
 
         #[cfg(windows)]
         fl_divider(ui, m, pal);
+        #[cfg(windows)]
         fl_row(ui, m, pal, "Transparency effects", Some("Choose from available transparency effects"), |ui| {
             let label = |t: TransparencyEffect| match t {
                 TransparencyEffect::Mica => "Mica",
