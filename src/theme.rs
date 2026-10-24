@@ -155,15 +155,14 @@ pub fn terminate_now() -> ! {
 // ----------------------------------------------------------------------------------------------
 // Mica
 
-/// Applies Mica Alt (Win 11 22H2+), falling back to Mica (Win 11 21H2). Returns false if unavailable.
+/// Applies Mica Alt (Win 11 22H2+), falling back to Mica (Win 11 21H2), or Acrylic (Win 10 1803+). Returns false if unavailable.
 #[cfg(windows)]
-pub fn apply_backdrop_mica(window: &impl raw_window_handle::HasWindowHandle, dark: bool) -> bool {
-    window_vibrancy::apply_tabbed(window, Some(dark)).is_ok() || window_vibrancy::apply_mica(window, Some(dark)).is_ok()
-}
-/// Applies Acrylic (Win 10 1803+). Returns false if unavailable.
-#[cfg(windows)]
-pub fn apply_backdrop_acrylic(window: &impl raw_window_handle::HasWindowHandle) -> bool {
-    window_vibrancy::apply_acrylic(window, Some(window_vibrancy::Color::default())).is_ok()
+pub fn apply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool, transparency_effect: TransparencyEffect) -> bool {
+    if transparency_effect == TransparencyEffect::Mica {
+        window_vibrancy::apply_tabbed(window, Some(dark)).is_ok() || window_vibrancy::apply_mica(window, Some(dark)).is_ok()
+    } else {
+        window_vibrancy::apply_acrylic(window, Some(window_vibrancy::Color::default())).is_ok()
+    }
 }
 #[cfg(not(windows))]
 pub fn apply_backdrop(_window: &impl raw_window_handle::HasWindowHandle, _dark: bool) -> bool {
@@ -177,11 +176,7 @@ pub fn reapply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: 
     let _ = window_vibrancy::clear_tabbed(window);
     let _ = window_vibrancy::clear_mica(window);
     let _ = window_vibrancy::clear_acrylic(window);
-    if transparency_effect == TransparencyEffect::Mica {
-        apply_backdrop_mica(window, dark)
-    }else {
-        apply_backdrop_acrylic(window)
-    }
+    apply_backdrop(window, dark, transparency_effect)
 }
 
 #[cfg(windows)]
@@ -665,11 +660,7 @@ pub fn backdrop_by_title(title: &str, dark: bool, transparency_effect: Transpare
     unsafe { EnumThreadWindows(GetCurrentThreadId(), visit, &mut s as *mut Search as isize) };
     for h in &s.found {
         let w = Hwnd(*h);
-        if transparency_effect == TransparencyEffect::Mica {
-            apply_backdrop_mica(&w, dark);
-        }else if transparency_effect == TransparencyEffect::Acrylic {
-            apply_backdrop_acrylic(&w);
-        }
+        apply_backdrop(&w, dark, transparency_effect);
         style_frameless(&w);
     }
     !s.found.is_empty()
