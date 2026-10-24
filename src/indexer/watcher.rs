@@ -169,7 +169,8 @@ impl DirWatcher {
         if shallow {
             self.watcher.watch(dir, RecursiveMode::NonRecursive).ok()?;
             watches.push((dir.to_path_buf(), false));
-            if dir.parent().is_none() && !crate::drives::is_network_path(dir) {
+            // The recursive file watcher causes crashing on Linux, so only use it on WIndows.
+            if dir.parent().is_none() && !crate::drives::is_network_path(dir) && cfg!(windows) {
                 for child in child_dirs(dir) {
                     if watches.len() > MAX_CHILD_WATCHES {
                         break;

@@ -63,9 +63,16 @@ const NOISY: [&str; 7] = [
     "swapfile.sys",
 ];
 
+#[cfg(unix)]
+pub fn is_pseudo(p: &Path) -> bool {
+    ["/proc", "/sys", "/dev", "/run"].iter().any(|s| p.starts_with(s))
+}
+#[cfg(not(unix))]
+pub fn is_pseudo(_: &Path) -> bool { false }
+
 /// True for names that are never worth reacting to (also used to pick folders to watch).
 pub fn is_noisy(p: &Path) -> bool {
-    p.components().any(|c| {
+    is_pseudo(p) || p.components().any(|c| {
         let s = c.as_os_str().to_string_lossy();
         NOISY.iter().any(|n| s.eq_ignore_ascii_case(n))
     })

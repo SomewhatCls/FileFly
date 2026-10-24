@@ -49,6 +49,12 @@ fn exact_len(de: &fs::DirEntry) -> u64 {
     fs::symlink_metadata(de.path()).or_else(|_| de.metadata()).map(|m| m.len()).unwrap_or(0)
 }
 
+/// Helper function to identify the device a file is on.
+#[cfg(unix)]
+fn dev_of(m: &fs::Metadata) -> u64 { use std::os::unix::fs::MetadataExt; m.dev() }
+#[cfg(not(unix))]
+fn dev_of(_: &fs::Metadata) -> u64 { 0 }
+
 /// Iterative post-order walk. Returns None if cancelled. Every folder that is finished is stored.
 pub fn scan(
     root: &Path,
@@ -72,6 +78,7 @@ pub fn scan(
     let Ok(rd) = fs::read_dir(root) else { return Some(0) };
     let mut stack = vec![Frame { path: root.to_path_buf(), rd, total: 0, stamp: root_stamp, exact: hot.pinned_name_in(root) }];
     let mut counter = 0u32;
+    let root_dev = fs::metadata(root).map(|m| dev_of(&m)).unwrap_or(0);
 
     loop {
         if generation.load(Ordering::Relaxed) != my_gen {
@@ -97,8 +104,16 @@ pub fn scan(
                     Ok(ft) if ft.is_symlink() => Step::Skip, // symlinks & junctions: avoid loops/double counting
                     Ok(ft) if ft.is_file() => Step::Add(file_len(&de, hot, top.exact.as_deref())),
                     Ok(ft) if ft.is_dir() => {
-                        let stamp = de.metadata().and_then(|m| m.modified()).map(ns).unwrap_or(0);
-                        Step::Descend(de.path(), stamp)
+                        let md = de.metadata().ok();
+                        let path = de.path();
+                        if super::live::is_pseudo(&path)
+                            || md.as_ref().is_some_and(|m| dev_of(m) != root_dev)
+                        {
+                            Step::Skip
+                        } else {
+                            let stamp = md.and_then(|m| m.modified().ok()).map(ns).unwrap_or(0);
+                            Step::Descend(path, stamp)
+                        }
                     }
                     _ => Step::Skip,
                 },

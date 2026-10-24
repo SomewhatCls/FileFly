@@ -14,5 +14,19 @@ pub fn lower_priority() {
         SetThreadPriority(GetCurrentThread(), -1);
     }
 }
-#[cfg(not(windows))]
-pub fn lower_priority() {}
+#[cfg(target_os = "linux")]
+pub fn lower_priority() {
+    unsafe {
+        // On Linux, nice is per-thread, so use the thread id.
+        let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
+        libc::setpriority(libc::PRIO_PROCESS, tid, 10);
+        // I/O priority: best-effort class (2), lowest level (7). Only honoured by some schedulers (BFQ).
+        const IOPRIO_WHO_PROCESS: libc::c_int = 1;
+        let ioprio: libc::c_int = (2 << 13) | 7;
+        libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, tid as libc::c_int, ioprio);
+    }
+}
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn lower_priority() {
+    unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 10); }
+}
