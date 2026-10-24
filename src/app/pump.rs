@@ -367,11 +367,10 @@ impl Explorer {
         }else {
             false
         };
-
         self.pal = Palette::new(
             theme,
             accent,
-            want.unwrap_or(TransparencyEffect::None),
+            want.unwrap(),
         );
         // Re-apply a few times shortly after startup to beat the DWM race.
         const RETRY_AT_MS: [u64; 4] = [150, 600, 1500, 3000];
@@ -391,23 +390,23 @@ impl Explorer {
         }
 
         if changed_backdrop {
-            clear_backdrop(frame);
+            clear_window_transparency_effects(frame);
+            self.backdrop_retries = 0;
+            self.backdrop_start = Instant::now();
             if let Some(effect) = want {
-                reapply_backdrop(frame, self.pal.dark, effect);
+                apply_backdrop(frame, self.pal.dark, effect);
                 nudge_frame(frame);
             }
-            ctx.request_repaint();
         } else if force {
             // Retry: reapply WITHOUT clearing first, to avoid flicker
             if let Some(effect) = want {
-                reapply_backdrop(frame, self.pal.dark, effect);
+                apply_backdrop(frame, self.pal.dark, effect);
                 nudge_frame(frame);
             }
+            ctx.request_repaint();
         }
 
         //Minimum refresh rate
-        if ctx.input(|i| i.focused) {
-            ctx.request_repaint_after(Duration::from_secs(1));
-        }
+        ctx.request_repaint_after(Duration::from_secs(1));
     }
 }

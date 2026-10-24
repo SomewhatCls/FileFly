@@ -174,16 +174,15 @@ pub fn apply_backdrop(_window: &impl raw_window_handle::HasWindowHandle, dark: b
 /// Clears the backdrop and applies it again. Re-applying an unchanged backdrop does nothing,
 /// which is why a blank window only recovered after minimise/restore.
 #[cfg(windows)]
-pub fn reapply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool, transparency_effect: TransparencyEffect) -> bool {
+pub fn clear_window_transparency_effects(window: &impl raw_window_handle::HasWindowHandle) {
     let _ = window_vibrancy::clear_tabbed(window);
     let _ = window_vibrancy::clear_mica(window);
     let _ = window_vibrancy::clear_acrylic(window);
-    apply_backdrop(window, dark, transparency_effect)
 }
 
 #[cfg(not(windows))]
-pub fn reapply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool, transparency_effect: TransparencyEffect) -> bool {
-    apply_backdrop(window, dark, transparency_effect)
+pub fn clear_window_transparency_effects(window: &impl raw_window_handle::HasWindowHandle) {
+    // Not implemented yet.
 }
 
 #[cfg(windows)]
