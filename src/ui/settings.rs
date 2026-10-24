@@ -303,7 +303,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
 
         #[cfg(windows)]
         fl_divider(ui, m, pal);
-        fl_row(ui, m, pal, "Transparency effects", Some("Choose how FileFly looks"), |ui| {
+        fl_row(ui, m, pal, "Transparency effects", Some("Choose from available transparency effects"), |ui| {
             let label = |t: TransparencyEffect| match t {
                 TransparencyEffect::Mica => "Mica",
                 TransparencyEffect::Acrylic => "Acrylic",
