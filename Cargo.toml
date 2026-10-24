@@ -30,8 +30,7 @@ notify = "8.2"
 raw-window-handle = "0.6"
 jwalk = "0.9"
 num-format = "0.4.4"
-postcard = { version = "1", features = ["use-std"] }
-lz4_flex = "0"
+redb = "4"
 
 [build-dependencies]
 winres = "0.1"

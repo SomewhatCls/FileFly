@@ -427,6 +427,9 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
         fl_divider(ui, m, pal);
         fl_row(ui, m, pal, "Search threads", Some("Default: 4"), |ui| {
             ui.add(egui::Slider::new(&mut sp.s.search_threads, 1_usize..=64_usize));
+            if sp.s.search_threads != 4_usize && ui.button("⟲").on_hover_text("Reset to default").clicked() {
+                sp.s.search_threads = 4_usize;
+            }
         });
     });
 
@@ -461,6 +464,30 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                     sp.delete_index = true;
                 }
             },
+        );
+        fl_divider(ui, m, pal);
+        fl_row(ui, m, pal, "Cache size",  Some("Sets the maximum ram allowed for caching folder sizes.\n Default: 64MB"), |ui| {
+            // The whole UI is sized from this value, so applying it mid-drag would move the slider
+            // under the cursor. Preview in the handle, apply on release.
+            ui.add_enabled_ui(!sp.s.unlimited_cache, |ui| {
+                ui.add(
+                    egui::Slider::new(&mut sp.s.index_ram, 1_usize..=10_000_usize)
+                        .logarithmic(true)
+                        .suffix("MB"),
+                );
+                if sp.s.index_ram != 64_usize && ui.button("⟲").on_hover_text("Reset to default").clicked() {
+                    sp.s.index_ram = 64_usize;
+                }
+            });
+        });
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Unlimited cache size",
+            Some("Removes the above RAM-limit for loading the cached folder sizes."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.unlimited_cache),
         );
     });
 
@@ -535,6 +562,8 @@ impl Explorer {
             st.network_drives = s.network_drives;
             st.max_search_results = s.max_search_results;
             st.search_threads = s.search_threads;
+            st.index_ram = s.index_ram;
+            st.unlimited_cache = s.unlimited_cache;
             self.settings_dirty = true;
             if s.theme != old.theme {
                 ui.set_theme(theme_pref(s.theme));
@@ -578,7 +607,7 @@ impl Explorer {
             if let Some(p) = rfd::FileDialog::new().set_directory(&self.index_dir).pick_folder() {
                 self.index_dir = p.clone();
                 self.settings.index_dir = Some(p.clone());
-                self.indexer.load(&p);
+                self.indexer.set_dir(&p);
                 self.start_indexing(true);
                 save_settings(&self.settings);
             }

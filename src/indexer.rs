@@ -1,17 +1,24 @@
 //! Folder-size index.
 //!
-//! Compared with the previous version:
-//!  * the cache is shared (`Arc<RwLock<..>>`) instead of being cloned on every navigation;
+//! Two tiers:
+//!  * EVERY folder size that was ever scanned lives in an on-disk database (`redb`). It is written
+//!    while the scan runs, so a cancelled scan or a crash keeps its progress, and there is no big
+//!    "save everything" step on exit and no big "load everything" step at startup;
+//!  * a bounded in-RAM cache sits in front of it (the limit is a user setting, `limit_mb`). A lookup
+//!    that misses RAM reads the database and copies the entry into RAM. When RAM goes over the
+//!    limit, entries are dropped from RAM only (the database still has them).
+//!
+//! Also:
+//!  * the cache is shared (`Arc`) instead of being cloned on every navigation;
 //!  * scanning is iterative, runs on a small worker pool at below-normal priority and yields regularly;
 //!  * every finished sub-folder is stored immediately, so cancelled scans keep their progress;
 //!  * entries are only trusted while the folder's mtime matches *and* they are younger than `TTL_SECS`
 //!    (a directory's mtime does not change when a file deeper down grows, so mtime alone goes stale);
-//!  * a file watcher invalidates the changed path and all its ancestors, so new files show up live;
-//!  * the cache is written atomically from a background thread.
+//!  * a file watcher invalidates the changed path and all its ancestors, so new files show up live.
 
 use eframe::egui;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use serde::{Deserialize, Serialize};
+use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
@@ -24,44 +31,39 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const INDEX_FILE: &str = "folder_sizes.bin";
-///For recovering old json index files.
-const OLD_JSON_FILE: &str = "folder_sizes.json";
+const DB_FILE: &str = "folder_sizes.redb";
+/// Files of the earlier index formats; removed at startup.
+const OLD_FILES: [&str; 2] = ["folder_sizes.json", "folder_sizes.bin"];
 /// Maximum age before a cached folder is re-scanned even if its mtime is unchanged.
-/// Bump whenever CachedFolder or IndexFile changes (the binary format can't skip or default fields).
-const INDEX_VERSION: u32 = 1;
 const TTL_SECS: u64 = 6 * 3600;
-/// Entries not refreshed for this long are dropped when the cache is saved.
+/// Entries not refreshed for this long are dropped from the database at startup.
 const PRUNE_SECS: u64 = 30 * 24 * 3600;
+/// redb's own page cache. Its default is 1 GiB, far too much for a file manager.
+const DB_PAGE_CACHE: usize = 32 << 20;
 
-#[derive(Clone, Serialize, Deserialize)]
+/// Rough RAM cost of one cached folder; only used to turn the "MB" setting into an entry count.
+/// An estimate for ~80-character Windows paths, not a measurement:
+///   hash table slot (PathBuf 24-32 B + CachedFolder 24 B + 1 control byte, times ~1.6 because the
+///   table is never full)                                         ~ 85 B
+///   path text on the heap (~80 B, rounded up by the allocator)   ~ 95 B
+const ENTRY_BYTES: usize = 170;
+
+fn entries_for_mb(mb: usize) -> usize {
+    mb.saturating_mul(1 << 20) / ENTRY_BYTES
+}
+
+#[derive(Clone)]
 pub struct CachedFolder {
     pub size: u64,
+    /// Modification time of the folder, nanoseconds since 1970 (fits a u64 until the year 2554).
     pub modified_ns: u64,
-    /// Unix seconds of the scan. Missing in old cache files (0 -> treated as expired once).
+    /// Unix seconds of the scan.
     pub scanned_at: u64,
-}
-
-/// To avoid blocking writes, IndexFile is loaded as a copy from memory.
-#[derive(Serialize, Deserialize)]
-struct IndexFile {
-    version: u32,
-    /// Entries are sorted by path
-    entries: Vec<(String, CachedFolder)>,
-}
-
-/// For writing to disk.
-#[derive(Serialize)]
-struct IndexFileRef<'a> {
-    version: u32,
-    entries: Vec<(&'a str, &'a CachedFolder)>,
 }
 
 pub enum IndexMsg {
     Size(PathBuf, u64),
 }
-
-type Cache = Arc<RwLock<HashMap<PathBuf, CachedFolder>>>;
 
 /// Number of scan worker threads per `start()`.
 const WORKERS: usize = 3;
@@ -75,8 +77,246 @@ impl Drop for Live {
     }
 }
 
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+fn ns(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+}
+
+// ----------------------------------------------------------------------------------------------
+// Storage: database on disk + bounded cache in RAM
+
+const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("folders");
+
+/// 24 bytes per folder on disk: size, modified, scanned_at.
+fn enc(v: &CachedFolder) -> [u8; 24] {
+    let mut b = [0u8; 24];
+    b[..8].copy_from_slice(&v.size.to_le_bytes());
+    b[8..16].copy_from_slice(&v.modified_ns.to_le_bytes());
+    b[16..].copy_from_slice(&v.scanned_at.to_le_bytes());
+    b
+}
+
+fn dec(b: &[u8]) -> Option<CachedFolder> {
+    if b.len() != 24 {
+        return None;
+    }
+    Some(CachedFolder {
+        size: u64::from_le_bytes(b[..8].try_into().ok()?),
+        modified_ns: u64::from_le_bytes(b[8..16].try_into().ok()?),
+        scanned_at: u64::from_le_bytes(b[16..].try_into().ok()?),
+    })
+}
+
+struct Store {
+    /// None if the database can't be opened (e.g. a second window has it open): then RAM is all
+    /// there is, the limit is ignored and nothing is saved.
+    db: Option<Database>,
+    ram: RwLock<HashMap<PathBuf, CachedFolder>>,
+    /// Entry limit of `ram` (usize::MAX = unlimited).
+    max_ram: AtomicUsize,
+}
+
+type Cache = Arc<Store>;
+
+fn open_db(dir: &Path) -> Option<Database> {
+    fs::create_dir_all(dir).ok()?;
+    let db = Database::builder().set_cache_size(DB_PAGE_CACHE).create(dir.join(DB_FILE)).ok()?;
+    let tx = db.begin_write().ok()?;
+    tx.open_table(TABLE).ok()?; // make sure the table exists
+    tx.commit().ok()?;
+    Some(db)
+}
+
+impl Store {
+    fn open(dir: &Path, max_ram: usize) -> Store {
+        Store { db: open_db(dir), ram: RwLock::new(HashMap::new()), max_ram: AtomicUsize::new(max_ram) }
+    }
+
+    /// Adds to RAM. Once 10% over the limit, drops arbitrary entries back down to the limit.
+    /// (Safe, because the database still has them. Without a database nothing is dropped.)
+    fn ram_insert(&self, items: Vec<(PathBuf, CachedFolder)>) {
+        let Ok(mut m) = self.ram.write() else { return };
+        m.extend(items);
+        let max = if self.db.is_some() { self.max_ram.load(Ordering::Relaxed) } else { usize::MAX };
+        if m.len() > max.saturating_add(max / 10) {
+            let doomed: Vec<PathBuf> = m.keys().take(m.len() - max).cloned().collect();
+            for k in doomed {
+                m.remove(&k);
+            }
+        }
+    }
+
+    fn disk_get(&self, p: &Path) -> Option<CachedFolder> {
+        let db = self.db.as_ref()?;
+        let rt = db.begin_read().ok()?;
+        let t = rt.open_table(TABLE).ok()?;
+        let g = t.get(p.to_str()?.as_bytes()).ok()??;
+        let v = dec(g.value());
+        v
+    }
+
+    /// Runs `f` in one write transaction. The commit does not fsync (see `sync_to_disk`).
+    fn disk_write(&self, f: impl FnOnce(&mut redb::Table<'_, &'static [u8], &'static [u8]>)) {
+        let Some(db) = &self.db else { return };
+        let Ok(mut tx) = db.begin_write() else { return };
+        let _ = tx.set_durability(redb::Durability::None);
+        if let Ok(mut t) = tx.open_table(TABLE) {
+            f(&mut t);
+        }
+        let _ = tx.commit();
+    }
+
+    fn get(&self, p: &Path) -> Option<CachedFolder> {
+        if let Some(v) = self.ram.read().ok().and_then(|m| m.get(p).cloned()) {
+            return Some(v);
+        }
+        let v = self.disk_get(p)?;
+        self.ram_insert(vec![(p.to_path_buf(), v.clone())]);
+        Some(v)
+    }
+
+    fn put_many(&self, items: Vec<(PathBuf, CachedFolder)>) {
+        self.disk_write(|t| {
+            for (p, v) in &items {
+                if let Some(k) = p.to_str() {
+                    // (a path that is not valid Unicode is only kept in RAM)
+                    let _ = t.insert(k.as_bytes(), enc(v).as_slice());
+                }
+            }
+        });
+        self.ram_insert(items);
+    }
+
+    /// Removes `p` and every ancestor (their totals are no longer correct).
+    fn remove_with_ancestors(&self, p: &Path) {
+        self.disk_write(|t| {
+            for c in p.ancestors() {
+                if let Some(k) = c.to_str() {
+                    let _ = t.remove(k.as_bytes());
+                }
+            }
+        });
+        if let Ok(mut m) = self.ram.write() {
+            for c in p.ancestors() {
+                m.remove(c);
+            }
+        }
+    }
+
+    /// Removes `dir`, everything below it and all its ancestors.
+    fn remove_tree(&self, dir: &Path) {
+        self.disk_write(|t| {
+            if let Some(d) = dir.to_str() {
+                // Keys are sorted, so everything below "C:\a" is one run starting at "C:\a\"
+                // (the separator keeps "C:\ab" out of it).
+                let mut prefix = d.to_owned();
+                if !prefix.ends_with(std::path::MAIN_SEPARATOR) {
+                    prefix.push(std::path::MAIN_SEPARATOR);
+                }
+                let doomed: Vec<Vec<u8>> = match t.range(prefix.as_bytes()..) {
+                    Ok(it) => it
+                        .flatten()
+                        .map(|(k, _)| k.value().to_vec())
+                        .take_while(|k| k.starts_with(prefix.as_bytes()))
+                        .collect(),
+                    Err(_) => Vec::new(),
+                };
+                for k in doomed {
+                    let _ = t.remove(k.as_slice());
+                }
+            }
+            for c in dir.ancestors() {
+                if let Some(k) = c.to_str() {
+                    let _ = t.remove(k.as_bytes());
+                }
+            }
+        });
+        if let Ok(mut m) = self.ram.write() {
+            m.retain(|k, _| !k.starts_with(dir));
+            for c in dir.ancestors() {
+                m.remove(c);
+            }
+        }
+    }
+
+    fn clear(&self) {
+        if let Some(db) = &self.db {
+            if let Ok(tx) = db.begin_write() {
+                let _ = tx.delete_table(TABLE);
+                let _ = tx.commit();
+            }
+        }
+        if let Ok(mut m) = self.ram.write() {
+            m.clear();
+        }
+    }
+
+    /// Number of indexed folders (all of them, not just the ones in RAM).
+    fn len(&self) -> usize {
+        match &self.db {
+            Some(db) => db
+                .begin_read()
+                .ok()
+                .and_then(|rt| rt.open_table(TABLE).ok().and_then(|t| t.len().ok()))
+                .unwrap_or(0) as usize,
+            None => self.ram.read().map(|m| m.len()).unwrap_or(0),
+        }
+    }
+
+    /// One real (fsynced) commit makes all the earlier no-fsync commits permanent.
+    fn sync_to_disk(&self) {
+        if let Some(db) = &self.db {
+            if let Ok(tx) = db.begin_write() {
+                let _ = tx.commit();
+            }
+        }
+    }
+
+    /// Drops entries not refreshed since `cutoff` (the PRUNE_SECS rule).
+    fn drop_older_than(&self, cutoff: u64) {
+        if let Some(db) = &self.db {
+            let old: Vec<Vec<u8>> = {
+                let Ok(rt) = db.begin_read() else { return };
+                let Ok(t) = rt.open_table(TABLE) else { return };
+                let Ok(it) = t.iter() else { return };
+                it.flatten()
+                    .filter(|(_, v)| dec(v.value()).is_some_and(|f| f.scanned_at < cutoff))
+                    .map(|(k, _)| k.value().to_vec())
+                    .collect()
+            };
+            self.disk_write(|t| {
+                for k in old {
+                    let _ = t.remove(k.as_slice());
+                }
+            });
+        }
+        if let Ok(mut m) = self.ram.write() {
+            m.retain(|_, v| v.scanned_at >= cutoff);
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------------------------
+// Indexer
+
+/// Opens the database in `dir`, clears out leftovers of older formats and starts the background
+/// pruning of entries that haven't been refreshed for `PRUNE_SECS`.
+fn open_store(dir: &Path, max_entries: usize) -> Cache {
+    for old in OLD_FILES {
+        let _ = fs::remove_file(dir.join(old));
+    }
+    let store = Arc::new(Store::open(dir, max_entries));
+    let pruner = Arc::clone(&store);
+    std::thread::spawn(move || pruner.drop_older_than(now_secs().saturating_sub(PRUNE_SECS)));
+    store
+}
+
 pub struct Indexer {
     cache: Cache,
+    /// Folder the database lives in.
+    dir: PathBuf,
     generation: Arc<AtomicU64>,
     cache_dirty: Arc<AtomicBool>,
     live: Arc<AtomicUsize>,
@@ -84,60 +324,70 @@ pub struct Indexer {
     ctx: egui::Context,
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
-fn ns(t: SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0) as u64
-}
-
 impl Indexer {
-    pub fn new(ctx: egui::Context, tx: Sender<IndexMsg>, dir: &Path) -> Self {
+    /// `dir` is where the database lives. `limit_mb` is the RAM cache limit (0 = unlimited).
+    pub fn new(ctx: egui::Context, tx: Sender<IndexMsg>, dir: &Path, limit_mb: usize) -> Self {
         let me = Self {
-            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache: open_store(dir, entries_for_mb(limit_mb)),
+            dir: dir.to_path_buf(),
             generation: Arc::new(AtomicU64::new(0)),
             cache_dirty: Arc::new(AtomicBool::new(false)),
             live: Arc::new(AtomicUsize::new(0)),
             tx,
             ctx,
         };
-        me.load(dir);
         me
     }
 
+    /// Switches to the database in `dir` (created if it doesn't exist there yet). This is what
+    /// replaces the old `load(dir)` when the user picks another index folder. The old folder's
+    /// database is left where it is.
+    pub fn set_dir(&mut self, dir: &Path) {
+        if dir == self.dir {
+            return;
+        }
+        self.generation.fetch_add(1, Ordering::SeqCst); // stop scans that still write to the old database
+        self.cache.sync_to_disk(); // make the old database's last writes permanent
+        let max_entries = self.cache.max_ram.load(Ordering::Relaxed);
+        self.cache = open_store(dir, max_entries);
+        self.dir = dir.to_path_buf();
+        self.cache_dirty.store(false, Ordering::Relaxed);
+    }
+
+    /// Changes the RAM cache limit and trims RAM if it is now over the limit.
+    pub fn set_limit_mb(&self, mb: usize, unlimited_cache: bool) {
+        if unlimited_cache {
+            self.cache.max_ram.store(usize::MAX, Ordering::Relaxed);
+        } else {
+            self.cache.max_ram.store(entries_for_mb(mb), Ordering::Relaxed);
+        }
+        self.cache.ram_insert(Vec::new());
+        eprintln!("Cache limit set to {} MB", if unlimited_cache { usize::MAX } else { mb });
+    }
+
+    /// Number of indexed folders (all of them, not just the ones currently in RAM).
     pub fn len(&self) -> usize {
-        self.cache.read().map(|c| c.len()).unwrap_or(0)
+        self.cache.len()
     }
 
     /// Cached size regardless of age (shown immediately; fresh value follows).
+    /// A folder that is not in RAM is read from the database, so call this once per folder
+    /// (when a listing loads), not for every row on every frame.
     pub fn lookup(&self, path: &Path) -> Option<u64> {
-        self.cache.read().ok()?.get(path).map(|c| c.size)
+        self.cache.get(path).map(|c| c.size)
     }
 
     /// Drop the path and every ancestor: their totals are no longer correct.
     pub fn invalidate(&self, path: &Path) {
-        if let Ok(mut c) = self.cache.write() {
-            let mut p = Some(path);
-            while let Some(cur) = p {
-                c.remove(cur);
-                p = cur.parent();
-            }
-            self.cache_dirty.store(true, Ordering::Relaxed);
-        }
+        self.cache.remove_with_ancestors(path);
+        self.cache_dirty.store(true, Ordering::Relaxed);
     }
 
     /// Drop `dir`, everything below it and all its ancestors (used when too many changes happened
     /// to list them individually).
     pub fn invalidate_tree(&self, dir: &Path) {
-        if let Ok(mut c) = self.cache.write() {
-            c.retain(|k, _| !k.starts_with(dir));
-            let mut p = dir.parent();
-            while let Some(cur) = p {
-                c.remove(cur);
-                p = cur.parent();
-            }
-            self.cache_dirty.store(true, Ordering::Relaxed);
-        }
+        self.cache.remove_tree(dir);
+        self.cache_dirty.store(true, Ordering::Relaxed);
     }
 
     /// True while a scan started by `start()` still has a live worker thread.
@@ -145,15 +395,12 @@ impl Indexer {
         self.live.load(Ordering::SeqCst) > 0
     }
 
-    /// Forgets everything: stops a running scan, empties the cache and removes the saved file.
-    pub fn delete_index(&self, dir: &Path) {
+    /// Forgets everything: stops a running scan and empties the index (RAM and database).
+    /// (The database file stays open, so it is emptied rather than deleted.)
+    pub fn delete_index(&self, _dir: &Path) {
         self.generation.fetch_add(1, Ordering::SeqCst);
-        if let Ok(mut c) = self.cache.write() {
-            c.clear();
-        }
+        self.cache.clear();
         self.cache_dirty.store(false, Ordering::Relaxed);
-        let _ = fs::remove_file(dir.join(INDEX_FILE));
-        let _ = fs::remove_file(dir.join(format!("{INDEX_FILE}.tmp")));
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -161,9 +408,7 @@ impl Indexer {
     }
 
     pub fn clear(&self) {
-        if let Ok(mut c) = self.cache.write() {
-            c.clear();
-        }
+        self.cache.clear();
         self.cache_dirty.store(true, Ordering::Relaxed);
     }
 
@@ -196,7 +441,7 @@ impl Indexer {
                     let Some(folder) = queue.lock().ok().and_then(|mut q| q.pop_front()) else { return };
                     let stamp = fs::metadata(&folder).and_then(|m| m.modified()).map(ns).unwrap_or(0);
                     let now = now_secs();
-                    let fresh = cache.read().ok().and_then(|c| c.get(&folder).cloned()).filter(|c| is_fresh(c, stamp, now));
+                    let fresh = cache.get(&folder).filter(|c| is_fresh(c, stamp, now));
                     let size = match fresh {
                         Some(c) => c.size,
                         None => match scan(&folder, stamp, &cache, &generation, my_gen, &dirty) {
@@ -215,58 +460,17 @@ impl Indexer {
 
     // ---------------------------------------------------------------- persistence
 
-    pub fn load(&self, dir: &Path) {
-        let _ = fs::remove_file(dir.join(OLD_JSON_FILE)); // one-time cleanup of the old json file.
-        let Ok(bytes) = fs::read(dir.join(INDEX_FILE)) else { return };
-        // lz4_flex trusts the 4-byte size prefix when allocating, so reject absurd values first.
-        if bytes.len() < 4 || u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) > 512 << 20 {
-            return;
-        }
-        let Ok(raw) = lz4_flex::decompress_size_prepended(&bytes) else { return };
-        let Ok(file) = postcard::from_bytes::<IndexFile>(&raw) else { return };
-        if file.version != INDEX_VERSION {
-            return; // old format: just rescan
-        }
-        if let Ok(mut c) = self.cache.write() {
-            *c = file.entries.into_iter().map(|(k, v)| (PathBuf::from(k), v)).collect();
-        }
-    }
-
-    /// Saves in a background thread (write to temp file, then rename) if anything changed.
-    pub fn save_if_dirty(&self, dir: &Path, wait: bool) {
+    /// The database is written while scanning; this only makes those writes permanent (one fsync),
+    /// in a background thread unless `wait` is set (use that on exit).
+    pub fn save_if_dirty(&self, _dir: &Path, wait: bool) {
         if !self.cache_dirty.swap(false, Ordering::Relaxed) {
             return;
         }
-        let cache = Arc::clone(&self.cache);
-        let dir = dir.to_path_buf();
-        let job = move || {
-            let raw = {
-                let Ok(c) = cache.read() else { return };
-                let cutoff = now_secs().saturating_sub(PRUNE_SECS);
-                let mut entries: Vec<(&str, &CachedFolder)> = c
-                    .iter()
-                    .filter(|(_, v)| v.scanned_at >= cutoff)
-                    .filter_map(|(k, v)| k.to_str().map(|k| (k, v))) // non-Unicode paths aren't cached on disk
-                    .collect();
-                entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
-                match postcard::to_stdvec(&IndexFileRef { version: INDEX_VERSION, entries }) {
-                    Ok(r) => r,
-                    Err(_) => return,
-                }
-            }; // read lock released here; compression and disk I/O happen without it
-            if fs::create_dir_all(&dir).is_err() {
-                return;
-            }
-            let bytes = lz4_flex::compress_prepend_size(&raw);
-            let tmp = dir.join(format!("{INDEX_FILE}.tmp"));
-            if fs::write(&tmp, bytes).is_ok() {
-                let _ = fs::rename(&tmp, dir.join(INDEX_FILE));
-            }
-        };
+        let store = Arc::clone(&self.cache);
         if wait {
-            job();
+            store.sync_to_disk();
         } else {
-            std::thread::spawn(job);
+            std::thread::spawn(move || store.sync_to_disk());
         }
     }
 }
@@ -289,7 +493,7 @@ enum Step {
     End,
 }
 
-/// Iterative post-order walk. Returns None if cancelled.
+/// Iterative post-order walk. Returns None if cancelled. Every folder that is finished is stored.
 fn scan(root: &Path, root_stamp: u64, cache: &Cache, generation: &AtomicU64, my_gen: u64, dirty: &AtomicBool) -> Option<u64> {
     let now = now_secs();
     let mut pending: Vec<(PathBuf, CachedFolder)> = Vec::new();
@@ -297,10 +501,8 @@ fn scan(root: &Path, root_stamp: u64, cache: &Cache, generation: &AtomicU64, my_
         if pending.is_empty() {
             return;
         }
-        if let Ok(mut c) = cache.write() {
-            c.extend(pending.drain(..));
-            dirty.store(true, Ordering::Relaxed);
-        }
+        cache.put_many(std::mem::take(pending));
+        dirty.store(true, Ordering::Relaxed);
     };
 
     let Ok(rd) = fs::read_dir(root) else { return Some(0) };
@@ -343,7 +545,7 @@ fn scan(root: &Path, root_stamp: u64, cache: &Cache, generation: &AtomicU64, my_
                 }
             }
             Step::Descend(path, stamp) => {
-                let hit = cache.read().ok().and_then(|c| c.get(&path).cloned()).filter(|c| is_fresh(c, stamp, now));
+                let hit = cache.get(&path).filter(|c| is_fresh(c, stamp, now));
                 if let Some(hit) = hit {
                     if let Some(top) = stack.last_mut() {
                         top.total = top.total.saturating_add(hit.size);
