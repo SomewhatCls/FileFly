@@ -609,7 +609,9 @@ pub fn style_frameless(window: &impl raw_window_handle::HasWindowHandle) {
     }
 }
 #[cfg(not(windows))]
-pub fn style_frameless(_window: &impl raw_window_handle::HasWindowHandle) {}
+pub fn style_frameless(_window: &impl raw_window_handle::HasWindowHandle) {
+    // Not implemented.
+}
 
 /// A bare Win32 window handle, so the backdrop helpers above can be applied to windows that
 /// egui/eframe doesn't hand out handles for (the extra viewports).

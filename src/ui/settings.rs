@@ -257,16 +257,77 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 }
             });
         });
+        if cfg!(windows) {
+            fl_divider(ui, m, pal);
+            fl_row(
+                ui,
+                m,
+                pal,
+                "Follow system text size",
+                Some("Also applies the “Text size” scaling setting from Windows Accessibility"),
+                |ui| fl_switch(ui, m, pal, &mut sp.s.follow_text_scale),
+            );
+            fl_divider(ui, m, pal);
+            fl_row(
+                ui,
+                m,
+                pal,
+                "Use Windows accent color",
+                Some("Turn off to pick your own accent color"),
+                |ui| fl_switch(ui, m, pal, &mut sp.s.use_system_accent),
+            );
+            if !sp.s.use_system_accent {
+                fl_divider(ui, m, pal);
+                fl_row(ui, m, pal, "Accent color", None, |ui| {
+                    ui.color_edit_button_srgb(&mut sp.s.custom_accent);
+                });
+            }
 
-        fl_divider(ui, m, pal);
-        fl_row(
-            ui,
-            m,
-            pal,
-            "Follow system text size",
-            Some("Also applies the “Text size” scaling setting from Windows Accessibility"),
-            |ui| fl_switch(ui, m, pal, &mut sp.s.follow_text_scale),
-        );
+            let is_windows_11:bool =
+                if cfg!(target_os = "windows") && System::kernel_version()
+                    .unwrap().as_str()
+                    .parse::<i32>()
+                    .expect("Failed to parse kernel version") >= 22000 {
+                    true
+                }else{
+                    false
+                };
+
+            fl_divider(ui, m, pal);
+            fl_row(ui, m, pal, "Transparency effects", Some("Choose from available transparency effects"), |ui| {
+                let label = |t: TransparencyEffect| match t {
+                    TransparencyEffect::Mica => "Mica",
+                    TransparencyEffect::Acrylic => "Acrylic",
+                    TransparencyEffect::None => "None",
+                };
+                // Makes selectable transparency effects dependent on Windows version.
+                egui::ComboBox::from_id_salt("transparency")
+                    .width(m.s * 150.0)
+                    .selected_text(label(sp.s.transparency_effect))
+                    .show_ui(ui, |ui| {
+                        let effects = if is_windows_11 {
+                            vec![
+                                TransparencyEffect::Mica,
+                                TransparencyEffect::Acrylic,
+                                TransparencyEffect::None,
+                            ]
+                        } else {
+                            vec![
+                                TransparencyEffect::Acrylic,
+                                TransparencyEffect::None,
+                            ]
+                        };
+
+                        for t in effects {
+                            ui.selectable_value(
+                                &mut sp.s.transparency_effect,
+                                t,
+                                label(t),
+                            );
+                        }
+                    });
+            });
+        }
         fl_divider(ui, m, pal);
         fl_row(
             ui,
@@ -276,69 +337,6 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             Some("Leave an empty area at the left of the tabs for moving the window"),
             |ui| fl_switch(ui, m, pal, &mut sp.s.left_drag_space),
         );
-        fl_divider(ui, m, pal);
-        fl_row(
-            ui,
-            m,
-            pal,
-            "Use Windows accent color",
-            Some("Turn off to pick your own accent color"),
-            |ui| fl_switch(ui, m, pal, &mut sp.s.use_system_accent),
-        );
-        if !sp.s.use_system_accent {
-            fl_divider(ui, m, pal);
-            fl_row(ui, m, pal, "Accent color", None, |ui| {
-                ui.color_edit_button_srgb(&mut sp.s.custom_accent);
-            });
-        }
-
-        #[cfg(windows)]
-        let is_windows_11:bool =
-            if cfg!(target_os = "windows") && System::kernel_version()
-                    .unwrap().as_str()
-                    .parse::<i32>()
-                    .expect("Failed to parse kernel version") >= 22000 {
-                        true
-            }else{
-                false
-            };
-
-        #[cfg(windows)]
-        fl_divider(ui, m, pal);
-        #[cfg(windows)]
-        fl_row(ui, m, pal, "Transparency effects", Some("Choose from available transparency effects"), |ui| {
-            let label = |t: TransparencyEffect| match t {
-                TransparencyEffect::Mica => "Mica",
-                TransparencyEffect::Acrylic => "Acrylic",
-                TransparencyEffect::None => "None",
-            };
-            // Makes selectable transparency effects dependent on Windows version.
-            egui::ComboBox::from_id_salt("transparency")
-                .width(m.s * 150.0)
-                .selected_text(label(sp.s.transparency_effect))
-                .show_ui(ui, |ui| {
-                    let effects = if is_windows_11 {
-                        vec![
-                            TransparencyEffect::Mica,
-                            TransparencyEffect::Acrylic,
-                            TransparencyEffect::None,
-                        ]
-                    } else {
-                        vec![
-                            TransparencyEffect::Acrylic,
-                            TransparencyEffect::None,
-                        ]
-                    };
-
-                    for t in effects {
-                        ui.selectable_value(
-                            &mut sp.s.transparency_effect,
-                            t,
-                            label(t),
-                        );
-                    }
-                });
-        });
     });
 
     // ---------------------------------------------------------------- Files
