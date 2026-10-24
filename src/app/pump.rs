@@ -407,7 +407,7 @@ impl Explorer {
             }
             ctx.request_repaint();
         } else if force {
-            // Retry: reapply WITHOUT clearing first, to avoid flicker
+            clear_window_transparency_effects(frame);
             if let Some(effect) = wanted_transparency {
                 apply_backdrop(frame, self.pal.dark, effect);
                 nudge_frame(frame);
