@@ -24,29 +24,37 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const INDEX_FILE: &str = "folder_sizes.json";
+const INDEX_FILE: &str = "folder_sizes.bin";
+///For recovering old json index files.
+const OLD_JSON_FILE: &str = "folder_sizes.json";
 /// Maximum age before a cached folder is re-scanned even if its mtime is unchanged.
+/// Bump whenever CachedFolder or IndexFile changes (the binary format can't skip or default fields).
+const INDEX_VERSION: u32 = 1;
 const TTL_SECS: u64 = 6 * 3600;
 /// Entries not refreshed for this long are dropped when the cache is saved.
 const PRUNE_SECS: u64 = 30 * 24 * 3600;
-/// Only the top levels of a scan and folders at least this big are cached. Caching every folder
-/// of a whole drive meant millions of entries: gigabytes of RAM and a cache file that took
-/// seconds to write when closing the app.
-const KEEP_BYTES: u64 = 64 << 20;
-const KEEP_DEPTH: usize = 4;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CachedFolder {
     pub size: u64,
-    pub modified_ns: u128,
+    pub modified_ns: u64,
     /// Unix seconds of the scan. Missing in old cache files (0 -> treated as expired once).
-    #[serde(default)]
     pub scanned_at: u64,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+/// To avoid blocking writes, IndexFile is loaded as a copy from memory.
+#[derive(Serialize, Deserialize)]
 struct IndexFile {
-    folder_sizes: HashMap<String, CachedFolder>,
+    version: u32,
+    /// Entries are sorted by path
+    entries: Vec<(String, CachedFolder)>,
+}
+
+/// For writing to disk.
+#[derive(Serialize)]
+struct IndexFileRef<'a> {
+    version: u32,
+    entries: Vec<(&'a str, &'a CachedFolder)>,
 }
 
 pub enum IndexMsg {
@@ -79,8 +87,8 @@ pub struct Indexer {
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
-fn ns(t: SystemTime) -> u128 {
-    t.duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+fn ns(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0) as u64
 }
 
 impl Indexer {
@@ -208,10 +216,19 @@ impl Indexer {
     // ---------------------------------------------------------------- persistence
 
     pub fn load(&self, dir: &Path) {
-        let Ok(text) = fs::read_to_string(dir.join(INDEX_FILE)) else { return };
-        let Ok(file) = serde_json::from_str::<IndexFile>(&text) else { return };
+        let _ = fs::remove_file(dir.join(OLD_JSON_FILE)); // one-time cleanup of the old json file.
+        let Ok(bytes) = fs::read(dir.join(INDEX_FILE)) else { return };
+        // lz4_flex trusts the 4-byte size prefix when allocating, so reject absurd values first.
+        if bytes.len() < 4 || u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) > 512 << 20 {
+            return;
+        }
+        let Ok(raw) = lz4_flex::decompress_size_prepended(&bytes) else { return };
+        let Ok(file) = postcard::from_bytes::<IndexFile>(&raw) else { return };
+        if file.version != INDEX_VERSION {
+            return; // old format: just rescan
+        }
         if let Ok(mut c) = self.cache.write() {
-            *c = file.folder_sizes.into_iter().map(|(k, v)| (PathBuf::from(k), v)).collect();
+            *c = file.entries.into_iter().map(|(k, v)| (PathBuf::from(k), v)).collect();
         }
     }
 
@@ -220,28 +237,30 @@ impl Indexer {
         if !self.cache_dirty.swap(false, Ordering::Relaxed) {
             return;
         }
-        let snapshot: HashMap<String, CachedFolder> = match self.cache.read() {
-            Ok(c) => {
-                let cutoff = now_secs().saturating_sub(PRUNE_SECS);
-                c.iter()
-                    .filter(|(_, v)| v.scanned_at >= cutoff)
-                    // A path that is not valid Unicode can't be stored faithfully (a lossy key
-                    // could collide with another folder's), so it is simply not cached on disk.
-                    .filter_map(|(k, v)| k.to_str().map(|k| (k.to_owned(), v.clone())))
-                    .collect()
-            }
-            Err(_) => return,
-        };
+        let cache = Arc::clone(&self.cache);
         let dir = dir.to_path_buf();
         let job = move || {
+            let raw = {
+                let Ok(c) = cache.read() else { return };
+                let cutoff = now_secs().saturating_sub(PRUNE_SECS);
+                let mut entries: Vec<(&str, &CachedFolder)> = c
+                    .iter()
+                    .filter(|(_, v)| v.scanned_at >= cutoff)
+                    .filter_map(|(k, v)| k.to_str().map(|k| (k, v))) // non-Unicode paths aren't cached on disk
+                    .collect();
+                entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                match postcard::to_stdvec(&IndexFileRef { version: INDEX_VERSION, entries }) {
+                    Ok(r) => r,
+                    Err(_) => return,
+                }
+            }; // read lock released here; compression and disk I/O happen without it
             if fs::create_dir_all(&dir).is_err() {
                 return;
             }
-            if let Ok(text) = serde_json::to_string(&IndexFile { folder_sizes: snapshot }) {
-                let tmp = dir.join(format!("{INDEX_FILE}.tmp"));
-                if fs::write(&tmp, text).is_ok() {
-                    let _ = fs::rename(&tmp, dir.join(INDEX_FILE));
-                }
+            let bytes = lz4_flex::compress_prepend_size(&raw);
+            let tmp = dir.join(format!("{INDEX_FILE}.tmp"));
+            if fs::write(&tmp, bytes).is_ok() {
+                let _ = fs::rename(&tmp, dir.join(INDEX_FILE));
             }
         };
         if wait {
@@ -252,7 +271,7 @@ impl Indexer {
     }
 }
 
-fn is_fresh(c: &CachedFolder, stamp: u128, now: u64) -> bool {
+fn is_fresh(c: &CachedFolder, stamp: u64, now: u64) -> bool {
     c.modified_ns == stamp && now.saturating_sub(c.scanned_at) < TTL_SECS
 }
 
@@ -260,18 +279,18 @@ struct Frame {
     path: PathBuf,
     rd: fs::ReadDir,
     total: u64,
-    stamp: u128,
+    stamp: u64,
 }
 
 enum Step {
     Add(u64),
-    Descend(PathBuf, u128),
+    Descend(PathBuf, u64),
     Skip,
     End,
 }
 
 /// Iterative post-order walk. Returns None if cancelled.
-fn scan(root: &Path, root_stamp: u128, cache: &Cache, generation: &AtomicU64, my_gen: u64, dirty: &AtomicBool) -> Option<u64> {
+fn scan(root: &Path, root_stamp: u64, cache: &Cache, generation: &AtomicU64, my_gen: u64, dirty: &AtomicBool) -> Option<u64> {
     let now = now_secs();
     let mut pending: Vec<(PathBuf, CachedFolder)> = Vec::new();
     let flush = |pending: &mut Vec<(PathBuf, CachedFolder)>| {
@@ -334,11 +353,8 @@ fn scan(root: &Path, root_stamp: u128, cache: &Cache, generation: &AtomicU64, my
                 }
             }
             Step::End => {
-                let depth = stack.len(); // counts the folder being finished
                 let done = stack.pop()?;
-                if depth <= KEEP_DEPTH || done.total >= KEEP_BYTES {
-                    pending.push((done.path, CachedFolder { size: done.total, modified_ns: done.stamp, scanned_at: now }));
-                }
+                pending.push((done.path, CachedFolder { size: done.total, modified_ns: done.stamp, scanned_at: now }));
                 match stack.last_mut() {
                     Some(parent) => parent.total = parent.total.saturating_add(done.total),
                     None => {
