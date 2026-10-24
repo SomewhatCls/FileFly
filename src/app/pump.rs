@@ -283,11 +283,6 @@ impl Explorer {
         if self.list_debounce.pending() || self.size_debounce.pending() {
             self.ui.request_repaint_after(Duration::from_millis(250));
         }
-        if reindex {
-            let force = reindex_force || std::mem::take(&mut self.reindex_force);
-            self.start_indexing(force);
-        }
-
         // The drive watcher thread polls on its own; it only needs to know whether the window is in use.
         let focused = self.ui.input(|i| i.focused);
         self.drive_ctl.set_focused(focused);
@@ -298,6 +293,10 @@ impl Explorer {
             } else {
                 self.ui.request_repaint_after(Duration::from_secs(16));
             }
+        }
+        if reindex {
+            let force = reindex_force || std::mem::take(&mut self.reindex_force);
+            self.start_indexing(force);
         }
     }
 
@@ -362,7 +361,12 @@ impl Explorer {
             self.indexer.set_limit_mb(self.cache_size.expect("The cache size will always be set."), self.unlimited_cache);
         }
 
-        let changed_backdrop = self.backdrop_transp != want;
+        let changed_backdrop = if self.backdrop_transp != want {
+            self.backdrop_transp = want;
+            true
+        }else {
+            false
+        };
 
         self.pal = Palette::new(
             theme,
@@ -402,6 +406,8 @@ impl Explorer {
         }
 
         //Minimum refresh rate
-        ctx.request_repaint_after(Duration::from_secs(1));
+        if ctx.input(|i| i.focused) {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
     }
 }
