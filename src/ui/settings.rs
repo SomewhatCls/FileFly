@@ -291,15 +291,51 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 ui.color_edit_button_srgb(&mut sp.s.custom_accent);
             });
         }
+        let is_windows_11:bool =
+            if cfg!(target_os = "windows") && System::kernel_version()
+                    .unwrap().as_str()
+                    .parse::<i32>()
+                    .expect("Failed to parse kernel version") >= 22000 {
+                        true
+            }else{
+                false
+            };
+
+        #[cfg(windows)]
         fl_divider(ui, m, pal);
-        fl_row(
-            ui,
-            m,
-            pal,
-            "Transparency effects",
-            Some("Use the Mica material behind the window (Windows 11)"),
-            |ui| fl_switch(ui, m, pal, &mut sp.s.use_mica),
-        );
+        fl_row(ui, m, pal, "Transparency effects", Some("Choose from available transparency effects"), |ui| {
+            let label = |t: TransparencyEffect| match t {
+                TransparencyEffect::Mica => "Mica",
+                TransparencyEffect::Acrylic => "Acrylic",
+                TransparencyEffect::None => "None",
+            };
+            // Makes selectable transparency effects dependent on Windows version.
+            egui::ComboBox::from_id_salt("transparency")
+                .width(m.s * 150.0)
+                .selected_text(label(sp.s.transparency_effect))
+                .show_ui(ui, |ui| {
+                    let effects = if is_windows_11 {
+                        vec![
+                            TransparencyEffect::Mica,
+                            TransparencyEffect::Acrylic,
+                            TransparencyEffect::None,
+                        ]
+                    } else {
+                        vec![
+                            TransparencyEffect::Acrylic,
+                            TransparencyEffect::None,
+                        ]
+                    };
+
+                    for t in effects {
+                        ui.selectable_value(
+                            &mut sp.s.transparency_effect,
+                            t,
+                            label(t),
+                        );
+                    }
+                });
+        });
     });
 
     // ---------------------------------------------------------------- Files
@@ -493,7 +529,7 @@ impl Explorer {
             st.left_drag_space = s.left_drag_space;
             st.use_system_accent = s.use_system_accent;
             st.custom_accent = s.custom_accent;
-            st.use_mica = s.use_mica;
+            st.transparency_effect = s.transparency_effect;
             st.show_hidden = s.show_hidden;
             st.date_format = s.date_format;
             st.network_drives = s.network_drives;

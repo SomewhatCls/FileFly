@@ -4,7 +4,7 @@ use crate::prelude::*;
 
 pub(crate) fn bar_frame(pal: &Palette, l: f32, r: f32, t: f32, b: f32) -> egui::Frame {
     egui::Frame::new()
-        .fill(if pal.mica {
+        .fill(if pal.transparency != TransparencyEffect::None {
             Color32::TRANSPARENT
         } else {
             pal.base
@@ -27,7 +27,7 @@ pub(crate) fn layer_frame(
     b: f32,
     round_top_left: bool,
 ) -> egui::Frame {
-    let cr = if round_top_left && pal.mica {
+    let cr = if round_top_left && pal.transparency != TransparencyEffect::None {
         CornerRadius {
             nw: radius * 2,
             ne: 0,

@@ -5,6 +5,7 @@ use eframe::egui::{
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+use crate::prelude::TransparencyEffect;
 // ----------------------------------------------------------------------------------------------
 // Accent colour (Windows "Accent color" setting)
 
@@ -154,10 +155,14 @@ pub fn terminate_now() -> ! {
 // ----------------------------------------------------------------------------------------------
 // Mica
 
-/// Applies Mica Alt (Win 11 22H2+), falling back to Mica (Win 11 21H2). Returns false if unavailable.
+/// Applies Mica Alt (Win 11 22H2+), falling back to Mica (Win 11 21H2), or Acrylic (Win 10 1803+). Returns false if unavailable.
 #[cfg(windows)]
-pub fn apply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool) -> bool {
-    window_vibrancy::apply_tabbed(window, Some(dark)).is_ok() || window_vibrancy::apply_mica(window, Some(dark)).is_ok()
+pub fn apply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool, transparency_effect: TransparencyEffect) -> bool {
+    if transparency_effect == TransparencyEffect::Mica {
+        window_vibrancy::apply_tabbed(window, Some(dark)).is_ok() || window_vibrancy::apply_mica(window, Some(dark)).is_ok()
+    } else {
+        window_vibrancy::apply_acrylic(window, Some(window_vibrancy::Color::default())).is_ok()
+    }
 }
 #[cfg(not(windows))]
 pub fn apply_backdrop(_window: &impl raw_window_handle::HasWindowHandle, _dark: bool) -> bool {
@@ -167,10 +172,18 @@ pub fn apply_backdrop(_window: &impl raw_window_handle::HasWindowHandle, _dark: 
 /// Clears the backdrop and applies it again. Re-applying an unchanged backdrop does nothing,
 /// which is why a blank window only recovered after minimise/restore.
 #[cfg(windows)]
-pub fn reapply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool) -> bool {
+pub fn reapply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool, transparency_effect: TransparencyEffect) -> bool {
     let _ = window_vibrancy::clear_tabbed(window);
     let _ = window_vibrancy::clear_mica(window);
-    apply_backdrop(window, dark)
+    let _ = window_vibrancy::clear_acrylic(window);
+    apply_backdrop(window, dark, transparency_effect)
+}
+
+#[cfg(windows)]
+pub fn clear_backdrop(frame: &eframe::Frame) {
+    let _ = window_vibrancy::clear_tabbed(frame);
+    let _ = window_vibrancy::clear_mica(frame);
+    let _ = window_vibrancy::clear_acrylic(frame);
 }
 #[cfg(not(windows))]
 pub fn reapply_backdrop(_w: &impl raw_window_handle::HasWindowHandle, _dark: bool) -> bool {
@@ -201,7 +214,7 @@ pub fn nudge_frame(_w: &impl raw_window_handle::HasWindowHandle) {}
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub dark: bool,
-    pub mica: bool,
+    pub transparency: TransparencyEffect,
     pub accent: Color32,
     pub on_accent: Color32,
     pub base: Color32,       // window background (only painted when Mica is unavailable)
@@ -238,15 +251,15 @@ fn luminance(c: Color32) -> f32 {
 }
 
 impl Palette {
-    pub fn new(theme: Theme, accent: Accent, mica: bool) -> Self {
+    pub fn new(theme: Theme, accent: Accent, transparency:TransparencyEffect) -> Self {
         let dark = theme == Theme::Dark;
         let acc = if dark { accent.light } else { accent.dark };
         let on_accent = if luminance(acc) > 0.6 { Color32::BLACK } else { Color32::WHITE };
         if dark {
             Self {
-                dark, mica, accent: acc, on_accent,
+                dark, transparency, accent: acc, on_accent,
                 base: Color32::from_rgb(60, 60, 60),
-                layer: if mica { a(55, 0.5) } else { Color32::from_rgb(40, 40, 40) },
+                layer: if transparency != TransparencyEffect::None { a(55, 0.5) } else { Color32::from_rgb(40, 40, 40) },
                 flyout: Color32::from_rgb(80, 80, 80),
                 text: Color32::WHITE,
                 text_secondary: a(255, 0.785),
@@ -266,9 +279,9 @@ impl Palette {
             }
         } else {
             Self {
-                dark, mica, accent: acc, on_accent,
+                dark, transparency, accent: acc, on_accent,
                 base: Color32::from_rgb(215, 215, 215),
-                layer: if mica { a(255, 0.6) } else { Color32::from_rgb(0xFB, 0xFB, 0xFB) },
+                layer: if transparency != TransparencyEffect::None { a(255, 0.6) } else { Color32::from_rgb(0xFB, 0xFB, 0xFB) },
                 flyout: Color32::from_rgb(230, 230, 230),
                 text: Color32::from_rgb(0x1A, 0x1A, 0x1A),
                 text_secondary: a(0, 0.6),
@@ -511,7 +524,7 @@ pub fn apply_style(ctx: &egui::Context, m: &Metrics, accent: Accent) {
         style.interaction.tooltip_delay = 0.5;
     });
     for theme in [Theme::Dark, Theme::Light] {
-        let pal = Palette::new(theme, accent, true);
+        let pal = Palette::new(theme, accent, TransparencyEffect::Mica);
         ctx.set_visuals_of(theme, visuals(&pal, m));
     }
 }
@@ -620,7 +633,7 @@ impl raw_window_handle::HasWindowHandle for Hwnd {
 /// backdrop, rounded corners and shadow as the main window. Returns false while no such window
 /// exists yet, so the caller can simply try again next frame.
 #[cfg(windows)]
-pub fn backdrop_by_title(title: &str, dark: bool, mica: bool) -> bool {
+pub fn backdrop_by_title(title: &str, dark: bool, transparency_effect: TransparencyEffect) -> bool {
     #[link(name = "user32")]
     unsafe extern "system" {
         fn EnumThreadWindows(tid: u32, f: unsafe extern "system" fn(isize, isize) -> i32, lparam: isize) -> i32;
@@ -647,9 +660,7 @@ pub fn backdrop_by_title(title: &str, dark: bool, mica: bool) -> bool {
     unsafe { EnumThreadWindows(GetCurrentThreadId(), visit, &mut s as *mut Search as isize) };
     for h in &s.found {
         let w = Hwnd(*h);
-        if mica {
-            apply_backdrop(&w, dark);
-        }
+        apply_backdrop(&w, dark, transparency_effect);
         style_frameless(&w);
     }
     !s.found.is_empty()
