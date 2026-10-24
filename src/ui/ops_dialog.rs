@@ -78,7 +78,7 @@ impl Explorer {
         let (m, pal) = (self.m, self.pal);
         let now = Instant::now();
         let ctx = ui.ctx().clone();
-        let transparency = self.backdrop_transp;
+        let transparency = self.backdrop_transparency;
         let width = m.s * 440.0;
         for op in self.ops.iter_mut() {
             if op.hidden || op.started.elapsed() < Duration::from_millis(500) {

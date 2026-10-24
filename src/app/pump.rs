@@ -336,8 +336,9 @@ impl Explorer {
 
         let theme = ctx.theme();
 
-        // What we want this frame
-        let want: Option<TransparencyEffect> = if self.transparency {
+        // wanted_transparency is the transparency set by the user in the settings.
+        // If transparency is disabled or None, wanted_transparency is None.
+        let wanted_transparency: Option<TransparencyEffect> = if self.transparency {
             match self.settings.transparency_effect {
                 TransparencyEffect::Mica => Some(TransparencyEffect::Mica),
                 TransparencyEffect::Acrylic => Some(TransparencyEffect::Acrylic),
@@ -345,6 +346,14 @@ impl Explorer {
             }
         } else {
             None
+        };
+
+        // True if the theme was changed.
+        let changed_theme = if self.settings.theme != self.theme_choice {
+            self.theme_choice = self.settings.theme;
+            true
+        } else {
+            false
         };
 
         // Sets the cache size for folder indexing to the new value, if it was changed
@@ -361,8 +370,8 @@ impl Explorer {
             self.indexer.set_limit_mb(self.cache_size.expect("The cache size will always be set."), self.unlimited_cache);
         }
 
-        let changed_backdrop = if self.backdrop_transp != want {
-            self.backdrop_transp = want;
+        let changed_backdrop = if self.backdrop_transparency != wanted_transparency {
+            self.backdrop_transparency = wanted_transparency;
             true
         }else {
             false
@@ -370,13 +379,13 @@ impl Explorer {
         self.pal = Palette::new(
             theme,
             accent,
-            want.unwrap(),
+            wanted_transparency.unwrap(),
         );
         // Re-apply a few times shortly after startup to beat the DWM race.
         const RETRY_AT_MS: [u64; 4] = [150, 600, 1500, 3000];
 
         let mut force = false;
-        if let Some(_effect) = want {
+        if let Some(_effect) = wanted_transparency {
             if let Some(&t) = RETRY_AT_MS.get(self.backdrop_retries) {
                 let elapsed = self.backdrop_start.elapsed().as_millis() as u64;
                 if elapsed >= t {
@@ -389,24 +398,21 @@ impl Explorer {
             }
         }
 
-        if changed_backdrop {
+        // Redraw the backdrop both when it or the theme changes.
+        if changed_backdrop || changed_theme {
             clear_window_transparency_effects(frame);
-            self.backdrop_retries = 0;
-            self.backdrop_start = Instant::now();
-            if let Some(effect) = want {
+            if let Some(effect) = wanted_transparency {
                 apply_backdrop(frame, self.pal.dark, effect);
                 nudge_frame(frame);
             }
+            ctx.request_repaint();
         } else if force {
             // Retry: reapply WITHOUT clearing first, to avoid flicker
-            if let Some(effect) = want {
+            if let Some(effect) = wanted_transparency {
                 apply_backdrop(frame, self.pal.dark, effect);
                 nudge_frame(frame);
             }
             ctx.request_repaint();
         }
-
-        //Minimum refresh rate
-        ctx.request_repaint_after(Duration::from_secs(1));
     }
 }

@@ -185,19 +185,6 @@ pub fn clear_window_transparency_effects(window: &impl raw_window_handle::HasWin
     // Not implemented yet.
 }
 
-#[cfg(windows)]
-pub fn clear_backdrop(frame: &eframe::Frame) {
-    let _ = window_vibrancy::clear_tabbed(frame);
-    let _ = window_vibrancy::clear_mica(frame);
-    let _ = window_vibrancy::clear_acrylic(frame);
-}
-
-#[cfg(not(windows))]
-pub fn clear_backdrop(frame: &eframe::Frame) {
-    // Do nothing.
-    // Open for future use if transparency on Linux becomes a consideration.
-}
-
 /// Makes DWM recompute the window frame (the same recomposition a minimise/restore causes).
 #[cfg(windows)]
 pub fn nudge_frame(window: &impl raw_window_handle::HasWindowHandle) {
