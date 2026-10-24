@@ -174,29 +174,15 @@ pub fn apply_backdrop(_window: &impl raw_window_handle::HasWindowHandle, dark: b
 /// Clears the backdrop and applies it again. Re-applying an unchanged backdrop does nothing,
 /// which is why a blank window only recovered after minimise/restore.
 #[cfg(windows)]
-pub fn reapply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool, transparency_effect: TransparencyEffect) -> bool {
+pub fn clear_window_transparency_effects(window: &impl raw_window_handle::HasWindowHandle) {
     let _ = window_vibrancy::clear_tabbed(window);
     let _ = window_vibrancy::clear_mica(window);
     let _ = window_vibrancy::clear_acrylic(window);
-    apply_backdrop(window, dark, transparency_effect)
 }
 
 #[cfg(not(windows))]
-pub fn reapply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool, transparency_effect: TransparencyEffect) -> bool {
-    apply_backdrop(window, dark, transparency_effect)
-}
-
-#[cfg(windows)]
-pub fn clear_backdrop(frame: &eframe::Frame) {
-    let _ = window_vibrancy::clear_tabbed(frame);
-    let _ = window_vibrancy::clear_mica(frame);
-    let _ = window_vibrancy::clear_acrylic(frame);
-}
-
-#[cfg(not(windows))]
-pub fn clear_backdrop(frame: &eframe::Frame) {
-    // Do nothing.
-    // Open for future use if transparency on Linux becomes a consideration.
+pub fn clear_window_transparency_effects(window: &impl raw_window_handle::HasWindowHandle) {
+    // Not implemented yet.
 }
 
 /// Makes DWM recompute the window frame (the same recomposition a minimise/restore causes).

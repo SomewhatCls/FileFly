@@ -81,10 +81,12 @@ pub(crate) struct Explorer {
     pub(crate) info_stamp: Instant,
     /// Windows transparency effects available (off in Battery Saver / when disabled in Settings).
     pub(crate) transparency: bool,
-    pub(crate) backdrop_transp: Option<TransparencyEffect>,
+    pub(crate) backdrop_transparency: Option<TransparencyEffect>,
     pub(crate) backdrop_start: Instant,
     pub(crate) backdrop_retries: usize,
     pub(crate) text_scale_checked: Instant,
+    /// The last known theme.
+    pub(crate) theme_choice: ThemeChoice,
     /// (when checked, whether another FileFly window is under the pointer) while dragging a tab.
     pub(crate) peer_under: (Instant, bool),
     /// Pane rectangles (tab id, screen rect) from the last frame: drop targets.
@@ -197,9 +199,10 @@ impl Explorer {
             own_info: None,
             info_stamp: Instant::now(),
             transparency: system_transparency(),
-            backdrop_transp: None,
+            backdrop_transparency: None,
             backdrop_start: Instant::now(),
             backdrop_retries: 0,
+            theme_choice: ThemeChoice::default(),
             text_scale_checked: Instant::now(),
             peer_under: (Instant::now(), false),
             pane_rects: Vec::new(),
