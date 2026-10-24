@@ -334,7 +334,6 @@ impl Explorer {
                 ctx.request_repaint();
             }
         }
-        ctx.request_repaint_after(Duration::from_secs(1));
 
         let theme = ctx.theme();
 
@@ -364,7 +363,6 @@ impl Explorer {
         }
 
         let changed_backdrop = self.backdrop_transp != want;
-        self.backdrop_transp = want;
 
         self.pal = Palette::new(
             theme,
@@ -387,7 +385,7 @@ impl Explorer {
                 }
             }
         }
-        #[cfg(windows)]
+
         if changed_backdrop {
             clear_backdrop(frame);
             if let Some(effect) = want {
@@ -402,5 +400,8 @@ impl Explorer {
                 nudge_frame(frame);
             }
         }
+
+        //Minimum refresh rate
+        ctx.request_repaint_after(Duration::from_secs(1));
     }
 }

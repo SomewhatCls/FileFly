@@ -164,8 +164,10 @@ pub fn apply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bo
         window_vibrancy::apply_acrylic(window, Some(window_vibrancy::Color::default())).is_ok()
     }
 }
+
+/// Transparency on non-Windows systems has not been implemented.
 #[cfg(not(windows))]
-pub fn apply_backdrop(_window: &impl raw_window_handle::HasWindowHandle, _dark: bool) -> bool {
+pub fn apply_backdrop(_window: &impl raw_window_handle::HasWindowHandle, dark: bool, transparency_effect: TransparencyEffect) -> bool {
     false
 }
 
@@ -179,11 +181,22 @@ pub fn reapply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: 
     apply_backdrop(window, dark, transparency_effect)
 }
 
+#[cfg(not(windows))]
+pub fn reapply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bool, transparency_effect: TransparencyEffect) -> bool {
+    apply_backdrop(window, dark, transparency_effect)
+}
+
 #[cfg(windows)]
 pub fn clear_backdrop(frame: &eframe::Frame) {
     let _ = window_vibrancy::clear_tabbed(frame);
     let _ = window_vibrancy::clear_mica(frame);
     let _ = window_vibrancy::clear_acrylic(frame);
+}
+
+#[cfg(not(windows))]
+pub fn clear_backdrop(frame: &eframe::Frame) {
+    // Do nothing.
+    // Open for future use if transparency on Linux becomes a consideration.
 }
 
 /// Makes DWM recompute the window frame (the same recomposition a minimise/restore causes).
