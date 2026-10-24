@@ -69,7 +69,7 @@ impl eframe::App for Explorer {
         ui.data_mut(|d| d.insert_temp(Id::unique("admin_retry_tab"), retry_tab));
         let painter = ui.layer_painter(egui::LayerId::background());
 
-        if self.mica {
+        if self.pal.transparency != TransparencyEffect::None {
             painter.rect_filled(
                 rect,
                 8.0,
@@ -201,7 +201,7 @@ impl eframe::App for Explorer {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // Every panel paints its own background; Mica shows through
+        // Every panel paints its own background; Mica/Acrylic shows through
         // the transparent parts.
         [0.0, 0.0, 0.0, 0.0]
     }

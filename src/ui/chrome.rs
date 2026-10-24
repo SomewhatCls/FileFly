@@ -56,7 +56,7 @@ pub(crate) fn band_frame(pal: &Palette, nw: u8, l: f32, r: f32, t: f32, b: f32) 
     egui::Frame::new()
         .fill(pal.layer)
         .corner_radius(CornerRadius {
-            nw: if pal.mica { nw } else { 0 },
+            nw: if pal.transparency != TransparencyEffect::None { nw } else { 0 },
             ne: 0,
             sw: 0,
             se: 0,

@@ -337,40 +337,56 @@ impl Explorer {
         ctx.request_repaint_after(Duration::from_secs(1));
 
         let theme = ctx.theme();
-        let want_mica = self.settings.use_mica && self.transparency;
-        let changed = self.backdrop_theme != Some(theme)
-            || self.backdrop_transp != Some(want_mica);
 
-        // Start-up kicks: the first apply can land before DWM has the window's surface ready, and
-        // repeating an identical apply does nothing, so each kick forces a rebuild. Each runs once.
-        const KICKS_MS: [u128; 4] = [150, 600, 1500, 3000];
-        let kick = want_mica
-            && KICKS_MS
-            .get(self.backdrop_kicks)
-            .is_some_and(|&t| self.started.elapsed().as_millis() >= t);
-        if kick {
-            self.backdrop_kicks += 1;
+        // What we want this frame
+        let want: Option<TransparencyEffect> = if self.transparency {
+            match self.settings.transparency_effect {
+                TransparencyEffect::Mica => Some(TransparencyEffect::Mica),
+                TransparencyEffect::Acrylic => Some(TransparencyEffect::Acrylic),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let changed = self.backdrop_transp != want;
+        self.backdrop_transp = want;
+
+        self.pal = Palette::new(
+            theme,
+            accent,
+            want.unwrap_or(TransparencyEffect::None),
+        );
+        // Re-apply a few times shortly after startup to beat the DWM race.
+        const RETRY_AT_MS: [u64; 4] = [150, 600, 1500, 3000];
+
+        let mut force = false;
+        if let Some(effect) = want {
+            if let Some(&t) = RETRY_AT_MS.get(self.backdrop_retries) {
+                let elapsed = self.backdrop_start.elapsed().as_millis() as u64;
+                if elapsed >= t {
+                    self.backdrop_retries += 1;
+                    force = true;
+                } else {
+                    // egui is reactive: without this, no frame runs to hit the next deadline
+                    ctx.request_repaint_after(std::time::Duration::from_millis(t - elapsed));
+                }
+            }
         }
-        let focus_gained = ctx.input(|i| i.focused) && !self.was_focused;
-        self.was_focused = ctx.input(|i| i.focused);
 
-        if changed || kick || (want_mica && focus_gained) {
-            let dark = theme == egui::Theme::Dark;
-            let ok = want_mica
-                && if kick { reapply_backdrop(frame, dark) } else { apply_backdrop(frame, dark) };
-            style_frameless(frame);
-            if kick {
+        if changed {
+            clear_backdrop(frame);
+            if let Some(effect) = want {
+                reapply_backdrop(frame, self.pal.dark, effect);
                 nudge_frame(frame);
             }
-            self.mica = ok;
-            self.backdrop_theme = Some(theme);
-            self.backdrop_transp = Some(want_mica);
+            ctx.request_repaint();
+        } else if force {
+            // Retry: reapply WITHOUT clearing first, to avoid flicker
+            if let Some(effect) = want {
+                reapply_backdrop(frame, self.pal.dark, effect);
+                nudge_frame(frame);
+            }
         }
-        if want_mica && self.backdrop_kicks < KICKS_MS.len() {
-            ctx.request_repaint_after(Duration::from_millis(100)); // keep ticking until the kicks are done
-        }
-        self.pal = Palette::new(theme, accent, self.mica);
     }
-
-    // ------------------------------------------------------------------ shortcuts
 }

@@ -78,7 +78,7 @@ impl Explorer {
         let (m, pal) = (self.m, self.pal);
         let now = Instant::now();
         let ctx = ui.ctx().clone();
-        let transparency = self.transparency;
+        let transparency = self.backdrop_transp;
         let width = m.s * 440.0;
         for op in self.ops.iter_mut() {
             if op.hidden || op.started.elapsed() < Duration::from_millis(500) {
@@ -115,9 +115,9 @@ impl Explorer {
                 // Backdrop over the whole window (the native window only exists once it has been
                 // shown, so this is retried until it works and redone when the theme changes).
                 let key = Id::unique(("file-op-backdrop", op.id));
-                let want = (pal.dark, transparency);
-                if ui.ctx().data(|d| d.get_temp::<(bool, bool)>(key)) != Some(want)
-                    && backdrop_by_title(&win_title, pal.dark, transparency)
+                let want = (pal.dark, transparency.expect("A transparency effect should always be set"));
+                if ui.ctx().data(|d| d.get_temp::<(bool, TransparencyEffect)>(key)) != Some(want)
+                    && backdrop_by_title(&win_title, pal.dark, transparency.expect("A transparency effect should always be set"))
                 {
                     ui.ctx().data_mut(|d| d.insert_temp(key, want));
                 }

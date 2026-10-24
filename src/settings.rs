@@ -10,6 +10,14 @@ pub(crate) enum ThemeChoice {
     Dark,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub (crate) enum TransparencyEffect {
+    None,
+    Acrylic,
+    #[default]
+    Mica,
+}
+
 /// A split layout in a form that can be stored: leaves are indices into `Session::tabs`.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum SavedTile {
@@ -78,7 +86,7 @@ pub(crate) struct Session {
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) font_size: f32,
-    pub(crate) use_mica: bool,
+    pub(crate) transparency_effect: TransparencyEffect,
     pub(crate) follow_text_scale: bool,
     pub(crate) use_system_accent: bool,
     pub(crate) custom_accent: [u8; 3],
@@ -129,7 +137,7 @@ impl Default for Settings {
             session: Session::default(),
             maximized: false,
             folder_icons: HashMap::new(),
-            use_mica: true,
+            transparency_effect: TransparencyEffect::Mica,
         }
     }
 }
