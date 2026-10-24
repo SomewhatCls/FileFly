@@ -11,7 +11,8 @@ mod imp {
     use winreg::{enums::*, RegKey};
 
     /// Classes whose `open` verb is redirected: normal folders, the general folder class, drive roots.
-    const CLASSES: [&str; 3] = ["Directory", "Folder", "Drive"];
+    const CLASSES: [&str; 2] = ["Directory", "Drive"];
+    const LEGACY_CLASSES: [&str; 1] = ["Folder"];
     const MARKER: &str = "FileFlyManaged";
 
     fn shell_path(class: &str) -> String {
@@ -39,6 +40,33 @@ mod imp {
         unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, 0, std::ptr::null(), std::ptr::null()) };
     }
 
+    fn remove_class(hkcu: &RegKey, class: &str) -> io::Result<()> {
+        let shell = shell_path(class);
+        let open_path = format!(r"{shell}\open");
+
+        // Only remove what FileFly wrote.
+        let ours = hkcu
+            .open_subkey(&open_path)
+            .map(|k| k.get_value::<u32, _>(MARKER).is_ok())
+            .unwrap_or(false);
+        if !ours {
+            return Ok(());
+        }
+        hkcu.delete_subkey_all(&open_path)?;
+
+        if let Ok(key) = hkcu.open_subkey_with_flags(&shell, KEY_READ | KEY_WRITE) {
+            let is_open = key
+                .get_value::<String, _>("")
+                .map_or(false, |v| v.eq_ignore_ascii_case("open"));
+            if is_open {
+                let _ = key.delete_value("");
+            }
+        }
+        // Removes the `shell` key only if nothing else lives in it.
+        let _ = hkcu.delete_subkey(&shell);
+        Ok(())
+    }
+
     /// True when the keys written by FileFly exist and point at *this* executable.
     pub fn is_default() -> bool {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -58,23 +86,23 @@ mod imp {
     pub fn set_default() -> io::Result<()> {
         let cmd = command()?;
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+        // Undo what older versions wrote, so existing users get fixed on the next apply.
+        for class in LEGACY_CLASSES {
+            remove_class(&hkcu, class)?;
+        }
+
         for class in CLASSES {
             let shell = shell_path(class);
 
-            // Default verb of the class.
             let (shell_key, _) = hkcu.create_subkey(&shell)?;
             shell_key.set_value("", &"open")?;
 
-            // The verb itself, with the ownership marker.
             let (open, _) = hkcu.create_subkey(format!(r"{shell}\open"))?;
             open.set_value(MARKER, &1u32)?;
 
             let (command_key, _) = hkcu.create_subkey(format!(r"{shell}\open\command"))?;
             command_key.set_value("", &cmd)?;
-            if class == "Folder" {
-                // Without the empty DelegateExecute, Windows keeps using Explorer's built-in handler.
-                command_key.set_value("DelegateExecute", &"")?;
-            }
         }
         notify_shell();
         Ok(())
@@ -82,30 +110,8 @@ mod imp {
 
     pub fn restore_default() -> io::Result<()> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        for class in CLASSES {
-            let shell = shell_path(class);
-            let open_path = format!(r"{shell}\open");
-
-            // Only remove what FileFly wrote.
-            let ours = hkcu
-                .open_subkey(&open_path)
-                .map(|k| k.get_value::<u32, _>(MARKER).is_ok())
-                .unwrap_or(false);
-            if !ours {
-                continue;
-            }
-            hkcu.delete_subkey_all(&open_path)?;
-
-            if let Ok(key) = hkcu.open_subkey_with_flags(&shell, KEY_READ | KEY_WRITE) {
-                let is_open = key
-                    .get_value::<String, _>("")
-                    .map_or(false, |v| v.eq_ignore_ascii_case("open"));
-                if is_open {
-                    let _ = key.delete_value("");
-                }
-            }
-            // Removes the `shell` key only if nothing else lives in it.
-            let _ = hkcu.delete_subkey(&shell);
+        for class in CLASSES.iter().chain(LEGACY_CLASSES.iter()) {
+            remove_class(&hkcu, class)?;
         }
         notify_shell();
         Ok(())
