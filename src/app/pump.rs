@@ -379,7 +379,7 @@ impl Explorer {
         self.pal = Palette::new(
             theme,
             accent,
-            wanted_transparency.unwrap(),
+            wanted_transparency.unwrap_or(TransparencyEffect::None),
         );
         // Re-apply a few times shortly after startup to beat the DWM race.
         const RETRY_AT_MS: [u64; 4] = [150, 600, 1500, 3000];
@@ -393,7 +393,7 @@ impl Explorer {
                     force = true;
                 } else {
                     // egui is reactive: without this, no frame runs to hit the next deadline
-                    ctx.request_repaint_after(std::time::Duration::from_millis(t - elapsed));
+                    ctx.request_repaint_after(Duration::from_millis(t - elapsed));
                 }
             }
         }
