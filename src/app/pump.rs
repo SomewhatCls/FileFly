@@ -349,7 +349,21 @@ impl Explorer {
             None
         };
 
-        let changed = self.backdrop_transp != want;
+        // Sets the cache size for folder indexing to the new value, if it was changed
+        // If cache size hasn't been set yet, set it to the settings value.
+        let cache_change = Some(self.settings.index_ram) != self.cache_size;
+        let cache_unlimited_change = self.unlimited_cache != self.settings.unlimited_cache;
+        if  cache_change || cache_unlimited_change {
+            if cache_change {
+                self.cache_size = Some(self.settings.index_ram);
+            }
+            if cache_unlimited_change {
+                self.unlimited_cache = self.settings.unlimited_cache;
+            }
+            self.indexer.set_limit_mb(self.cache_size.expect("The cache size will always be set."), self.unlimited_cache);
+        }
+
+        let changed_backdrop = self.backdrop_transp != want;
         self.backdrop_transp = want;
 
         self.pal = Palette::new(
@@ -361,7 +375,7 @@ impl Explorer {
         const RETRY_AT_MS: [u64; 4] = [150, 600, 1500, 3000];
 
         let mut force = false;
-        if let Some(effect) = want {
+        if let Some(_effect) = want {
             if let Some(&t) = RETRY_AT_MS.get(self.backdrop_retries) {
                 let elapsed = self.backdrop_start.elapsed().as_millis() as u64;
                 if elapsed >= t {
@@ -373,8 +387,8 @@ impl Explorer {
                 }
             }
         }
-
-        if changed {
+        #[cfg(windows)]
+        if changed_backdrop {
             clear_backdrop(frame);
             if let Some(effect) = want {
                 reapply_backdrop(frame, self.pal.dark, effect);

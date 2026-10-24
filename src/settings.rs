@@ -102,6 +102,8 @@ pub(crate) struct Settings {
     pub(crate) search_threads: usize,
     pub(crate) max_search_results: usize,
     pub(crate) index_dir: Option<PathBuf>,
+    pub(crate) index_ram: usize,
+    pub(crate) unlimited_cache: bool,
     /// Widths (at 14 pt text) of Date modified, Type, Size.
     pub(crate) col_widths: [f32; 3],
     /// Inner size of the window when it was last closed (points), and whether it was maximised.
@@ -130,6 +132,8 @@ impl Default for Settings {
             search_threads: 4_usize,
             max_search_results: 100_000_usize,
             index_dir: None,
+            index_ram: 64,
+            unlimited_cache: true,
             col_widths: [150.0, 110.0, 90.0],
             left_drag_space: false,
             window_size: None,

@@ -72,6 +72,8 @@ pub(crate) struct Explorer {
     /// What the folder-size indexer was last started for; avoids restarting an identical scan.
     pub(crate) index_sig: Option<(u64, usize)>,
     pub(crate) reindex_force: bool,
+    pub(crate) cache_size: Option<usize>,
+    pub(crate) unlimited_cache: bool,
 
     /// Other FileFly windows (tab hand-over).
     pub(crate) peers: Peers,
@@ -80,7 +82,7 @@ pub(crate) struct Explorer {
     /// Windows transparency effects available (off in Battery Saver / when disabled in Settings).
     pub(crate) transparency: bool,
     pub(crate) backdrop_transp: Option<TransparencyEffect>,
-    pub(crate) backdrop_start: std::time::Instant,
+    pub(crate) backdrop_start: Instant,
     pub(crate) backdrop_retries: usize,
     pub(crate) text_scale_checked: Instant,
     /// (when checked, whether another FileFly window is under the pointer) while dragging a tab.
@@ -111,8 +113,8 @@ impl Explorer {
             .clone()
             .filter(|p| p.is_dir())
             .unwrap_or_else(app_dir);
-        let indexer = Indexer::new(ui.clone(), idx_tx, &index_dir);
-        let watcher = DirWatcher::new(ui.clone());
+        let indexer = Indexer::new(ui.clone(), idx_tx, &index_dir, settings.index_ram);
+        let watcher =    DirWatcher::new(ui.clone(), indexer.change_sink());
         std::thread::spawn(|| {
             // Leftovers of a crashed run: unpacked zips, and half-finished copy/move/zip temp items.
             sweep_old_archive_caches();
@@ -189,6 +191,8 @@ impl Explorer {
             tab_drag: None,
             index_sig: None,
             reindex_force: false,
+            cache_size: None,
+            unlimited_cache: false,
             peers: Peers::new(ui.clone(), &app_dir()),
             own_info: None,
             info_stamp: Instant::now(),
@@ -275,6 +279,4 @@ impl Explorer {
         // A tree that ends up as a single pane is just the normal view (fix_tiles handles it).
         self.tiles = ses.tiles.and_then(|t| t.to_tile(&ids));
     }
-
-    // ------------------------------------------------------------------ navigation
 }
