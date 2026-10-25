@@ -63,6 +63,16 @@ impl GitPaths {
 }
 
 // Checks if git exists on the system.
+#[cfg(target_os = "windows")]
+pub fn git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+#[cfg(not(target_os = "windows"))]
 pub fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
