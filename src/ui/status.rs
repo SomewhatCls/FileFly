@@ -114,33 +114,45 @@ impl Explorer {
 
                     // If the window runs with administrator rights, notify the user.
                     // If it is an archive path, display "Read-only".
-                    if is_elevated() {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if is_elevated() {
                             ui.label(
                                 RichText::new("Administrator")
                                     .color(pal.accent)
                                     .strong()
-                                    .size(m.font * 0.93),
+                                    .extra_letter_spacing(0.5)
+                                    .size(m.font),
                             );
-                            if is_archive_path(&*self.tabs[self.active].dir) {
-                                ui.label(
-                                    RichText::new("Read-only")
-                                        .color(pal.text_secondary)
-                                        .strong()
-                                        .size(m.font * 0.93),
-                                );
-                            }
-                        });
-                    }else if is_archive_path(&*self.tabs[self.active].dir) {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        }
+                        if is_archive_path(&*self.tabs[self.active].dir)  {
                             ui.label(
                                 RichText::new("Read-only")
                                     .color(pal.text_secondary)
                                     .strong()
-                                    .size(m.font * 0.93),
+                                    .size(m.font),
                             );
-                        });
-                    }
+                        }
+                       if let Some(git_cache) = &mut self.git_cache {
+                           let git_path =  git_cache.check_for_git(&*self.tabs[self.active].dir.clone());
+                            if git_path != None {
+                                let branch =  get_head(&git_path.unwrap().as_path());
+                                let name: Option<&str> = match &branch {
+                                    Some(Head::Branch(name)) => Some(name.as_str()),
+                                    _ => None,
+                                };
+                                if name != None {
+                                    ui.label(
+                                        RichText::new(name.unwrap())
+                                            .color(pal.text_secondary)
+                                            .strong()
+                                            .size(m.font),
+                                    );
+                                    let (rect, _) = ui.allocate_exact_size(vec2(m.pad, m.pad), Sense::hover());
+                                    draw_icon(ui, rect.center(), m.small_icon, "git_branch", pal.text_secondary);
+                                }
+                            }
+                       }
+                    });
                 });
             });
     }

@@ -301,7 +301,7 @@ pub fn draw_system_icon(ui: &Ui, center: Pos2, size: f32, e: &Entry, tint: Color
     draw_path_icon(ui, center, size, &e.icon_key, &e.path, fallback_icon_name(e), tint);
 }
 
-/// Built-in SVG icon (moved here from main.rs, so delete it there).
+/// Built-in SVG icon
 pub fn draw_icon(ui: &Ui, center: Pos2, size: f32, name: &str, tint: Color32) {
     egui::Image::new(icon_source(name))
         .tint(tint)
@@ -309,7 +309,6 @@ pub fn draw_icon(ui: &Ui, center: Pos2, size: f32, name: &str, tint: Color32) {
 }
 
 /// Looks up an embedded SVG by name. Unknown names fall back to the generic file icon.
-/// DEPRECATED: FileFly will now always prefer OS provided icons over its default fallbacks listed below.
 pub fn icon_source(name: &str) -> egui::ImageSource<'static> {
     match name {
         "app" => egui::include_image!("../assets/app.svg"),
@@ -357,6 +356,7 @@ pub fn icon_source(name: &str) -> egui::ImageSource<'static> {
         "videos" => egui::include_image!("../assets/videos.svg"),
         "restore" => egui::include_image!("../assets/restore.svg"),
         "empty_bin" => egui::include_image!("../assets/empty_bin.svg"),
+        "git_branch" => egui::include_image!("../assets/git_branch.svg"),
         _ => egui::include_image!("../assets/file.svg"),
     }
 }
