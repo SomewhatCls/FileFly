@@ -201,6 +201,26 @@ fn fetch(repo: &Path, remote: Option<&str>) -> Result<String, String>{
     }
 }
 
+
+/// Executes the given git command with args.
+/// Throws an error for illegal commands.
+#[cfg(target_os = "windows")]
+fn command(repo: &Path,  args: &[&str]) -> Result<String, String>{
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn command(repo: &Path,  args: &[&str]) -> Result<String, String>{
     let output = Command::new("git")
         .arg("-C")
