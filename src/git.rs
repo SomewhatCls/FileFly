@@ -4,28 +4,42 @@ use std::process::Command;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
 /// Windows-specific Import and constant to hide the console window.
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use crate::prelude::egui;
+
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Contains information about the current HEAD of a git repository.
 /// This can either be a detached HEAD or a branch.
-pub enum Head{
+#[derive(Clone, Debug, PartialEq)]
+pub enum Head {
     Detached(String),
     Branch(String),
 }
+
 
 /// Enum representing different Git commands.
 pub enum GitCommand {
     Checkout { branch: String },
     Branch { name: String, switch_to: bool },
-    Add { paths: Vec<String> },
+    Add { paths: Vec<PathBuf> },
     Commit { message: String },
     Push { remote: String, branch: String, set_upstream: bool },
     Fetch { remote: Option<String> },
+}
+
+/// Struct for branches and their upstream.
+#[derive(Clone, Debug)]
+pub struct Branch {
+    pub name: String,
+    pub remote: Option<String>,
+    pub tracking: Option<String>,
 }
 
 /// GitPaths caches which folders are git repositories.
@@ -35,7 +49,7 @@ pub struct GitPaths {
 }
 
 impl GitPaths {
-     pub fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             cache: HashMap::new(),
         }
@@ -62,6 +76,157 @@ impl GitPaths {
     }
 }
 
+
+/// Records the current state of a git repository in a directory.
+#[derive(Clone, Debug)]
+pub struct GitSnapshot {
+    pub root: PathBuf,
+    pub head: Option<Head>,
+    pub branches: Vec<Branch>,
+    pub staged_files: usize,
+}
+
+/// Number of files staged for a commit.
+pub fn staged_count(repo: &Path) -> usize {
+    command(repo, &["diff", "--cached", "--name-only"])
+        .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0)
+}
+
+fn take_snapshot(root: &Path) -> GitSnapshot {
+    GitSnapshot {
+        root: root.to_path_buf(),
+        head: get_head(root),
+        branches: list_local_branches(root).unwrap_or_default(),
+        staged_files: staged_count(root),
+    }
+}
+
+/// Limits the frequency of local git repo existence checks.
+const REFRESH_EVERY: Duration = Duration::from_secs(5);
+
+/// Provides all the information the GUI needs regarding the current dirs git state.
+pub struct GitState {
+    paths: GitPaths,
+    root: Option<PathBuf>,
+    last_dir: Option<PathBuf>,
+    last_refresh: Instant,
+    pending: Option<Receiver<GitSnapshot>>,
+    op: Option<Receiver<Result<String, String>>>,
+    pub snapshot: Option<GitSnapshot>,
+    pub error: Option<String>,
+    /// Set after a successful checkout so the UI can reload the file listing.
+    pub switched: bool,
+}
+
+impl GitState {
+    pub fn new() -> Self {
+        Self {
+            paths: GitPaths::new(),
+            root: None,
+            last_dir: None,
+            last_refresh: Instant::now(),
+            pending: None,
+            op: None,
+            snapshot: None,
+            error: None,
+            switched: false,
+        }
+    }
+
+    pub fn busy(&self) -> bool {
+        self.op.is_some()
+    }
+
+    /// Forcefully refreshes the git state.
+    pub fn request_refresh(&mut self, ctx: &egui::Context) {
+        self.pending = None; // Drops any occurring refresh.
+        self.start_refresh(ctx);
+    }
+
+    /// Call once per frame unless the directory changed.
+    pub fn update(&mut self, ctx: &egui::Context, dir: &Path) {
+        // Finished background refresh?
+        if let Some(rx) = &self.pending {
+            match rx.try_recv() {
+                Ok(snap) => {
+                    // Ignore results for a repo we've already navigated away from.
+                    if self.root.as_deref() == Some(snap.root.as_path()) {
+                        self.snapshot = Some(snap);
+                    }
+                    self.last_refresh = Instant::now();
+                    self.pending = None;
+                }
+                Err(TryRecvError::Disconnected) => self.pending = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+
+        // Checks checkout state.
+        if let Some(rx) = &self.op {
+            match rx.try_recv() {
+                Ok(res) => {
+                    self.switched = res.is_ok();
+                    self.error = res.err();
+                    self.op = None;
+                    self.pending = None;
+                    self.start_refresh(ctx);
+                }
+                Err(TryRecvError::Disconnected) => self.op = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+
+        // Forcibly refreshes git repo existence if the directory changed.
+        if self.last_dir.as_deref() != Some(dir) {
+            self.last_dir = Some(dir.to_path_buf());
+            let root = self.paths.check_for_git(dir);
+            if root != self.root {
+                self.root = root;
+                self.snapshot = None;
+                self.pending = None;
+                self.error = None;
+                self.start_refresh(ctx);
+            }
+        }
+
+        // Picks up changes made outside FileFly.
+        if self.root.is_some() {
+            if self.pending.is_none() && self.op.is_none()
+                && self.last_refresh.elapsed() > REFRESH_EVERY
+            {
+                self.start_refresh(ctx);
+            }
+            ctx.request_repaint_after(REFRESH_EVERY);
+        }
+    }
+
+    fn start_refresh(&mut self, ctx: &egui::Context) {
+        let Some(root) = self.root.clone() else { return };
+        if self.pending.is_some() { return; }
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(take_snapshot(&root));
+            ctx.request_repaint(); // wake egui so it sees the result
+        });
+        self.pending = Some(rx);
+    }
+
+    pub fn git_async(&mut self, ctx: &egui::Context, command: GitCommand) {
+        let Some(root) = self.root.clone() else { return };
+        if self.op.is_some() { return; }
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let res = git(command, &root);
+            let _ = tx.send(res);
+            ctx.request_repaint();
+        });
+        self.op = Some(rx);
+    }
+}
+
 // Checks if git exists on the system.
 #[cfg(target_os = "windows")]
 pub fn git_available() -> bool {
@@ -83,27 +248,18 @@ pub fn git_available() -> bool {
 
 /// Returns the current HEAD of a git repository.
 pub fn get_head(dir: &Path) -> Option<Head>{
-    let dot_git = dir.join(".git");
-    let head = fs::read_to_string(dot_git.join("HEAD")).ok()?;
-    let head = head.trim();
-
-    if let Some(target) = head.strip_prefix("ref:") {
-        let target = target.trim();
-        let name = target.strip_prefix("refs/heads/").unwrap_or(target);
-        Some(Head::Branch(name.to_string()))
-    } else if !head.is_empty() {
-        Some(Head::Detached(head.to_string()))
-    } else {
-        None
+    if let Ok(res) = command(dir, &["symbolic-ref", "--short", "-q", "HEAD"]) {
+        let head = res.trim();
+        if !head.is_empty() {
+            return Some(Head::Branch(head.to_string()));
+        }
     }
-}
-
-
-/// Struct for branches and their upstream.
-pub struct Branch {
-    pub name: String,
-    pub remote: Option<String>,
-    pub tracking: Option<String>,
+    // Detached HEAD fallback
+    command(dir, &["rev-parse", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(Head::Detached)
 }
 
 ///  Returns the local branches of the current repository.
@@ -141,8 +297,8 @@ fn ref_names(repo: &Path, namespace: &str) -> Result<Vec<String>, String> {
     Ok(out.lines().map(String::from).collect())
 }
 
-/// Passes commands to the git executable.
-pub fn git(command: GitCommand, repo: &Path, args: Vec<String>) -> Result<String, String> {
+/// Parses commands for the git executable.
+pub fn git(command: GitCommand, repo: &Path) -> Result<String, String> {
     match command{
         GitCommand::Checkout { branch } => checkout(repo, &branch),
         GitCommand::Branch { name, switch_to } => branch(repo, &name, switch_to),
@@ -161,17 +317,20 @@ fn checkout(repo: &Path,  branch: &str) -> Result<String, String>{
 /// Allows branch creation.
 /// If `switch_to` is true, switches to the newly created branch.
 fn branch(repo: &Path, name: &str, switch_to: bool) -> Result<String, String>{
-    let mut args = vec!["branch"];
     if switch_to {
-        command(repo, &["branch", "-b", name])
+        command(repo, &["switch", "-c", name])
     }else{
         command(repo, &["branch", name])
     }
 }
 
 /// Adds files to the staging area.
-fn add(repo: &Path, paths: &[String]) -> Result<String, String>{
+fn add(repo: &Path, path_buf: &Vec<PathBuf>) -> Result<String, String>{
     let mut args = vec!["add", "--"];
+    let mut paths: Vec<String> = path_buf
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
     args.extend(paths.iter().map(String::as_str));
     command(repo, &args)
 }
@@ -205,10 +364,10 @@ fn fetch(repo: &Path, remote: Option<&str>) -> Result<String, String>{
 /// Executes the given git command with args.
 /// Throws an error for illegal commands.
 #[cfg(target_os = "windows")]
-fn command(repo: &Path,  args: &[&str]) -> Result<String, String>{
+fn command(dir: &Path,  args: &[&str]) -> Result<String, String>{
     let output = Command::new("git")
         .arg("-C")
-        .arg(repo)
+        .arg(dir)
         .args(args)
         .creation_flags(CREATE_NO_WINDOW)
         .output()

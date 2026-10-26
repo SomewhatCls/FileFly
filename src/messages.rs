@@ -89,6 +89,10 @@ pub(crate) enum Action {
     /// "Extract to…": ask for a destination folder (see picker.rs), then unpack there.
     ExtractTo(Vec<PathBuf>),
     ToggleHidden,
+    GitPull(PathBuf),
+    GitPush(PathBuf),
+    GitCommit(PathBuf),
+    GitAdd(Vec<PathBuf>),
     OpenSettings,
     OpenRecycleBin,
     PinQuick(PathBuf),
