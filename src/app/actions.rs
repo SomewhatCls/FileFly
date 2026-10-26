@@ -354,18 +354,6 @@ impl Explorer {
                 self.settings_dirty = true;
                 self.reload_all();
             }
-            Action::GitAdd(added) => {
-
-            }
-            Action::GitCommit(added) => {
-
-            }
-            Action::GitPush(added) => {
-
-            }
-            Action::GitPull(added) => {
-                
-            }
             Action::OpenSettings => self.open_settings(),
             Action::PinQuick(p) => self.pin_quick(p),
             Action::UnpinQuick(p) => self.unpin_quick(&p),

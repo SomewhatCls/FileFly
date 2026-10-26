@@ -357,10 +357,6 @@ pub fn icon_source(name: &str) -> egui::ImageSource<'static> {
         "restore" => egui::include_image!("../assets/restore.svg"),
         "empty_bin" => egui::include_image!("../assets/empty_bin.svg"),
         "git_branch" => egui::include_image!("../assets/git_branch.svg"),
-        "git_add" => egui::include_image!("../assets/git_add.svg"),
-        "git_commit" => egui::include_image!("../assets/git_commit.svg"),
-        "git_pull" => egui::include_image!("../assets/git_pull.svg"),
-        "git_push" => egui::include_image!("../assets/git_push.svg"),
         _ => egui::include_image!("../assets/file.svg"),
     }
 }

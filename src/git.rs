@@ -69,10 +69,10 @@ impl GitPaths {
         result
     }
 
-    /// Used when a new git repo is initialized/cloned.
-    pub fn refresh_cache(&mut self) {
-        self.cache.clear();
-    }
+    // Used when a new git repo is initialized/cloned.
+    //pub fn refresh_cache(&mut self) {
+    //    self.cache.clear();
+    //}
 }
 
 
@@ -290,13 +290,6 @@ pub fn list_local_branches(repo: &Path) -> Result<Vec<Branch>, String> {
         })
         .collect())
 
-}
-
-
-/// Resolves the names of branch refs.
-fn ref_names(repo: &Path, namespace: &str) -> Result<Vec<String>, String> {
-    let out = command(repo, &["for-each-ref", "--format=%(refname:short)", namespace])?;
-    Ok(out.lines().map(String::from).collect())
 }
 
 /// Parses commands for the git executable.

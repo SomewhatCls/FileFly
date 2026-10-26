@@ -116,10 +116,10 @@ impl Explorer {
                     // If it is an archive path, display "Read-only".
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if is_elevated() {
-                            status_pill(ui, &pal, &m, pal.selected_hover, pal.text_secondary,"Administrator");
+                            status_pill(ui, &m, pal.selected_hover, pal.text_secondary,"Administrator");
                         }
                         if is_archive_path(&*self.tabs[self.active].dir)  {
-                            status_pill(ui, &pal, &m, pal.control_hover, pal.text_secondary,"Read-only");
+                            status_pill(ui, &m, pal.control_hover, pal.text_secondary,"Read-only");
                         }
                     });
                 });
