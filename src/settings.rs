@@ -104,6 +104,7 @@ pub(crate) struct Settings {
     pub(crate) index_dir: Option<PathBuf>,
     pub(crate) index_ram: usize,
     pub(crate) unlimited_cache: bool,
+    pub(crate) git_activated: bool,
     /// Widths (at 14 pt text) of Date modified, Type, Size.
     pub(crate) col_widths: [f32; 3],
     /// Inner size of the window when it was last closed (points), and whether it was maximised.
@@ -134,6 +135,7 @@ impl Default for Settings {
             index_dir: None,
             index_ram: 64,
             unlimited_cache: true,
+            git_activated: false,
             col_widths: [150.0, 110.0, 90.0],
             left_drag_space: false,
             window_size: None,

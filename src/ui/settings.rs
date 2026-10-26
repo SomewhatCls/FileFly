@@ -492,6 +492,19 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
         );
     });
 
+    // ---------------------------------------------------------------- Extras
+    fl_section(ui, m, pal, "Extras");
+    fl_card(ui, m, pal, |ui| {
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Git integration",
+            Some("Shows the current branch and allows you to checkout local branches within git repositories. Changing this settings requires a restart."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.git_activated),
+        );
+    });
+
     // ---------------------------------------------------------------- About
     fl_section(ui, m, pal, "Licenses");
     fl_card(ui, m, pal, |ui| {
@@ -565,6 +578,7 @@ impl Explorer {
             st.search_threads = s.search_threads;
             st.index_ram = s.index_ram;
             st.unlimited_cache = s.unlimited_cache;
+            st.git_activated = s.git_activated;
             self.settings_dirty = true;
             if s.theme != old.theme {
                 ui.set_theme(theme_pref(s.theme));

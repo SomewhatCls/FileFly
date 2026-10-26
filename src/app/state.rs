@@ -105,6 +105,7 @@ impl Explorer {
         install_fonts(&ui);
 
         let settings = load_settings();
+        let git_activated = settings.git_activated;
         ui.set_theme(match settings.theme {
             ThemeChoice::System => egui::ThemePreference::System,
             ThemeChoice::Light => egui::ThemePreference::Light,
@@ -163,7 +164,7 @@ impl Explorer {
             msg_rx,
             idx_rx,
             indexer,
-            git: git_available().then(GitState::new),
+            git: (git_available() && git_activated).then(GitState::new),
             watcher,
             list_debounce: Debounce::default(),
             size_debounce: Debounce::default(),
