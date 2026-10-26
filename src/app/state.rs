@@ -9,6 +9,9 @@ pub(crate) struct Explorer {
     pub(crate) active: usize,
     pub(crate) next_tab_id: u64,
 
+    /// The session cache for git repository checks.
+    pub(crate) git: Option<GitState>,
+
     pub(crate) drives: Vec<DriveInfo>,
     /// Background thread that polls the drives live (see drives.rs).
     pub(crate) drive_ctl: Arc<DriveWatchCtl>,
@@ -160,6 +163,7 @@ impl Explorer {
             msg_rx,
             idx_rx,
             indexer,
+            git: git_available().then(GitState::new),
             watcher,
             list_debounce: Debounce::default(),
             size_debounce: Debounce::default(),

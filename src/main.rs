@@ -31,6 +31,7 @@ mod startup;
 mod theme;
 mod trash_bin;
 mod ui;
+mod git;
 
 fn main() -> eframe::Result<()> {
     startup::run()

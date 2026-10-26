@@ -23,6 +23,7 @@ pub(crate) struct Tab {
     /// Last clicked row; start of shift-ranges and origin of keyboard navigation.
     pub(crate) anchor: Option<PathBuf>,
     pub(crate) error: Option<String>,
+    pub(crate) git_error: Option<String>,
     pub(crate) loading: bool,
     pub(crate) load_gen: u64,
     pub(crate) sort_col: SortColumn,
@@ -72,6 +73,7 @@ impl Tab {
             selected: HashSet::new(),
             anchor: None,
             error: None,
+            git_error: None,
             loading: false,
             load_gen: 0,
             sort_col: SortColumn::Name,

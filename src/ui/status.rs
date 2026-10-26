@@ -114,33 +114,14 @@ impl Explorer {
 
                     // If the window runs with administrator rights, notify the user.
                     // If it is an archive path, display "Read-only".
-                    if is_elevated() {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new("Administrator")
-                                    .color(pal.accent)
-                                    .strong()
-                                    .size(m.font * 0.93),
-                            );
-                            if is_archive_path(&*self.tabs[self.active].dir) {
-                                ui.label(
-                                    RichText::new("Read-only")
-                                        .color(pal.text_secondary)
-                                        .strong()
-                                        .size(m.font * 0.93),
-                                );
-                            }
-                        });
-                    }else if is_archive_path(&*self.tabs[self.active].dir) {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new("Read-only")
-                                    .color(pal.text_secondary)
-                                    .strong()
-                                    .size(m.font * 0.93),
-                            );
-                        });
-                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if is_elevated() {
+                            status_pill(ui, &m, pal.selected_hover, pal.text_secondary,"Administrator");
+                        }
+                        if is_archive_path(&*self.tabs[self.active].dir)  {
+                            status_pill(ui, &m, pal.control_hover, pal.text_secondary,"Read-only");
+                        }
+                    });
                 });
             });
     }

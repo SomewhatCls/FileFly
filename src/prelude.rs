@@ -37,13 +37,11 @@ pub(crate) use crate::drives::{
 };
 pub(crate) use crate::peers::{cursor_screen_pos, now_ms, Peers, WinInfo};
 
-// Glob re-exports of the existing helper modules ...
+// Global re-exports of the helper modules.
 pub(crate) use crate::fsops::*;
 pub(crate) use crate::icons::*;
 pub(crate) use crate::indexer::*;
 pub(crate) use crate::theme::*;
-
-// ... and of the modules split out of the old main.rs.
 pub(crate) use crate::app::*;
 pub(crate) use crate::drag_drop::*;
 pub(crate) use crate::elevate::*;
@@ -55,3 +53,4 @@ pub(crate) use crate::search::*;
 pub(crate) use crate::settings::*;
 pub(crate) use crate::startup::*;
 pub(crate) use crate::ui::*;
+pub(crate) use crate::git::*;

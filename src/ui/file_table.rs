@@ -195,6 +195,7 @@ pub(crate) fn table_ui(
         sort_asc,
         view_dirty,
         error,
+        git_error,
         loading,
         search,
         ..
@@ -210,7 +211,7 @@ pub(crate) fn table_ui(
     let avail = (ui.available_width() - m.pad * 0.5).max(100.0);
 
     // ---- error bar (Fluent InfoBar)
-    if let Some(msg) = error.clone() {
+    if let Some(msg) = error.clone().or_else(|| git_error.clone()) {
         let offer = ui.data(|d| d.get_temp::<u64>(Id::unique("admin_retry_tab"))) == Some(tab_id);
         let btn_w = if offer { m.s * 150.0 } else { 0.0 };
         let (r, _) = ui.allocate_exact_size(vec2(avail, m.row_h * 1.1), Sense::hover());
@@ -256,6 +257,7 @@ pub(crate) fn table_ui(
         draw_icon(ui, cr.center(), m.small_icon * 0.8, "close", pal.danger);
         if resp.clicked() {
             *error = None;
+            *git_error = None;
         }
         ui.add_space(m.pad * 0.5);
     }

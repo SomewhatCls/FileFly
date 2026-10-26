@@ -4,3 +4,4 @@ target
 installer
 .backup
 *.AppImage
+unused
