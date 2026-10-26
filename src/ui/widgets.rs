@@ -50,18 +50,19 @@ pub(crate) fn layer_frame(
 
 /// Wraps a pill around a label with a given color.
 pub(crate) fn status_pill(ui: &mut Ui, m: &Metrics, bg: Color32, text_color:  Color32, text: &str) {
+    ui.style_mut().interaction.selectable_labels = false;
+    ui.spacing_mut().item_spacing.x = 5.0;
     egui::Frame::new()
         .fill(bg)
         .corner_radius(CornerRadius::same(255))
-        .inner_margin(Margin::symmetric(10, 3))
-        .outer_margin(Margin::symmetric(2, (m.pad * 0.4) as i8))
+        .inner_margin(Margin::symmetric(7, 0))
+        .outer_margin(Margin::symmetric(0, (m.pad * 0.6) as i8))
         .show(ui, |ui| {
         ui.label(
             RichText::new(text)
                 .color(text_color)
                 .strong()
-                .extra_letter_spacing(0.5)
-                .size(m.font),
+                .size(m.font * 0.93),
         )}
     );
 }
