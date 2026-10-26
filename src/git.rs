@@ -322,7 +322,7 @@ fn branch(repo: &Path, name: &str, switch_to: bool) -> Result<String, String>{
 /// Adds files to the staging area.
 fn add(repo: &Path, path_buf: &Vec<PathBuf>) -> Result<String, String>{
     let mut args = vec!["add", "--"];
-    let mut paths: Vec<String> = path_buf
+    let paths: Vec<String> = path_buf
         .iter()
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
