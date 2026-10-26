@@ -318,7 +318,7 @@ fn checkout(repo: &Path,  branch: &str) -> Result<String, String>{
 /// If `switch_to` is true, switches to the newly created branch.
 fn branch(repo: &Path, name: &str, switch_to: bool) -> Result<String, String>{
     if switch_to {
-        command(repo, &["switch", "-c", name])
+        command(repo, &["checkout", name])
     }else{
         command(repo, &["branch", name])
     }
