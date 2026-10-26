@@ -49,7 +49,7 @@ pub(crate) fn layer_frame(
 }
 
 /// Wraps a pill around a label with a given color.
-pub(crate) fn status_pill(ui: &mut Ui,  pal: &Palette, m: &Metrics, bg: Color32, text_color:  Color32, text: &str) {
+pub(crate) fn status_pill(ui: &mut Ui, m: &Metrics, bg: Color32, text_color:  Color32, text: &str) {
     egui::Frame::new()
         .fill(bg)
         .corner_radius(CornerRadius::same(255))

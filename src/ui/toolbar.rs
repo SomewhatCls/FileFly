@@ -563,6 +563,7 @@ impl Explorer {
                                         });
                                 },
                             );
+                            /*
                             if !selection.is_empty() {
                                 if icon_button(ui, &m, &pal, "git_add", "add to staging", true, false).clicked() {
                                     actions.push(Action::GitAdd(selection.clone()));
@@ -572,7 +573,7 @@ impl Explorer {
                                 if icon_button(ui, &m, &pal, "git_commit", "commit staged changes", true, false).clicked() {
                                     actions.push(Action::GitCommit(snap.root.clone()));
                                 }
-                            }
+                            }*/
                         }
                     }
                     // Outside the block due to borrowing logic, refreshes the folder contents after
@@ -584,9 +585,10 @@ impl Explorer {
                         if std::mem::take(&mut git.switched) {
                             actions.push(Action::Refresh);
                         }
+
                         git.update(ui.ctx(), &*self.tabs[self.active].dir);
-                    }
-                    if let Some(git) = &mut self.git {
+
+                        // Push error out to the error display.
                         if let Some(err) = git.error.take() {
                             self.tabs[self.active].git_error = Some(err);
                         }
