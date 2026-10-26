@@ -568,13 +568,10 @@ impl Explorer {
                                     actions.push(Action::GitAdd(selection.clone()));
                                 }
                             }
-                            if !snap.staged_files == 0{
+                            if snap.staged_files > 0 {
                                 if icon_button(ui, &m, &pal, "git_commit", "commit staged changes", true, false).clicked() {
                                     actions.push(Action::GitCommit(snap.root.clone()));
                                 }
-                            }
-                            if let Some(err) = &git.error {
-                                ui.colored_label(egui::Color32::LIGHT_RED, "⚠").on_hover_text(err);
                             }
                         }
                     }
@@ -582,10 +579,16 @@ impl Explorer {
                     // switching branches.
                     if let Some(git) = &mut self.git {
                         if let Some(name) = picked {
-                            git.git_async(ui.ctx(), GitCommand::Branch {name: name, switch_to: true});
+                            git.git_async(ui.ctx(), GitCommand::Checkout {branch: name});
                         }
                         if std::mem::take(&mut git.switched) {
                             actions.push(Action::Refresh);
+                        }
+                        git.update(ui.ctx(), &*self.tabs[self.active].dir);
+                    }
+                    if let Some(git) = &mut self.git {
+                        if let Some(err) = git.error.take() {
+                            self.tabs[self.active].git_error = Some(err);
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

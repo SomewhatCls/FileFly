@@ -3,7 +3,6 @@
 use std::process::Command;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::fs;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -117,6 +116,7 @@ pub struct GitState {
     pub error: Option<String>,
     /// Set after a successful checkout so the UI can reload the file listing.
     pub switched: bool,
+    op_reloads: bool,
 }
 
 impl GitState {
@@ -131,6 +131,7 @@ impl GitState {
             snapshot: None,
             error: None,
             switched: false,
+            op_reloads: false,
         }
     }
 
@@ -166,7 +167,7 @@ impl GitState {
         if let Some(rx) = &self.op {
             match rx.try_recv() {
                 Ok(res) => {
-                    self.switched = res.is_ok();
+                    self.switched = res.is_ok() && self.op_reloads;
                     self.error = res.err();
                     self.op = None;
                     self.pending = None;
@@ -216,6 +217,7 @@ impl GitState {
     pub fn git_async(&mut self, ctx: &egui::Context, command: GitCommand) {
         let Some(root) = self.root.clone() else { return };
         if self.op.is_some() { return; }
+        self.op_reloads = matches!(command, GitCommand::Checkout { .. });
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -318,7 +320,7 @@ fn checkout(repo: &Path,  branch: &str) -> Result<String, String>{
 /// If `switch_to` is true, switches to the newly created branch.
 fn branch(repo: &Path, name: &str, switch_to: bool) -> Result<String, String>{
     if switch_to {
-        command(repo, &["checkout", name])
+        command(repo, &["switch", "-c", name])
     }else{
         command(repo, &["branch", name])
     }
