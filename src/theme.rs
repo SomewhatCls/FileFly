@@ -253,7 +253,7 @@ impl Palette {
         if dark {
             Self {
                 dark, transparency, accent: acc, on_accent,
-                base: Color32::from_rgb(60, 60, 60),
+                base: Color32::from_rgb(50, 50, 50),
                 layer: if transparency != TransparencyEffect::None { a(55, 0.5) } else { Color32::from_rgb(40, 40, 40) },
                 flyout: Color32::from_rgb(80, 80, 80),
                 text: Color32::WHITE,
@@ -275,10 +275,10 @@ impl Palette {
         } else {
             Self {
                 dark, transparency, accent: acc, on_accent,
-                base: Color32::from_rgb(215, 215, 215),
-                layer: if transparency != TransparencyEffect::None { a(255, 0.6) } else { Color32::from_rgb(0xFB, 0xFB, 0xFB) },
+                base: Color32::from_rgb(230, 230, 230),
+                layer: if transparency != TransparencyEffect::None { a(255, 0.6) } else { Color32::from_rgb(250, 250, 250) },
                 flyout: Color32::from_rgb(230, 230, 230),
-                text: Color32::from_rgb(0x1A, 0x1A, 0x1A),
+                text: Color32::from_rgb(26, 26, 26),
                 text_secondary: a(0, 0.6),
                 text_disabled: a(0, 0.36),
                 subtle_hover: a(0, 0.075),
