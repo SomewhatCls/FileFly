@@ -8,8 +8,6 @@ impl Explorer {
     pub(crate) fn ui_status(&mut self, ui: &mut Ui) {
         let (m, pal) = (self.m, self.pal);
         let tab = &self.tabs[self.active];
-        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
-        let radius = if maximized { 0 } else { RADIUS };
         let mut text = format!(
             "{} item{}",
             tab.view.len(),
@@ -84,7 +82,7 @@ impl Explorer {
                     nw: 0,
                     ne: 0,
                     sw: 0,
-                    se: radius,
+                    se: 0,
                 }),
             )
             .show(ui, |ui| {

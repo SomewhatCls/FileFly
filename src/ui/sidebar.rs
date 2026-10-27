@@ -213,8 +213,6 @@ impl Explorer {
             )
         });
         let can_pin = !special_active && !quick.iter().any(|q| same_path(&q.path, &cur));
-        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
-        let radius = if maximized { 0 } else { RADIUS };
         let dragging = item_drag_paths(ui);
         let panel = egui::Panel::left("sidebar")
             .resizable(true)
@@ -226,7 +224,7 @@ impl Explorer {
                     CornerRadius {
                         nw: 0,
                         ne: 0,
-                        sw: radius,
+                        sw: 0,
                         se: 0,
                     },
                 ),

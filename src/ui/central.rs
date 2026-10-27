@@ -4,8 +4,6 @@ use crate::prelude::*;
 
 // ==============================================================================================
 // Panels
-//window decoration radius for linux
-pub(crate) const RADIUS: u8 = if cfg!(target_os = "linux") { 12 } else { 0 };
 
 /// The contents of one pane: the file table (or the Recycle Bin / Settings page) of `tab`, inside `rect`.
 #[allow(clippy::too_many_arguments)]

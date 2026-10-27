@@ -108,7 +108,7 @@ pub(crate) fn caption_buttons_ex(ui: &mut Ui, m: &Metrics, pal: &Palette, maximi
                     r,
                     CornerRadius {
                         nw: 0,
-                        ne: if RADIUS == 0 { RADIUS } else { RADIUS - 4 },
+                        ne: 0,
                         sw: 0,
                         se: 0,
                     },

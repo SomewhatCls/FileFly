@@ -48,14 +48,13 @@ impl Explorer {
         let caption_w = m.s * 46.0 * 3.0;
         let r_tab = m.radius + 2;
         let wing = r_tab as f32;
-        let radius = if maximized { 0 } else { RADIUS };
         egui::Panel::top("tabs")
             .show_separator_line(false)
             .exact_size(bar_h)
             .frame(
                 bar_frame(&pal, 0.0, 0.0, 0.0, 0.0).corner_radius(CornerRadius {
-                    nw: radius,
-                    ne: radius,
+                    nw: 0,
+                    ne: 0,
                     sw: 0,
                     se: 0,
                 }),
@@ -531,6 +530,4 @@ impl Explorer {
             }
         }
     }
-
-    // ------------------------------------------------------------------ drag to copy
 }
