@@ -137,10 +137,10 @@ pub(crate) fn caption_buttons_kde(ui: &mut Ui, m: &Metrics, pal: &Palette, maxim
         };
 
         let name = match k {
-            0 => "kde-minimize",
-            1 if maximized => "kde-restore",
-            1 => "kde-maximize",
-            _ => "kde-close",
+            0 => "kde_minimize",
+            1 if maximized => "kde_restore",
+            1 => "kde_maximize",
+            _ => "kde_close",
         };
         draw_icon(ui, c, icon_size, name, fg);
 
@@ -168,7 +168,7 @@ pub(crate) fn caption_buttons_gnome(ui: &mut Ui, m: &Metrics, pal: &Palette, max
     let n = kinds.len();
 
     // GNOME Icon size approximation
-    let icon_size = snap(10.0 * m.accessibility_scale);
+    let icon_size = snap(24.0 * m.accessibility_scale);
 
     for (slot, &k) in kinds.iter().enumerate() {
         let right = origin.x - margin - pitch * (n - 1 - slot) as f32;
@@ -187,10 +187,10 @@ pub(crate) fn caption_buttons_gnome(ui: &mut Ui, m: &Metrics, pal: &Palette, max
             .circle_filled(c, diameter / 2.0, pal.text.gamma_multiply(alpha));
 
         let name = match k {
-            0 => "window-minimize",
-            1 if maximized => "window-restore",
-            1 => "window-maximize",
-            _ => "window-close",
+            0 => "gnome_minimize",
+            1 if maximized => "gnome_restore",
+            1 => "gnome_maximize",
+            _ => "gnome_close",
         };
         draw_icon(ui, c, snap(icon_size), name, pal.text);
 
@@ -248,10 +248,10 @@ pub(crate) fn caption_buttons_windows(ui: &mut Ui, m: &Metrics, pal: &Palette, m
         };
 
         let name = match k {
-            0 => "window-minimize",
-            1 if maximized => "window-restore",
-            1 => "window-maximize",
-            _ => "window-close",
+            0 => "window_minimize",
+            1 if maximized => "window_restore",
+            1 => "window_maximize",
+            _ => "window_close",
         };
         draw_icon(ui, r.center(), icon_size, name, fg);
 
