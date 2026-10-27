@@ -97,10 +97,10 @@ pub(crate) fn fl_row(
     let row_width = ui.available_width();
     let padding_x = metrics.pad * 1.6;
     let padding_y = metrics.pad * 0.9;
-    let title_description_gap = metrics.s * 2.0;
+    let title_description_gap = metrics.accessibility_scale * 2.0;
 
     // Left ~55% of the row is the text column; the control goes to its right.
-    let text_column_width = ((row_width - padding_x * 3.0) * 0.55).max(metrics.s * 120.0);
+    let text_column_width = ((row_width - padding_x * 3.0) * 0.55).max(metrics.accessibility_scale * 120.0);
 
     // ---- Measure the text ----
     let title_galley = ui.painter().layout(
@@ -196,7 +196,7 @@ pub(crate) fn settings_page(ui: &mut Ui, rect: Rect, m: &Metrics, pal: &Palette,
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let avail = ui.available_width();
-                    let w = (avail - m.pad * 4.0).clamp(m.s * 240.0, m.s * 860.0);
+                    let w = (avail - m.pad * 4.0).clamp(m.accessibility_scale * 240.0, m.accessibility_scale * 860.0);
                     let left = ((avail - w) / 2.0).max(m.pad * 2.0);
                     ui.horizontal_top(|ui| {
                         ui.add_space(left);
@@ -211,7 +211,7 @@ pub(crate) fn settings_page(ui: &mut Ui, rect: Rect, m: &Metrics, pal: &Palette,
 }
 
 pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut SettingsPage) {
-    ui.spacing_mut().slider_width = m.s * 150.0;
+    ui.spacing_mut().slider_width = m.accessibility_scale * 150.0;
     ui.add_space(m.pad * 1.5);
     ui.label(RichText::new("Settings").size(m.font * 2.0).strong().color(pal.text));
     ui.label(
@@ -228,7 +228,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 ThemeChoice::Dark => "Dark",
             };
             egui::ComboBox::from_id_salt("settings_theme")
-                .width(m.s * 150.0)
+                .width(m.accessibility_scale * 150.0)
                 .selected_text(label(sp.s.theme))
                 .show_ui(ui, |ui| {
                     for t in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
@@ -283,15 +283,9 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 });
             }
 
-            let is_windows_11:bool =
-                if cfg!(target_os = "windows") && System::kernel_version()
-                    .unwrap().as_str()
-                    .parse::<i32>()
-                    .expect("Failed to parse kernel version") >= 22000 {
-                    true
-                }else{
-                    false
-                };
+            let is_windows_11 = System::kernel_version()
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_some_and(|build| build >= 22000);
 
             fl_divider(ui, m, pal);
             fl_row(ui, m, pal, "Transparency effects", Some("Choose from available transparency effects"), |ui| {
@@ -302,7 +296,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 };
                 // Makes selectable transparency effects dependent on Windows version.
                 egui::ComboBox::from_id_salt("transparency")
-                    .width(m.s * 150.0)
+                    .width(m.accessibility_scale * 150.0)
                     .selected_text(label(sp.s.transparency_effect))
                     .show_ui(ui, |ui| {
                         let effects = if is_windows_11 {
@@ -337,6 +331,15 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             Some("Leave an empty area at the left of the tabs for moving the window"),
             |ui| fl_switch(ui, m, pal, &mut sp.s.left_drag_space),
         );
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Custom window frame",
+            Some("Use the custom integrated window control title bar of the App."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.custom_frame),
+        );
     });
 
     // ---------------------------------------------------------------- Files
@@ -353,7 +356,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
         fl_divider(ui, m, pal);
         fl_row(ui, m, pal, "Date format", Some("How modification dates are written"), |ui| {
             egui::ComboBox::from_id_salt("settings_date_format")
-                .width(m.s * 150.0)
+                .width(m.accessibility_scale * 150.0)
                 .selected_text(sp.s.date_format.label())
                 .show_ui(ui, |ui| {
                     for f in [DateFormat::European, DateFormat::Iso, DateFormat::American] {
@@ -500,7 +503,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             m,
             pal,
             "Git integration",
-            Some("Shows the current branch and allows you to checkout local branches within git repositories. Changing this settings requires a restart."),
+            Some("Shows the current branch and allows you to checkout local branches within git repositories."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.git_activated),
         );
     });
@@ -566,8 +569,9 @@ impl Explorer {
             let st = &mut self.settings;
             st.theme = s.theme;
             st.font_size = s.font_size;
-            st.follow_text_scale = if cfg!(windows) {s.follow_text_scale} else {false};
+            st.follow_text_scale = if cfg!(windows) { s.follow_text_scale } else { false };
             st.left_drag_space = s.left_drag_space;
+            st.custom_frame = s.custom_frame;
             st.use_system_accent = s.use_system_accent;
             st.custom_accent = s.custom_accent;
             st.transparency_effect = s.transparency_effect;
@@ -582,6 +586,13 @@ impl Explorer {
             self.settings_dirty = true;
             if s.theme != old.theme {
                 ui.set_theme(theme_pref(s.theme));
+            }
+            if s.custom_frame != old.custom_frame {
+                self.settings.custom_frame = s.custom_frame;
+                self.require_restart = true;
+            } else if s.git_activated != old.git_activated {
+                self.settings.git_activated = s.git_activated;
+                self.require_restart = true;
             }
             if s.show_hidden != old.show_hidden || s.date_format != old.date_format {
                 self.reload_all();

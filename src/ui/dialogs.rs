@@ -14,7 +14,7 @@ impl Explorer {
             "confirm",
             "Delete permanently?",
             true,
-            m.s * 420.0,
+            m.accessibility_scale * 420.0,
             |ui| {
                 ui.label(&c.text);
                 ui.add_space(m.pad * 1.5);
@@ -81,7 +81,7 @@ impl Explorer {
             "conflict",
             "Item already exists",
             true,
-            m.s * 460.0,
+            m.accessibility_scale * 460.0,
             |ui| {
                 ui.label(&message);
                 ui.add_space(m.pad * 0.5);

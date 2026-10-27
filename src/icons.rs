@@ -313,6 +313,18 @@ pub fn draw_icon(ui: &Ui, center: Pos2, size: f32, name: &str, tint: Color32) {
 /// Looks up an embedded SVG by name. Unknown names fall back to the generic file icon.
 pub fn icon_source(name: &str) -> egui::ImageSource<'static> {
     match name {
+        "window_minimize" => egui::include_image!("../assets/window_minimize.svg"),
+        "window_maximize" => egui::include_image!("../assets/window_maximize.svg"),
+        "window_restore"  => egui::include_image!("../assets/window_restore.svg"),
+        "window_close"    => egui::include_image!("../assets/window_close.svg"),
+        "kde_minimize" => egui::include_image!("../assets/kde_minimize.svg"),
+        "kde_maximize" => egui::include_image!("../assets/kde_maximize.svg"),
+        "kde_restore"  => egui::include_image!("../assets/kde_restore.svg"),
+        "kde_close"    => egui::include_image!("../assets/kde_close.svg"),
+        "gnome_minimize" => egui::include_image!("../assets/gnome_minimize.svg"),
+        "gnome_maximize" => egui::include_image!("../assets/gnome_maximize.svg"),
+        "gnome_restore"  => egui::include_image!("../assets/gnome_restore.svg"),
+        "gnome_close"    => egui::include_image!("../assets/gnome_close.svg"),
         "app" => egui::include_image!("../assets/app.svg"),
         "archive" => egui::include_image!("../assets/archive.svg"),
         "audio" => egui::include_image!("../assets/audio.svg"),

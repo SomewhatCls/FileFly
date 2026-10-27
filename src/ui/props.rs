@@ -65,7 +65,7 @@ impl Explorer {
             "props",
             "Properties",
             false,
-            m.s * 460.0,
+            m.accessibility_scale * 460.0,
             |ui| {
                 ui.horizontal(|ui| {
                     let (r, _) =
