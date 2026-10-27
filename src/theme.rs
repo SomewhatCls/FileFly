@@ -167,7 +167,7 @@ pub fn apply_backdrop(window: &impl raw_window_handle::HasWindowHandle, dark: bo
 
 /// Transparency on non-Windows systems has not been implemented.
 #[cfg(not(windows))]
-pub fn apply_backdrop(_window: &impl raw_window_handle::HasWindowHandle, dark: bool, transparency_effect: TransparencyEffect) -> bool {
+pub fn apply_backdrop(_window: &impl raw_window_handle::HasWindowHandle, _dark: bool, _transparency_effect: TransparencyEffect) -> bool {
     false
 }
 
@@ -181,7 +181,7 @@ pub fn clear_window_transparency_effects(window: &impl raw_window_handle::HasWin
 }
 
 #[cfg(not(windows))]
-pub fn clear_window_transparency_effects(window: &impl raw_window_handle::HasWindowHandle) {
+pub fn clear_window_transparency_effects(_window: &impl raw_window_handle::HasWindowHandle) {
     // Not implemented yet.
 }
 
@@ -608,10 +608,6 @@ pub fn style_frameless(window: &impl raw_window_handle::HasWindowHandle) {
         }
     }
 }
-#[cfg(not(windows))]
-pub fn style_frameless(_window: &impl raw_window_handle::HasWindowHandle) {
-    // Not implemented.
-}
 
 /// A bare Win32 window handle, so the backdrop helpers above can be applied to windows that
 /// egui/eframe doesn't hand out handles for (the extra viewports).
@@ -663,6 +659,6 @@ pub fn backdrop_by_title(title: &str, dark: bool, transparency_effect: Transpare
     !s.found.is_empty()
 }
 #[cfg(not(windows))]
-pub fn backdrop_by_title(_title: &str, _dark: bool, transparency_effect: TransparencyEffect) -> bool {
+pub fn backdrop_by_title(_title: &str, _dark: bool, _transparency_effect: TransparencyEffect) -> bool {
     true
 }

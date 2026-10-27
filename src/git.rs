@@ -26,11 +26,12 @@ pub enum Head {
 /// Enum representing different Git commands.
 pub enum GitCommand {
     Checkout { branch: String },
+    /*
     Branch { name: String, switch_to: bool },
     Add { paths: Vec<PathBuf> },
     Commit { message: String },
     Push { remote: String, branch: String, set_upstream: bool },
-    Fetch { remote: Option<String> },
+    Fetch { remote: Option<String> },*/
 }
 
 /// Struct for branches and their upstream.
@@ -140,10 +141,11 @@ impl GitState {
     }
 
     /// Forcefully refreshes the git state.
+    /*
     pub fn request_refresh(&mut self, ctx: &egui::Context) {
         self.pending = None; // Drops any occurring refresh.
         self.start_refresh(ctx);
-    }
+    }*/
 
     /// Call once per frame unless the directory changed.
     pub fn update(&mut self, ctx: &egui::Context, dir: &Path) {
@@ -296,11 +298,12 @@ pub fn list_local_branches(repo: &Path) -> Result<Vec<Branch>, String> {
 pub fn git(command: GitCommand, repo: &Path) -> Result<String, String> {
     match command{
         GitCommand::Checkout { branch } => checkout(repo, &branch),
+        /*
         GitCommand::Branch { name, switch_to } => branch(repo, &name, switch_to),
         GitCommand::Add { paths } => add(repo, &paths),
         GitCommand::Commit { message } => commit(repo, &message),
         GitCommand::Push { remote, branch, set_upstream } => push(repo, &remote, &branch, set_upstream),
-        GitCommand::Fetch { remote } => fetch(repo, remote.as_deref()),
+        GitCommand::Fetch { remote } => fetch(repo, remote.as_deref()),*/
     }
 }
 
@@ -311,15 +314,17 @@ fn checkout(repo: &Path,  branch: &str) -> Result<String, String>{
 
 /// Allows branch creation.
 /// If `switch_to` is true, switches to the newly created branch.
+/*
 fn branch(repo: &Path, name: &str, switch_to: bool) -> Result<String, String>{
     if switch_to {
         command(repo, &["switch", "-c", name])
     }else{
         command(repo, &["branch", name])
     }
-}
+}*/
 
 /// Adds files to the staging area.
+/*
 fn add(repo: &Path, path_buf: &Vec<PathBuf>) -> Result<String, String>{
     let mut args = vec!["add", "--"];
     let paths: Vec<String> = path_buf
@@ -328,14 +333,16 @@ fn add(repo: &Path, path_buf: &Vec<PathBuf>) -> Result<String, String>{
         .collect();
     args.extend(paths.iter().map(String::as_str));
     command(repo, &args)
-}
+}*/
 
 ///  Commits changes with the given message.
+/*
 fn commit(repo: &Path, message: &str) -> Result<String, String>{
     command(repo, &["commit", "-m", message])
-}
+}*/
 
 /// Pushes committed changes. If `set_upstream` is true, sets the upstream branch.
+/*
 fn push(repo: &Path, remote: &str, branch: &str, set_upstream: bool) -> Result<String, String>{
     let mut args = vec!["push"];
     if set_upstream {
@@ -344,16 +351,17 @@ fn push(repo: &Path, remote: &str, branch: &str, set_upstream: bool) -> Result<S
     args.push(remote);
     args.push(branch);
     command(repo, &args)
-}
+}*/
 
 /// Fetches the latest changes from the remote repository.
 /// If no remote is specified, fetches from the default remote.
+/*
 fn fetch(repo: &Path, remote: Option<&str>) -> Result<String, String>{
     match remote {
         Some(r) => command(repo, &["fetch", r]),
         None => command(repo, &["fetch"]),
     }
-}
+}*/
 
 
 /// Executes the given git command with args.

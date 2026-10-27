@@ -46,6 +46,7 @@ fn norm(p: &Path) -> PathBuf {
 }
 
 /// Replaces the set of well-known / pinned folders that show their own system icon.
+#[cfg(windows)]
 pub fn set_special_folders<I: IntoIterator<Item = PathBuf>>(paths: I) {
     if let Ok(mut s) = special().write() {
         s.folders = paths.into_iter().map(|p| norm(&p)).collect();
@@ -53,6 +54,7 @@ pub fn set_special_folders<I: IntoIterator<Item = PathBuf>>(paths: I) {
 }
 
 /// Replaces the set of drive roots / mount points that show their own system icon.
+#[cfg(windows)]
 pub fn set_special_drives<I: IntoIterator<Item = PathBuf>>(paths: I) {
     if let Ok(mut s) = special().write() {
         s.drives = paths.into_iter().map(|p| norm(&p)).collect();
