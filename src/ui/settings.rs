@@ -337,7 +337,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             m,
             pal,
             "Custom window frame",
-            Some("Use the custom integrated window control title bar of the App."),
+            Some("Use the custom integrated window control title bar of the App. Changing this setting will restart the app."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.custom_frame),
         );
     });
@@ -503,7 +503,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             m,
             pal,
             "Git integration",
-            Some("Shows the current branch and allows you to checkout local branches within git repositories."),
+            Some("Shows the current branch and allows you to checkout local branches within git repositories. Changing this setting will restart the app."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.git_activated),
         );
     });
