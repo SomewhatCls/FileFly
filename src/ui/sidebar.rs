@@ -224,7 +224,7 @@ impl Explorer {
                     CornerRadius {
                         nw: 0,
                         ne: 0,
-                        sw: 0,
+                        sw: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()){15}else{0},
                         se: 0,
                     },
                 ),

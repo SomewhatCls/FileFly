@@ -232,6 +232,13 @@ impl Explorer {
         app
     }
 
+    pub(crate) fn is_maximized(ctx: &egui::Context) -> bool {
+        if ctx.input(|i| i.viewport().maximized) == Some(true) {
+            return true
+        }
+        false
+    }
+
     //paste key detection workaround
     pub(crate) fn paste_key_down(&self) -> bool {
         use device_query::{DeviceQuery, Keycode};

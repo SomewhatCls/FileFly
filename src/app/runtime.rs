@@ -76,7 +76,7 @@ impl eframe::App for Explorer {
                 self.pal.chrome,
             );
         } else {
-            painter.rect_filled(rect, 8.0, self.pal.layer);
+            painter.rect_filled(rect, if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()){15}else{0}, self.pal.layer);
         }
 
         // Load tabs that are on screen but have never been read (restored session).

@@ -80,7 +80,7 @@ pub(crate) fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized
     }
 }
 
-fn get_desktop() -> String{
+pub fn get_desktop() -> String{
     std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default()
 }
 
