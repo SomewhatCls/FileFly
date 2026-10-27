@@ -7,7 +7,7 @@ impl Explorer {
     pub(crate) fn ui_tabs(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
         let active = self.active;
-        let left_gap = if self.settings.left_drag_space { m.s * 40.0 } else { 0.0 };
+        let left_gap = if self.settings.left_drag_space { m.accessibility_scale * 40.0 } else { 0.0 };
         // 1.0 while the first tab is selected: the band below then has a square corner and the tab's wing meets the window edge.
         self.first_anim = ui.animate_bool_with_time(
             Id::unique("first_tab_active"),
@@ -44,8 +44,8 @@ impl Explorer {
         let mut start_move = false;
         let closing_id = Id::unique("tabs_closing");
         let mut closing: Vec<u64> = ui.data(|d| d.get_temp(closing_id)).unwrap_or_default();
-        let bar_h = m.tab_h + m.s * 6.0;
-        let caption_w = m.s * 46.0 * 3.0;
+        let bar_h = m.tab_h + m.accessibility_scale * 6.0;
+        let caption_w = m.accessibility_scale * 46.0 * 3.0;
         let r_tab = m.radius + 2;
         let wing = r_tab as f32;
         egui::Panel::top("tabs")
@@ -87,7 +87,7 @@ impl Explorer {
                         .max_rect(tabs_rect)
                         .layout(Layout::left_to_right(Align::Center)),
                     |ui| {
-                        ui.spacing_mut().item_spacing.x = m.s * 2.0;
+                        ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
                         let gap = ui.spacing().item_spacing.x;
                         let n = info.len().max(1);
                         // Room for the tabs: everything left of the pinned "+" button.
@@ -124,7 +124,7 @@ impl Explorer {
                         }
 
                         let sum_k = grow.iter().sum::<f32>().max(0.01);
-                        let tab_w = ((avail - gap * (n as f32 - 1.0)) / sum_k).clamp(m.s * 90.0, m.s * 240.0);
+                        let tab_w = ((avail - gap * (n as f32 - 1.0)) / sum_k).clamp(m.accessibility_scale * 90.0, m.accessibility_scale * 240.0);
                         let content_w = tab_w * sum_k + gap * (n as f32 - 1.0);
                         let overflow = content_w > avail + 0.5;
                         //When there are too many tabs, the overflow becomes scrollable.
@@ -208,7 +208,7 @@ impl Explorer {
                                     Color32::TRANSPARENT
                                 };
                                 ui.painter().rect_filled(
-                                    rect.shrink2(vec2(0.0, m.s * 3.0)),
+                                    rect.shrink2(vec2(0.0, m.accessibility_scale * 3.0)),
                                     CornerRadius::same(m.radius),
                                     c,
                                 );
@@ -216,8 +216,8 @@ impl Explorer {
                             if !is_active && vis.contains(id) {
                                 ui.painter().rect_filled(
                                     Rect::from_min_size(
-                                        pos2(rect.left() + m.pad, rect.bottom() - m.s * 4.0),
-                                        vec2(rect.width() - m.pad * 2.0, m.s * 2.0),
+                                        pos2(rect.left() + m.pad, rect.bottom() - m.accessibility_scale * 4.0),
+                                        vec2(rect.width() - m.pad * 2.0, m.accessibility_scale * 2.0),
                                     ),
                                     CornerRadius::same(1),
                                     pal.accent.gamma_multiply(0.75),
@@ -437,7 +437,7 @@ impl Explorer {
             overlay.rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(110));
             let band = Rect::from_center_size(
                 screen.center_bottom() - vec2(0.0, m.row_h * 2.0),
-                vec2((screen.width() - m.pad * 4.0).min(m.s * 680.0), m.row_h * 1.6),
+                vec2((screen.width() - m.pad * 4.0).min(m.accessibility_scale * 680.0), m.row_h * 1.6),
             );
             overlay.rect_filled(band, CornerRadius::same(m.radius), pal.accent);
             overlay.text(
@@ -474,7 +474,7 @@ impl Explorer {
             overlay.rect_filled(all, CornerRadius::ZERO, Color32::from_black_alpha(95));
             if let Some((tid, zone)) = target {
                 if let Some((_, rect)) = panes.iter().find(|(t, _)| *t == tid) {
-                    let zr = zone_rect(*rect, zone).shrink(m.s * 4.0);
+                    let zr = zone_rect(*rect, zone).shrink(m.accessibility_scale * 4.0);
                     overlay.rect_filled(zr, CornerRadius::same(m.radius), pal.accent.gamma_multiply(0.55));
                     overlay.rect_stroke(
                         zr,

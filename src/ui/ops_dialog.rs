@@ -4,7 +4,7 @@ use crate::prelude::*;
 
 /// Thin rounded progress bar; a sliding segment when the amount of work isn't known.
 pub(crate) fn progress_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, frac: Option<f32>, paused: bool) {
-    let h = m.s * 6.0;
+    let h = m.accessibility_scale * 6.0;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
     let r = CornerRadius::same((h * 0.5) as u8);
     let p = ui.painter_at(rect);
@@ -32,7 +32,7 @@ pub(crate) fn progress_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, frac: Option
 /// Throughput graph of the last samples (newest at the right), like Explorer's "More details".
 pub(crate) fn speed_graph(ui: &mut Ui, m: &Metrics, pal: &Palette, history: &[f32]) {
     const SLOTS: usize = 60;
-    let h = m.s * 64.0;
+    let h = m.accessibility_scale * 64.0;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
     let p = ui.painter_at(rect);
     let r = CornerRadius::same(m.radius);
@@ -60,7 +60,7 @@ pub(crate) fn speed_graph(ui: &mut Ui, m: &Metrics, pal: &Palette, history: &[f3
 /// "From   <path>" line; the path is cut off with an ellipsis instead of widening the dialog.
 pub(crate) fn op_line(ui: &mut Ui, m: &Metrics, pal: &Palette, key: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(vec2(m.s * 92.0, m.font * 1.5), Layout::left_to_right(Align::Center), |ui| {
+        ui.allocate_ui_with_layout(vec2(m.accessibility_scale * 92.0, m.font * 1.5), Layout::left_to_right(Align::Center), |ui| {
             ui.label(RichText::new(key).color(pal.text_secondary).size(m.font * 0.95));
         });
         ui.add(egui::Label::new(RichText::new(value).size(m.font * 0.95)).truncate());
@@ -79,7 +79,7 @@ impl Explorer {
         let now = Instant::now();
         let ctx = ui.ctx().clone();
         let transparency = self.backdrop_transparency;
-        let width = m.s * 440.0;
+        let width = m.accessibility_scale * 440.0;
         for op in self.ops.iter_mut() {
             if op.hidden || op.started.elapsed() < Duration::from_millis(500) {
                 continue;
@@ -91,13 +91,13 @@ impl Explorer {
             // Like Explorer's copy dialog, every operation gets a window of its own (a separate OS
             // window, so it can be moved out of the main window and shows in the taskbar).
             let win_w = width + m.pad * 4.0;
-            let bar_h = (m.s * 32.0).round();
+            let bar_h = (m.accessibility_scale * 32.0).round();
             let win_title = format!("{} – FileFly", op.title);
             // Same look as the main window: no native frame, transparent so the Mica backdrop
             // shows, with our own caption buttons.
             let builder = egui::ViewportBuilder::default()
                 .with_title(win_title.clone())
-                .with_inner_size([win_w, m.s * 220.0])
+                .with_inner_size([win_w, m.accessibility_scale * 220.0])
                 .with_resizable(false)
                 .with_maximize_button(false)
                 .with_decorations(false)
@@ -127,8 +127,8 @@ impl Explorer {
 
                 // Custom title bar: caption text, drag area, minimize / close.
                 let caption = Rect::from_min_size(
-                    pos2(full.right() - m.s * 46.0 * 2.0, full.top()),
-                    vec2(m.s * 46.0 * 2.0, bar_h),
+                    pos2(full.right() - m.accessibility_scale * 46.0 * 2.0, full.top()),
+                    vec2(m.accessibility_scale * 46.0 * 2.0, bar_h),
                 );
                 let drag = ui.interact(
                     Rect::from_min_max(full.min, pos2(caption.left(), full.top() + bar_h)),
@@ -193,7 +193,7 @@ impl Explorer {
                         // Several items at once: each one gets its own cancel button (the others carry on).
                         for (id, name) in running.iter().take(4) {
                             ui.horizontal(|ui| {
-                                let w = (ui.available_width() - m.ctl_h * 1.3).max(m.s * 40.0);
+                                let w = (ui.available_width() - m.ctl_h * 1.3).max(m.accessibility_scale * 40.0);
                                 ui.allocate_ui_with_layout(
                                     vec2(w, m.ctl_h),
                                     Layout::left_to_right(Align::Center),
@@ -265,13 +265,13 @@ impl Explorer {
                             if op.cancelable {
                                 if ui.add_enabled(!op.cancelling, egui::Button::new("Cancel")
                                     .corner_radius(CornerRadius::same(m.radius))
-                                    .min_size(vec2(m.s * 92.0, m.ctl_h))).clicked()
+                                    .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h))).clicked()
                                 {
                                     cancel = true;
                                 }
                                 if ui.add_enabled(!op.cancelling, egui::Button::new(if paused { "Resume" } else { "Pause" })
                                     .corner_radius(CornerRadius::same(m.radius))
-                                    .min_size(vec2(m.s * 92.0, m.ctl_h))).clicked()
+                                    .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h))).clicked()
                                 {
                                     pause = true;
                                 }

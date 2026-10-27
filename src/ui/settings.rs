@@ -97,10 +97,10 @@ pub(crate) fn fl_row(
     let row_width = ui.available_width();
     let padding_x = metrics.pad * 1.6;
     let padding_y = metrics.pad * 0.9;
-    let title_description_gap = metrics.s * 2.0;
+    let title_description_gap = metrics.accessibility_scale * 2.0;
 
     // Left ~55% of the row is the text column; the control goes to its right.
-    let text_column_width = ((row_width - padding_x * 3.0) * 0.55).max(metrics.s * 120.0);
+    let text_column_width = ((row_width - padding_x * 3.0) * 0.55).max(metrics.accessibility_scale * 120.0);
 
     // ---- Measure the text ----
     let title_galley = ui.painter().layout(
@@ -196,7 +196,7 @@ pub(crate) fn settings_page(ui: &mut Ui, rect: Rect, m: &Metrics, pal: &Palette,
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let avail = ui.available_width();
-                    let w = (avail - m.pad * 4.0).clamp(m.s * 240.0, m.s * 860.0);
+                    let w = (avail - m.pad * 4.0).clamp(m.accessibility_scale * 240.0, m.accessibility_scale * 860.0);
                     let left = ((avail - w) / 2.0).max(m.pad * 2.0);
                     ui.horizontal_top(|ui| {
                         ui.add_space(left);
@@ -211,7 +211,7 @@ pub(crate) fn settings_page(ui: &mut Ui, rect: Rect, m: &Metrics, pal: &Palette,
 }
 
 pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut SettingsPage) {
-    ui.spacing_mut().slider_width = m.s * 150.0;
+    ui.spacing_mut().slider_width = m.accessibility_scale * 150.0;
     ui.add_space(m.pad * 1.5);
     ui.label(RichText::new("Settings").size(m.font * 2.0).strong().color(pal.text));
     ui.label(
@@ -228,7 +228,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 ThemeChoice::Dark => "Dark",
             };
             egui::ComboBox::from_id_salt("settings_theme")
-                .width(m.s * 150.0)
+                .width(m.accessibility_scale * 150.0)
                 .selected_text(label(sp.s.theme))
                 .show_ui(ui, |ui| {
                     for t in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
@@ -302,7 +302,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 };
                 // Makes selectable transparency effects dependent on Windows version.
                 egui::ComboBox::from_id_salt("transparency")
-                    .width(m.s * 150.0)
+                    .width(m.accessibility_scale * 150.0)
                     .selected_text(label(sp.s.transparency_effect))
                     .show_ui(ui, |ui| {
                         let effects = if is_windows_11 {
@@ -353,7 +353,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
         fl_divider(ui, m, pal);
         fl_row(ui, m, pal, "Date format", Some("How modification dates are written"), |ui| {
             egui::ComboBox::from_id_salt("settings_date_format")
-                .width(m.s * 150.0)
+                .width(m.accessibility_scale * 150.0)
                 .selected_text(sp.s.date_format.label())
                 .show_ui(ui, |ui| {
                     for f in [DateFormat::European, DateFormat::Iso, DateFormat::American] {

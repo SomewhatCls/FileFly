@@ -114,8 +114,8 @@ pub(crate) fn list_hover(ui: &Ui, rect: Rect, resp: &egui::Response, pal: &Palet
     ui.painter()
         .rect_filled(rect, CornerRadius::same(m.radius), fill);
     let marker = Rect::from_center_size(
-        pos2(rect.left() + m.s * 2.0, rect.center().y),
-        vec2(m.s * 3.0, m.font * 0.8),
+        pos2(rect.left() + m.accessibility_scale * 2.0, rect.center().y),
+        vec2(m.accessibility_scale * 3.0, m.font * 0.8),
     );
     ui.painter()
         .rect_filled(marker, CornerRadius::same(2), pal.accent.gamma_multiply(0.6));
@@ -279,7 +279,7 @@ pub(crate) fn cmd_dropdown<R>(
     }
 
     let res = egui::Popup::menu(&resp)
-        .width(rect.width().max(m.s * 180.0))
+        .width(rect.width().max(m.accessibility_scale * 180.0))
         .show(add_contents);
     ui.data_mut(|d| d.insert_temp(open_id, res.is_some()));
     res.map(|r| r.inner)
@@ -302,7 +302,7 @@ pub(crate) fn menu_item(
     hint: Option<&str>,
     enabled: bool,
 ) -> bool {
-    let w = ui.available_width().max(m.s * 230.0);
+    let w = ui.available_width().max(m.accessibility_scale * 230.0);
     let (rect, resp) = ui.allocate_exact_size(
         vec2(w, m.row_h * 0.95),
         if enabled {
@@ -375,7 +375,7 @@ pub(crate) fn primary_button(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str
             .fill(pal.accent)
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::same(m.radius))
-            .min_size(vec2(m.s * 92.0, m.ctl_h)),
+            .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
     )
 }
 
@@ -383,7 +383,7 @@ pub(crate) fn secondary_button(ui: &mut Ui, m: &Metrics, text: &str) -> egui::Re
     ui.add(
         egui::Button::new(text)
             .corner_radius(CornerRadius::same(m.radius))
-            .min_size(vec2(m.s * 92.0, m.ctl_h)),
+            .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
     )
 }
 
@@ -460,6 +460,6 @@ pub(crate) fn danger_button(ui: &mut Ui, m: &Metrics, text: &str) -> egui::Respo
             .fill(Color32::from_rgb(0xC4, 0x2B, 0x1C))
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::same(m.radius))
-            .min_size(vec2(m.s * 92.0, m.ctl_h)),
+            .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
     )
 }

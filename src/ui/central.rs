@@ -95,7 +95,7 @@ pub(crate) fn layout_tiles(
             a,
             b,
         } => {
-            let gap = m.s * 5.0;
+            let gap = m.accessibility_scale * 5.0;
             let span = (if *side_by_side {
                 rect.width()
             } else {
@@ -244,7 +244,7 @@ impl Explorer {
                             .rect_filled(hdr, CornerRadius::ZERO, pal.subtle_pressed);
                         if is_active {
                             ui.painter().rect_filled(
-                                Rect::from_min_size(hdr.min, vec2(hdr.width(), m.s * 2.0)),
+                                Rect::from_min_size(hdr.min, vec2(hdr.width(), m.accessibility_scale * 2.0)),
                                 CornerRadius::ZERO,
                                 pal.accent,
                             );

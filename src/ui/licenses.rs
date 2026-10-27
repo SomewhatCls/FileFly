@@ -15,7 +15,7 @@ impl Explorer {
             return;
         }
         let (m, pal) = (self.m, self.pal);
-        let height = (ui.content_rect().height() * 0.7).clamp(m.s * 200.0, m.s * 640.0);
+        let height = (ui.content_rect().height() * 0.7).clamp(m.accessibility_scale * 200.0, m.accessibility_scale * 640.0);
         let closed = dialog_shell(
             ui,
             &m,
@@ -23,7 +23,7 @@ impl Explorer {
             "licenses",
             "Licenses",
             true,
-            (ui.content_rect().width() * 0.9).clamp(m.s * 300.0, m.s * 760.0),
+            (ui.content_rect().width() * 0.9).clamp(m.accessibility_scale * 300.0, m.accessibility_scale * 760.0),
             |ui| {
                 ui.label(
                     RichText::new(format!(

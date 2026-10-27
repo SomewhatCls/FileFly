@@ -304,12 +304,13 @@ impl Palette {
 #[derive(Clone, Copy)]
 pub struct Metrics {
     pub font: f32,
-    pub s: f32,
+    pub accessibility_scale: f32,
     pub row_h: f32,
     pub icon: f32,
     pub small_icon: f32,
     pub ctl_h: f32,
     pub tab_h: f32,
+    pub titlebar_h: f32,
     pub nav_h: f32,
     pub pad: f32,
     pub radius: u8,
@@ -320,12 +321,13 @@ impl Metrics {
         let snap = |v: f32| (v * ppp).round() / ppp; // align to physical pixels so SVGs stay crisp
         Self {
             font,
-            s: font / 14.0,
+            accessibility_scale: font / 14.0,
             row_h: snap(font * 2.35),
             icon: snap(font * 1.35),
             small_icon: snap(font * 0.95),
             ctl_h: snap(font * 2.4),
             tab_h: snap(font * 2.6),
+            titlebar_h: snap(font * 3.0),
             nav_h: snap(font * 2.5),
             pad: snap(font * 0.6),
             radius: ((font * 0.3).round() as u8).max(3),
@@ -496,7 +498,7 @@ pub fn sync_fonts(ctx: &egui::Context) {
 }
 
 pub fn apply_style(ctx: &egui::Context, m: &Metrics, accent: Accent) {
-    let s = m.s;
+    let s = m.accessibility_scale;
     let font = m.font;
     ctx.all_styles_mut(|style| {
         let ts: BTreeMap<TextStyle, FontId> = BTreeMap::from([

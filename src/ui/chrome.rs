@@ -74,27 +74,154 @@ pub(crate) fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized
     if get_desktop().is_empty(){
         caption_buttons_windows(ui, m, pal, maximized, show_max);
     }else if get_desktop().contains("KDE"){
-        caption_buttons_windows(ui, m, pal, maximized, show_max);
+        caption_buttons_kde(ui, m, pal, maximized, show_max);
     }else{
-        caption_buttons_windows(ui, m, pal, maximized, show_max);
+        caption_buttons_gnome(ui, m, pal, maximized, show_max);
     }
 }
 
 fn get_desktop() -> String{
     std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default()
 }
-/// Draws custom window control caption buttons in the Windows style.
+
+/// Draws KDE-style caption buttons (minimize, maximize, close, restore).
+pub(crate) fn caption_buttons_kde(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized: bool, show_max: bool) {
+    let kinds: &[usize] = if show_max { &[0, 1, 2] } else { &[0, 2] };
+    let ppp = ui.ctx().pixels_per_point();
+    let snap = |v: f32| (v * ppp).round() / ppp;
+
+    let diameter = snap(22.0 * m.accessibility_scale); // hover circle
+    let pitch = snap(26.0 * m.accessibility_scale);    // center-to-center distance
+    let margin = snap(6.0 * m.accessibility_scale);    // gap to the window's right edge
+
+    // KDE icon size approximation
+    let icon_size = snap(24.0 * m.accessibility_scale);
+
+    let rect = ui.ctx().content_rect();
+    let origin = rect.right_top();
+    let n = kinds.len();
+
+    for (slot, &k) in kinds.iter().enumerate() {
+        let right = origin.x - margin - pitch * (n - 1 - slot) as f32;
+        let c = pos2(snap(right - diameter / 2.0), snap(origin.y + m.titlebar_h / 2.0));
+        let r = Rect::from_center_size(c, vec2(diameter, diameter));
+
+        let resp = ui.interact(r, Id::unique(("caption", k)), Sense::click());
+        let close = k == 2;
+
+        // Breeze: no resting background, a circle on hover/press,
+        // red for close.
+        let bg = if resp.is_pointer_button_down_on() {
+            if close {
+                Color32::from_rgb(0xB0, 0x34, 0x40)
+            } else {
+                pal.subtle_pressed
+            }
+        } else if resp.hovered() {
+            if close {
+                Color32::from_rgb(0xDA, 0x44, 0x53)
+            } else {
+                pal.subtle_hover
+            }
+        } else {
+            Color32::TRANSPARENT
+        };
+        if bg != Color32::TRANSPARENT {
+            ui.painter().circle_filled(c, diameter / 2.0, bg);
+        }
+
+        let fg = if close && (resp.hovered() || resp.is_pointer_button_down_on()) {
+            Color32::WHITE
+        } else {
+            pal.text
+        };
+
+        let name = match k {
+            0 => "kde-minimize",
+            1 if maximized => "kde-restore",
+            1 => "kde-maximize",
+            _ => "kde-close",
+        };
+        draw_icon(ui, c, icon_size, name, fg);
+
+        if resp.clicked() {
+            ui.send_viewport_cmd(match k {
+                0 => egui::ViewportCommand::Minimized(true),
+                1 => egui::ViewportCommand::Maximized(!maximized),
+                _ => egui::ViewportCommand::Close,
+            });
+        }
+    }
+}
+
+/// Draws GNOME-style caption buttons (minimize, maximize, close, restore).
+pub(crate) fn caption_buttons_gnome(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized: bool, show_max: bool) {
+    let kinds: &[usize] = if show_max { &[0, 1, 2] } else { &[0, 2] };
+    let ppp = ui.ctx().pixels_per_point();
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let diameter = snap(24.0 * m.accessibility_scale); // circle
+    let pitch = snap(37.0 * m.accessibility_scale);    // center-to-center distance
+    let margin = snap(6.0 * m.accessibility_scale);    // gap to the window's right edge
+
+    let rect = ui.ctx().content_rect();
+    let origin = rect.right_top();
+    let n = kinds.len();
+
+    // GNOME Icon size approximation
+    let icon_size = snap(24.0 * m.accessibility_scale);
+
+    for (slot, &k) in kinds.iter().enumerate() {
+        let right = origin.x - margin - pitch * (n - 1 - slot) as f32;
+        let c = pos2(snap(right - diameter / 2.0), snap(origin.y + m.titlebar_h / 2.0));
+        let r = Rect::from_center_size(c, vec2(diameter, diameter));
+
+        let resp = ui.interact(r, Id::unique(("caption", k)), Sense::click());
+        let alpha = if resp.is_pointer_button_down_on() {
+            0.30
+        } else if resp.hovered() {
+            0.15
+        } else {
+            0.10
+        };
+        ui.painter()
+            .circle_filled(c, diameter / 2.0, pal.text.gamma_multiply(alpha));
+
+        let name = match k {
+            0 => "window-minimize",
+            1 if maximized => "window-restore",
+            1 => "window-maximize",
+            _ => "window-close",
+        };
+        draw_icon(ui, c, snap(icon_size), name, pal.text);
+
+        if resp.clicked() {
+            ui.send_viewport_cmd(match k {
+                0 => egui::ViewportCommand::Minimized(true),
+                1 => egui::ViewportCommand::Maximized(!maximized),
+                _ => egui::ViewportCommand::Close,
+            });
+        }
+    }
+}
+
+
+/// Draws Windows-style caption buttons (minimize, maximize, close, restore).
 pub(crate) fn caption_buttons_windows(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized: bool, show_max: bool) {
     let kinds: &[usize] = if show_max { &[0, 1, 2] } else { &[0, 2] };
     let ppp = ui.ctx().pixels_per_point();
     let snap = |v: f32| (v * ppp).round() / ppp;
-    let (bw, bh) = (snap(46.0 * m.s), snap(28.0 * m.s));
-    let origin = ui.ctx().content_rect().right_top();   // flush top-right, like #controls in the CSS
+    let (bw, bh) = (snap(46.0 * m.accessibility_scale), snap(28.0 * m.accessibility_scale));
+    let origin = ui.ctx().content_rect().right_top(); // flush top-right, like #controls in the CSS
     let left = origin.x - bw * kinds.len() as f32;
+
+    // Windows Icon size approximation
+    let icon_size = snap(30.0 * m.accessibility_scale);
+
     for (slot, &k) in kinds.iter().enumerate() {
         let r = Rect::from_min_size(pos2(left + bw * slot as f32, origin.y), vec2(bw, bh));
         let resp = ui.interact(r, Id::unique(("caption", k)), Sense::click());
         let close = k == 2;
+
         let bg = if resp.is_pointer_button_down_on() {
             if close {
                 Color32::from_rgb(0xB3, 0x28, 0x1A)
@@ -111,58 +238,23 @@ pub(crate) fn caption_buttons_windows(ui: &mut Ui, m: &Metrics, pal: &Palette, m
             Color32::TRANSPARENT
         };
         if bg != Color32::TRANSPARENT {
-            if close && !maximized {
-                ui.painter().rect_filled(
-                    r,
-                    CornerRadius {
-                        nw: 0,
-                        ne: 0,
-                        sw: 0,
-                        se: 0,
-                    },
-                    bg,
-                );
-            } else {
-                ui.painter().rect_filled(r, CornerRadius::ZERO, bg);
-            }
+            ui.painter().rect_filled(r, CornerRadius::ZERO, bg);
         }
+
         let fg = if close && resp.hovered() {
             Color32::WHITE
         } else {
             pal.text
         };
-        let stroke = Stroke::new(1.0_f32, fg);
-        let s = snap(5.0 * m.s);        // half of the 10x10 glyph
-        let c = r.center();
-        let p = ui.painter();
-        match k {
-            0 => {
-                p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke);
-            }
-            1 if maximized => {
-                let o = (m.s * 2.0).round();
-                p.rect_stroke(
-                    Rect::from_min_size(pos2(c.x - s, c.y - s + o), vec2(2.0 * s - o, 2.0 * s - o)),
-                    CornerRadius::ZERO,
-                    stroke,
-                    StrokeKind::Inside,
-                );
-                p.line_segment([pos2(c.x - s + o, c.y - s), pos2(c.x + s, c.y - s)], stroke);
-                p.line_segment([pos2(c.x + s, c.y - s), pos2(c.x + s, c.y + s - o)], stroke);
-            }
-            1 => {
-                p.rect_stroke(
-                    Rect::from_center_size(c, vec2(2.0 * s, 2.0 * s)),
-                    CornerRadius::ZERO,
-                    stroke,
-                    StrokeKind::Inside,
-                );
-            }
-            _ => {
-                p.line_segment([pos2(c.x - s, c.y - s), pos2(c.x + s, c.y + s)], stroke);
-                p.line_segment([pos2(c.x + s, c.y - s), pos2(c.x - s, c.y + s)], stroke);
-            }
-        }
+
+        let name = match k {
+            0 => "window-minimize",
+            1 if maximized => "window-restore",
+            1 => "window-maximize",
+            _ => "window-close",
+        };
+        draw_icon(ui, r.center(), icon_size, name, fg);
+
         if resp.clicked() {
             ui.send_viewport_cmd(match k {
                 0 => egui::ViewportCommand::Minimized(true),
@@ -189,7 +281,7 @@ pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
         return;
     };
     let r = ctx.content_rect();
-    let (b, c) = (m.s * 5.0, m.s * 12.0);
+    let (b, c) = (m.accessibility_scale * 5.0, m.accessibility_scale * 12.0);
     let (el, er, et, eb) = (
         pos.x - r.left(),
         r.right() - pos.x,
@@ -208,7 +300,7 @@ pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
         (true, ..) => (D::West, egui::CursorIcon::ResizeWest),
         (_, true, ..) => (D::East, egui::CursorIcon::ResizeEast),
         (_, _, true, _) => {
-            if pos.x > r.right() - m.s * 46.0 * 3.0 {
+            if pos.x > r.right() - m.accessibility_scale * 46.0 * 3.0 {
                 return; // don't steal clicks from the caption buttons
             }
             (D::North, egui::CursorIcon::ResizeNorth)

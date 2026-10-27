@@ -392,12 +392,12 @@ impl Explorer {
         // everything else is measured each frame (first frame: a guess).
         let screen = ui.content_rect();
         let chrome = m.pad * 6.0;
-        let width = (screen.width() - chrome).clamp(m.s * 200.0, m.s * 720.0);
+        let width = (screen.width() - chrome).clamp(m.accessibility_scale * 200.0, m.accessibility_scale * 720.0);
         let rest_id = Id::unique("picker_rest_h");
-        let rest_h = ui.data(|d| d.get_temp::<f32>(rest_id)).unwrap_or(m.s * 330.0);
-        let body_h = (screen.height() - chrome - rest_h).clamp(m.row_h * 2.0, m.s * 340.0);
+        let rest_h = ui.data(|d| d.get_temp::<f32>(rest_id)).unwrap_or(m.accessibility_scale * 330.0);
+        let body_h = (screen.height() - chrome - rest_h).clamp(m.row_h * 2.0, m.accessibility_scale * 340.0);
         // In a narrow window the navigation pane goes; the path field and Up still get anywhere.
-        let show_nav = width >= m.s * 480.0;
+        let show_nav = width >= m.accessibility_scale * 480.0;
         let icon_mode = p.wants_files();
         let (ok_label, intro) = match &p.purpose {
             PickFor::Icon { folder } => (
@@ -437,7 +437,7 @@ impl Explorer {
                 ui.add_space(m.pad * 0.6);
                 // ---- Back / Up / path
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = m.s * 2.0;
+                    ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
                     if icon_button(ui, &m, &pal, "back", "Back", !p.back.is_empty(), false).clicked() {
                         input.back = true;
                     }
@@ -475,7 +475,7 @@ impl Explorer {
                 // (Both panes need an explicit top-down layout: a child ui inherits the row's
                 // left-to-right one, which would put the list items side by side.)
                 ui.horizontal_top(|ui| {
-                    let nav_w = (width * 0.3).clamp(m.s * 150.0, m.s * 210.0);
+                    let nav_w = (width * 0.3).clamp(m.accessibility_scale * 150.0, m.accessibility_scale * 210.0);
                     let top_down = Layout::top_down_justified(Align::Min);
                     if show_nav {
                         ui.allocate_ui_with_layout(vec2(nav_w, body_h), top_down, |ui| {
@@ -584,7 +584,7 @@ impl Explorer {
                         if zips.len() == 1 {
                             ui.horizontal(|ui| {
                                 ui.allocate_ui_with_layout(
-                                    vec2(m.s * 92.0, m.ctl_h),
+                                    vec2(m.accessibility_scale * 92.0, m.ctl_h),
                                     Layout::left_to_right(Align::Center),
                                     |ui| {
                                         ui.label(RichText::new("Folder name").color(pal.text_secondary));
@@ -801,7 +801,7 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, he
                         .background_color(pal.control)
                         .desired_width(text_rect.width())
                         .align(Align2::LEFT_CENTER);
-                    let r = ui.put(text_rect.shrink2(vec2(0.0, m.s * 3.0)), te);
+                    let r = ui.put(text_rect.shrink2(vec2(0.0, m.accessibility_scale * 3.0)), te);
                     if nf.focus {
                         nf.focus = false;
                         r.request_focus();
