@@ -168,7 +168,7 @@ pub(crate) fn caption_buttons_gnome(ui: &mut Ui, m: &Metrics, pal: &Palette, max
     let n = kinds.len();
 
     // GNOME Icon size approximation
-    let icon_size = snap(24.0 * m.accessibility_scale);
+    let icon_size = snap(10.0 * m.accessibility_scale);
 
     for (slot, &k) in kinds.iter().enumerate() {
         let right = origin.x - margin - pitch * (n - 1 - slot) as f32;
@@ -215,7 +215,7 @@ pub(crate) fn caption_buttons_windows(ui: &mut Ui, m: &Metrics, pal: &Palette, m
     let left = origin.x - bw * kinds.len() as f32;
 
     // Windows Icon size approximation
-    let icon_size = snap(30.0 * m.accessibility_scale);
+    let icon_size = snap(13.33 * m.accessibility_scale);
 
     for (slot, &k) in kinds.iter().enumerate() {
         let r = Rect::from_min_size(pos2(left + bw * slot as f32, origin.y), vec2(bw, bh));
