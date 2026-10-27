@@ -53,8 +53,8 @@ impl Explorer {
             .exact_size(bar_h)
             .frame(
                 bar_frame(&pal, 0.0, 0.0, 0.0, 0.0).corner_radius(CornerRadius {
-                    nw: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()){15}else{0},
-                    ne: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()){15}else{0},
+                    nw: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()) && self.settings.custom_frame {15}else{0},
+                    ne: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx())  && self.settings.custom_frame {15}else{0},
                     sw: 0,
                     se: 0,
                 }),
