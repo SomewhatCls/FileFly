@@ -145,7 +145,9 @@ impl Explorer {
                     FontId::proportional(m.font * 0.95),
                     pal.text,
                 );
-                caption_buttons(ui, &m, &pal, false, false);
+                if self.settings.custom_frame {
+                    caption_buttons(ui, &m, &pal, false, false);
+                }
 
                 // The window's own close button / Alt+F4: cancels a cancelable operation (the
                 // window then stays until it has really stopped), otherwise just hides the window.

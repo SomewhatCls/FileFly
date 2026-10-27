@@ -337,6 +337,15 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             Some("Leave an empty area at the left of the tabs for moving the window"),
             |ui| fl_switch(ui, m, pal, &mut sp.s.left_drag_space),
         );
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Custom window frame",
+            Some("Use the custom integrated window control title bar of the App."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.custom_frame),
+        );
     });
 
     // ---------------------------------------------------------------- Files
@@ -568,6 +577,7 @@ impl Explorer {
             st.font_size = s.font_size;
             st.follow_text_scale = if cfg!(windows) {s.follow_text_scale} else {false};
             st.left_drag_space = s.left_drag_space;
+            st.custom_frame = s.custom_frame;
             st.use_system_accent = s.use_system_accent;
             st.custom_accent = s.custom_accent;
             st.transparency_effect = s.transparency_effect;

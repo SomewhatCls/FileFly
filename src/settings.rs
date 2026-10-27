@@ -112,6 +112,7 @@ pub(crate) struct Settings {
     /// Top-left of the window (points, screen coordinates) when it was last not maximised.
     pub(crate) window_pos: Option<[f32; 2]>,
     pub(crate) maximized: bool,
+    pub(crate) custom_frame: bool,
     /// Folders with a custom icon chosen by the user: folder path -> `.ico` file.
     pub(crate) folder_icons: HashMap<String, String>,
     /// Open tabs and split layout from the last session.
@@ -140,6 +141,7 @@ impl Default for Settings {
             left_drag_space: false,
             window_size: None,
             window_pos: None,
+            custom_frame: true,
             session: Session::default(),
             maximized: false,
             folder_icons: HashMap::new(),

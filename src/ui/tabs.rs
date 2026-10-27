@@ -353,7 +353,9 @@ impl Explorer {
                     }
                 }
 
-                caption_buttons(ui, &m, &pal, maximized, true);
+                if self.settings.custom_frame {
+                    caption_buttons(ui, &m, &pal, maximized, true);
+                }
             });
 
         ui.data_mut(|d| d.insert_temp(closing_id, closing));

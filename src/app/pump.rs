@@ -335,6 +335,27 @@ impl Explorer {
             }
         }
 
+        // Schedules restart if custom frame has been toggled on/off
+        if !self.window_decoration_state.is_some(){
+            self.window_decoration_state = Some(self.settings.custom_frame);
+        }else if self.window_decoration_state.unwrap() != self.settings.custom_frame {
+            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+                let pos: egui::Pos2 = rect.min;
+                let (x, y) = (pos.x, pos.y);
+                spawn_window(&self.tabs[self.active].dir, Some((pos.x, pos.y)));
+            }else{
+                spawn_window(&self.tabs[self.active].dir, Some((0.0, 0.0)));
+            }
+            self.window_decoration_state = Some(self.settings.custom_frame);
+            hide_window(frame);
+            save_settings(&self.settings);
+            self.peers.shutdown();
+            self.indexer.save_if_dirty(&self.index_dir, true);
+            remove_archive_cache();
+            finish_journal();
+            terminate_now();
+        }
+
         let theme = ctx.theme();
 
         // wanted_transparency is the transparency set by the user in the settings.

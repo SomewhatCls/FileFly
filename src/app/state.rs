@@ -96,6 +96,8 @@ pub(crate) struct Explorer {
     pub(crate) pane_rects: Vec<(u64, Rect)>,
     /// Set after an OS-level drag-out; ignores the (possibly stale) pointer state until a fresh click.
     pub(crate) drag_lock: bool,
+    pub(crate) window_decoration_state: Option<bool>,
+    pub(crate) require_restart: bool,
 }
 
 impl Explorer {
@@ -212,6 +214,8 @@ impl Explorer {
             peer_under: (Instant::now(), false),
             pane_rects: Vec::new(),
             drag_lock: false,
+            window_decoration_state: None,
+            require_restart: false,
             key_state: std::panic::catch_unwind(device_query::DeviceState::new).ok(),
             prev_paste_key: Cell::new(false),
             last_paste: Cell::new(
