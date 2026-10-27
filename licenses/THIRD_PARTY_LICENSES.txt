@@ -3385,7 +3385,7 @@ MIT License
 
 Used by:
   - new_debug_unreachable 1.0.6  https://github.com/mbrubeck/rust-debug-unreachable
-  - ordered-float 4.6.0  https://github.com/reem/rust-ordered-float
+  - ordered-float 5.5.0  https://github.com/reem/rust-ordered-float
 
 --------------------------------------------------------------------------------
 
@@ -3461,7 +3461,7 @@ Used by:
   - heck 0.5.0  https://github.com/withoutboats/heck
   - unicode-properties 0.1.4  https://github.com/unicode-rs/unicode-properties
   - unicode-segmentation 1.13.3  https://github.com/unicode-rs/unicode-segmentation
-  - unicode-width 0.1.14  https://github.com/unicode-rs/unicode-width
+  - unicode-width 0.2.2  https://github.com/unicode-rs/unicode-width
 
 --------------------------------------------------------------------------------
 
@@ -3850,7 +3850,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - equivalent 1.0.2  https://github.com/indexmap-rs/equivalent
+  - equivalent 1.0.3  https://github.com/indexmap-rs/equivalent
 
 --------------------------------------------------------------------------------
 
@@ -4272,7 +4272,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - smallvec 1.16.2  https://github.com/servo/rust-smallvec
+  - smallvec 1.16.3  https://github.com/servo/rust-smallvec
 
 --------------------------------------------------------------------------------
 
@@ -4860,7 +4860,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - litrs 1.0.0  https://github.com/LukasKalbertodt/litrs
+  - litrs 1.0.1  https://github.com/LukasKalbertodt/litrs
 
 --------------------------------------------------------------------------------
 
@@ -5430,7 +5430,7 @@ Used by:
   - toml_datetime 1.1.2+spec-1.1.0  https://github.com/toml-rs/toml
   - toml_edit 0.19.15  https://github.com/toml-rs/toml
   - toml_edit 0.20.2  https://github.com/toml-rs/toml
-  - toml_edit 0.25.15+spec-1.1.0  https://github.com/toml-rs/toml
+  - toml_edit 0.25.17+spec-1.1.0  https://github.com/toml-rs/toml
   - toml_parser 1.1.5+spec-1.1.0  https://github.com/toml-rs/toml
 
 --------------------------------------------------------------------------------
@@ -5826,8 +5826,8 @@ MIT License
 ================================================================================
 
 Used by:
-  - zerocopy-derive 0.8.61  https://github.com/google/zerocopy
-  - zerocopy 0.8.61  https://github.com/google/zerocopy
+  - zerocopy-derive 0.8.63  https://github.com/google/zerocopy
+  - zerocopy 0.8.63  https://github.com/google/zerocopy
 
 --------------------------------------------------------------------------------
 
@@ -7512,17 +7512,17 @@ Used by:
   - serde 1.0.229  https://github.com/serde-rs/serde
   - serde_core 1.0.229  https://github.com/serde-rs/serde
   - serde_derive 1.0.229  https://github.com/serde-rs/serde
-  - serde_json 1.0.151  https://github.com/serde-rs/json
+  - serde_json 1.0.154  https://github.com/serde-rs/json
   - serde_repr 0.1.21  https://github.com/dtolnay/serde-repr
   - smol_str 0.2.2  https://github.com/rust-analyzer/smol_str
   - syn 1.0.109  https://github.com/dtolnay/syn
   - syn 2.0.119  https://github.com/dtolnay/syn
-  - syn 3.0.6  https://github.com/dtolnay/syn
+  - syn 3.0.9  https://github.com/dtolnay/syn
   - thiserror-impl 1.0.69  https://github.com/dtolnay/thiserror
   - thiserror-impl 2.0.21  https://github.com/dtolnay/thiserror
   - thiserror 1.0.69  https://github.com/dtolnay/thiserror
   - thiserror 2.0.21  https://github.com/dtolnay/thiserror
-  - unicode-ident 1.0.26  https://github.com/dtolnay/unicode-ident
+  - unicode-ident 1.0.27  https://github.com/dtolnay/unicode-ident
   - x11-dl 2.21.0  https://github.com/AltF02/x11-rs.git
   - x11 2.21.0  https://github.com/AltF02/x11-rs.git
   - zbus-lockstep-macros 0.5.2  https://github.com/luukvanderduim/zbus-lockstep
@@ -9337,7 +9337,7 @@ Unicode License v3
 ================================================================================
 
 Used by:
-  - unicode-ident 1.0.26  https://github.com/dtolnay/unicode-ident
+  - unicode-ident 1.0.27  https://github.com/dtolnay/unicode-ident
 
 --------------------------------------------------------------------------------
 
@@ -9488,7 +9488,7 @@ the following restrictions:
 
 
 ================================================================================
-Octicons (git-branch icon)
+Octicons MIT-License (git-branch icon)
 ================================================================================
 
 Used by:
