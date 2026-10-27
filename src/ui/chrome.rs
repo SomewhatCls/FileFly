@@ -70,13 +70,21 @@ pub(crate) fn band_frame(pal: &Palette, nw: u8, l: f32, r: f32, t: f32, b: f32) 
 }
 
 /// Minimize / maximize-restore / close, drawn with the painter so they stay crisp at any scale.
-pub(crate) fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized: bool) {
-    caption_buttons_ex(ui, m, pal, maximized, true);
+pub(crate) fn caption_buttons(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized: bool, show_max: bool) {
+    if get_desktop().is_empty(){
+        caption_buttons_windows(ui, m, pal, maximized, show_max);
+    }else if get_desktop().contains("KDE"){
+        caption_buttons_windows(ui, m, pal, maximized, show_max);
+    }else{
+        caption_buttons_windows(ui, m, pal, maximized, show_max);
+    }
 }
 
-/// Like `caption_buttons`; with `show_max == false` only minimize and close are drawn (fixed-size
-/// dialog windows such as the file-operation progress window).
-pub(crate) fn caption_buttons_ex(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized: bool, show_max: bool) {
+fn get_desktop() -> String{
+    std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default()
+}
+/// Draws custom window control caption buttons in the Windows style.
+pub(crate) fn caption_buttons_windows(ui: &mut Ui, m: &Metrics, pal: &Palette, maximized: bool, show_max: bool) {
     let kinds: &[usize] = if show_max { &[0, 1, 2] } else { &[0, 2] };
     let ppp = ui.ctx().pixels_per_point();
     let snap = |v: f32| (v * ppp).round() / ppp;
