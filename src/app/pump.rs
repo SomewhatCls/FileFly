@@ -336,9 +336,8 @@ impl Explorer {
         }
 
         // Schedules restart if custom frame has been toggled on/off
-        if !self.window_decoration_state.is_some(){
-            self.window_decoration_state = Some(self.settings.custom_frame);
-        }else if self.window_decoration_state.unwrap() != self.settings.custom_frame {
+        if self.require_restart{
+            self.require_restart = false;
             if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
                 let pos: egui::Pos2 = rect.min;
                 let (x, y) = (pos.x, pos.y);
@@ -346,7 +345,6 @@ impl Explorer {
             }else{
                 spawn_window(&self.tabs[self.active].dir, Some((0.0, 0.0)));
             }
-            self.window_decoration_state = Some(self.settings.custom_frame);
             hide_window(frame);
             save_settings(&self.settings);
             self.peers.shutdown();

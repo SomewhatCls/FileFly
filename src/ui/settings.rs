@@ -283,15 +283,9 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 });
             }
 
-            let is_windows_11:bool =
-                if cfg!(target_os = "windows") && System::kernel_version()
-                    .unwrap().as_str()
-                    .parse::<i32>()
-                    .expect("Failed to parse kernel version") >= 22000 {
-                    true
-                }else{
-                    false
-                };
+            let is_windows_11 = System::kernel_version()
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_some_and(|build| build >= 22000);
 
             fl_divider(ui, m, pal);
             fl_row(ui, m, pal, "Transparency effects", Some("Choose from available transparency effects"), |ui| {
@@ -509,7 +503,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             m,
             pal,
             "Git integration",
-            Some("Shows the current branch and allows you to checkout local branches within git repositories. Changing this settings requires a restart."),
+            Some("Shows the current branch and allows you to checkout local branches within git repositories."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.git_activated),
         );
     });
@@ -575,7 +569,7 @@ impl Explorer {
             let st = &mut self.settings;
             st.theme = s.theme;
             st.font_size = s.font_size;
-            st.follow_text_scale = if cfg!(windows) {s.follow_text_scale} else {false};
+            st.follow_text_scale = if cfg!(windows) { s.follow_text_scale } else { false };
             st.left_drag_space = s.left_drag_space;
             st.custom_frame = s.custom_frame;
             st.use_system_accent = s.use_system_accent;
@@ -592,6 +586,13 @@ impl Explorer {
             self.settings_dirty = true;
             if s.theme != old.theme {
                 ui.set_theme(theme_pref(s.theme));
+            }
+            if s.custom_frame != old.custom_frame {
+                self.settings.custom_frame = s.custom_frame;
+                self.require_restart = true;
+            } else if s.git_activated != old.git_activated {
+                self.settings.git_activated = s.git_activated;
+                self.require_restart = true;
             }
             if s.show_hidden != old.show_hidden || s.date_format != old.date_format {
                 self.reload_all();
