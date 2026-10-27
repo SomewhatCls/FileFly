@@ -118,6 +118,7 @@ impl Explorer {
                     if !self.settings.network_drives {
                         d.retain(|x| x.kind != DriveKind::Network);
                     }
+                    #[cfg(windows)]
                     set_special_drives(d.iter().map(|x| x.mount_point.clone()));
                     self.drives = d;
                     self.drives_ready = true;

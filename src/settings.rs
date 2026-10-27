@@ -122,7 +122,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             font_size: 14.0,
-            follow_text_scale: true,
+            follow_text_scale: if cfg!(windows) {true} else {false},
             use_system_accent: true,
             custom_accent: [0x00, 0x78, 0xD4],
             theme: ThemeChoice::System,
@@ -149,10 +149,15 @@ impl Default for Settings {
 }
 
 ///Implements the Settings functions.
-impl Settings {   // <- new, separate block
+impl Settings {
     /// Size the UI actually uses. Following the system replaces the custom size.
-    pub(crate) fn effective_font_size(&self, system_scale: f32) -> f32 {
-        if self.follow_text_scale {
+    pub(crate) fn effective_font_size(&mut self, system_scale: f32) -> f32 {
+        #[cfg(windows)]
+        let scale = self.follow_text_scale;
+        #[cfg(not(windows))]
+        let scale = false;
+        self.follow_text_scale = scale;
+        if scale{
             14.0 * system_scale
         } else {
             self.font_size

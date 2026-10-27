@@ -388,24 +388,24 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             },
         );
     });
-
     // ---------------------------------------------------------------- Default file manager
-    fl_section(ui, m, pal, "Default file manager");
-    fl_card(ui, m, pal, |ui| {
-        let desc = match &sp.default_error {
-            Some(e) => format!("Could not change the setting: {e}"),
-            None if sp.default_on => "FileFly opens folders from other apps, the Run dialog and “Show in folder”. Turn off to return to Windows Explorer. Warning: This also overrides shortcuts in your taskbar and Windows menu.".to_owned(),
-            None => "Open folders from other apps, the Run dialog and “Show in folder” in FileFly instead of Windows Explorer. Applies to your account only.".to_owned(),
-        };
-        fl_row(ui, m, pal, "Use FileFly as default file manager", Some(desc.as_str()), |ui| {
-            let mut on = sp.default_on;
-            fl_switch(ui, m, pal, &mut on);
-            if on != sp.default_on {
-                sp.default_request = Some(on);
-            }
+    if cfg!(windows) {
+        fl_section(ui, m, pal, "Default file manager");
+        fl_card(ui, m, pal, |ui| {
+            let desc = match &sp.default_error {
+                Some(e) => format!("Could not change the setting: {e}"),
+                None if sp.default_on => "FileFly opens folders from other apps, the Run dialog and “Show in folder”. Turn off to return to Windows Explorer. Warning: This also overrides shortcuts in your taskbar and Windows menu.".to_owned(),
+                None => "Open folders from other apps, the Run dialog and “Show in folder” in FileFly instead of Windows Explorer. Applies to your account only.".to_owned(),
+            };
+            fl_row(ui, m, pal, "Use FileFly as default file manager", Some(desc.as_str()), |ui| {
+                let mut on = sp.default_on;
+                fl_switch(ui, m, pal, &mut on);
+                if on != sp.default_on {
+                    sp.default_request = Some(on);
+                }
+            });
         });
-    });
-
+    }
     // ---------------------------------------------------------------- Search
     fl_section(ui, m, pal, "Search (experimental)");
     fl_card(ui, m, pal, |ui| {
@@ -566,7 +566,7 @@ impl Explorer {
             let st = &mut self.settings;
             st.theme = s.theme;
             st.font_size = s.font_size;
-            st.follow_text_scale = s.follow_text_scale;
+            st.follow_text_scale = if cfg!(windows) {s.follow_text_scale} else {false};
             st.left_drag_space = s.left_drag_space;
             st.use_system_accent = s.use_system_accent;
             st.custom_accent = s.custom_accent;
