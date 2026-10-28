@@ -123,10 +123,14 @@ impl Explorer {
         // Declares a false second context to draw the app twice for a blurred backdrop effect.
         // This effect is used for tab paning drag&drop effects.
         let backdrop_blur = cc.gl.clone().and_then(|gl| {
-            BackdropBlur::new(gl, |ctx2| {
-                egui_extras::install_image_loaders(ctx2);
-                install_fonts(ctx2);
-            })
+             if settings.blur_paning {
+                BackdropBlur::new(gl, |ctx2| {
+                    egui_extras::install_image_loaders(ctx2);
+                    install_fonts(ctx2);
+                })
+            } else {
+                None
+            }
         });
 
         let (msg_tx, msg_rx) = mpsc::channel();

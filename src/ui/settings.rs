@@ -340,6 +340,15 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             Some("Use the custom integrated window control title bar of the App. Changing this setting will restart the app."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.custom_frame),
         );
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Paning blur effects",
+            Some("Blurs the backdrop behind the paning overlay when dragging tabs.  Changing this setting will restart the app."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.blur_paning),
+        );
     });
 
     // ---------------------------------------------------------------- Files
@@ -470,7 +479,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             },
         );
         fl_divider(ui, m, pal);
-        fl_row(ui, m, pal, "Cache size",  Some("Sets the maximum ram allowed for caching folder sizes.\n Default: 64MB"), |ui| {
+        fl_row(ui, m, pal, "Cache size (Experimental)",  Some("Sets the maximum ram allowed for caching folder sizes.\n Default: 64MB"), |ui| {
             // The whole UI is sized from this value, so applying it mid-drag would move the slider
             // under the cursor. Preview in the handle, apply on release.
             ui.add_enabled_ui(!sp.s.unlimited_cache, |ui| {
@@ -490,7 +499,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             m,
             pal,
             "Unlimited cache size",
-            Some("Removes the above RAM-limit for loading the cached folder sizes."),
+            Some("Removes the above RAM-limit for loading the cached folder sizes. It is recommended to keep this setting turned on."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.unlimited_cache),
         );
     });
@@ -590,8 +599,13 @@ impl Explorer {
             if s.custom_frame != old.custom_frame {
                 self.settings.custom_frame = s.custom_frame;
                 self.require_restart = true;
-            } else if s.git_activated != old.git_activated {
+            }
+            if s.git_activated != old.git_activated {
                 self.settings.git_activated = s.git_activated;
+                self.require_restart = true;
+            }
+            if s.blur_paning != old.blur_paning {
+                self.settings.blur_paning = s.blur_paning;
                 self.require_restart = true;
             }
             if s.show_hidden != old.show_hidden || s.date_format != old.date_format {

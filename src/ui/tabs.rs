@@ -486,12 +486,13 @@ impl Explorer {
                         .as_ref()
                         .is_some_and(|b| b.paint_zone(&overlay, zr, screen, m.radius as f32));
 
+                    // Apply accent color with tint.
                     if blurred {
-                        // Apply accent color with tint.
                         overlay.rect_filled(zr, radius, Color32::from_black_alpha(95));
                         overlay.rect_filled(zr, radius, pal.accent.gamma_multiply(0.25));
                     } else {
-                        overlay.rect_filled(zr, radius, pal.accent.gamma_multiply(0.55)); // fallback
+                        overlay.rect_filled(zr, radius, Color32::from_black_alpha(165));
+                        overlay.rect_filled(zr, radius, pal.accent.gamma_multiply(0.55));
                     }
 
                     overlay.rect_stroke(
