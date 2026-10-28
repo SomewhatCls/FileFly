@@ -500,13 +500,12 @@ impl Explorer {
                         Stroke::new(1.0_f32, pal.accent),
                         StrokeKind::Inside,
                     );
-                    let label = match zone {
-                        DropZone::Left => "Open on the left",
-                        DropZone::Right => "Open on the right",
-                        DropZone::Top => "Open above",
-                        DropZone::Bottom => "Open below",
-                        DropZone::Center => "Replace this pane",
-                    };
+                    let label = self
+                        .tabs
+                        .iter()
+                        .find(|t| t.id == dragged)
+                        .map(|t| t.title())
+                        .unwrap_or_default();
                     let g = overlay.layout_no_wrap(
                         label.to_owned(),
                         FontId::proportional(m.font),
@@ -517,27 +516,6 @@ impl Explorer {
                     overlay.galley(pill.center() - g.size() / 2.0, g, pal.on_accent);
                 }
             }
-            // A small label follows the pointer.
-            let title = self
-                .tabs
-                .iter()
-                .find(|t| t.id == dragged)
-                .map(|t| t.title())
-                .unwrap_or_default();
-            let tip = ui.layer_painter(egui::LayerId::new(
-                egui::Order::Tooltip,
-                Id::unique("tile_drag_ghost"),
-            ));
-            let galley = tip.layout_no_wrap(title, FontId::proportional(m.font), pal.text);
-            let r = Rect::from_min_size(p + vec2(14.0, 14.0), galley.size() + vec2(m.pad * 2.0, m.pad));
-            tip.rect_filled(r, CornerRadius::same(m.radius), pal.layer);
-            tip.rect_stroke(
-                r,
-                CornerRadius::same(m.radius),
-                Stroke::new(1.0_f32, pal.accent),
-                StrokeKind::Inside,
-            );
-            tip.galley(r.min + vec2(m.pad, m.pad * 0.5), galley, pal.text);
         }
         if released || !down {
             self.tab_drag = None;
