@@ -87,6 +87,10 @@ pub(crate) struct Explorer {
     pub(crate) backdrop_transparency: Option<TransparencyEffect>,
     pub(crate) backdrop_start: Instant,
     pub(crate) backdrop_retries: usize,
+    /// Used to draw a blurred backdrop behind tab paning overlays.
+    pub(crate) backdrop_blur: Option<BackdropBlur>,
+    pub(crate) is_backdrop: bool,
+
     pub(crate) text_scale_checked: Instant,
     /// The last known theme.
     pub(crate) theme_choice: ThemeChoice,
@@ -111,6 +115,15 @@ impl Explorer {
             ThemeChoice::System => egui::ThemePreference::System,
             ThemeChoice::Light => egui::ThemePreference::Light,
             ThemeChoice::Dark => egui::ThemePreference::Dark,
+        });
+
+        // Declares a false second context to draw the app twice for a blurred backdrop effect.
+        // This effect is used for tab paning drag&drop effects.
+        let backdrop_blur = cc.gl.clone().and_then(|gl| {
+            BackdropBlur::new(gl, |ctx2| {
+                egui_extras::install_image_loaders(ctx2);
+                install_fonts(ctx2);
+            })
         });
 
         let (msg_tx, msg_rx) = mpsc::channel();
@@ -208,6 +221,8 @@ impl Explorer {
             backdrop_transparency: None,
             backdrop_start: Instant::now(),
             backdrop_retries: 0,
+            backdrop_blur,
+            is_backdrop: false,
             theme_choice: ThemeChoice::default(),
             text_scale_checked: Instant::now(),
             peer_under: (Instant::now(), false),

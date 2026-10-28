@@ -393,6 +393,10 @@ impl Explorer {
     /// While a tab is being dragged: shows where it would land (clearly, in the accent colour) and
     /// performs the drop on release.
     pub(crate) fn tab_drag_overlay(&mut self, ui: &mut Ui, panes: &[(u64, Rect)]) {
+        if self.is_backdrop {
+            // Prevents the backdrop render cycle from overwriting the tab drag state.
+            return;
+        }
         let Some(dragged) = self.tab_drag else {
             return;
         };
@@ -469,19 +473,31 @@ impl Explorer {
                     target = Some((*tid, zone));
                 }
             }
-            // Dim everything, then light up the exact area the tab will occupy.
-            let all = panes
-                .iter()
-                .fold(Rect::NOTHING, |acc, (_, r)| acc.union(*r));
-            overlay.rect_filled(all, CornerRadius::ZERO, Color32::from_black_alpha(95));
+
+            // Draw a blurred backdrop.
             if let Some((tid, zone)) = target {
                 if let Some((_, rect)) = panes.iter().find(|(t, _)| *t == tid) {
                     let zr = zone_rect(*rect, zone).shrink(m.accessibility_scale * 4.0);
-                    overlay.rect_filled(zr, CornerRadius::same(m.radius), pal.accent.gamma_multiply(0.55));
+                    let radius = CornerRadius::same(m.radius);
+
+                    let screen = ui.content_rect();
+                    let blurred = self
+                        .backdrop_blur
+                        .as_ref()
+                        .is_some_and(|b| b.paint_zone(&overlay, zr, screen, m.radius as f32));
+
+                    if blurred {
+                        // Apply accent color with tint.
+                        overlay.rect_filled(zr, radius, Color32::from_black_alpha(95));
+                        overlay.rect_filled(zr, radius, pal.accent.gamma_multiply(0.25));
+                    } else {
+                        overlay.rect_filled(zr, radius, pal.accent.gamma_multiply(0.55)); // fallback
+                    }
+
                     overlay.rect_stroke(
                         zr,
                         CornerRadius::same(m.radius),
-                        Stroke::new(3.0_f32, pal.accent),
+                        Stroke::new(1.0_f32, pal.accent),
                         StrokeKind::Inside,
                     );
                     let label = match zone {
@@ -493,7 +509,7 @@ impl Explorer {
                     };
                     let g = overlay.layout_no_wrap(
                         label.to_owned(),
-                        FontId::proportional(m.font * 1.2),
+                        FontId::proportional(m.font),
                         pal.on_accent,
                     );
                     let pill = Rect::from_center_size(zr.center(), g.size() + vec2(m.pad * 3.0, m.pad * 1.6));

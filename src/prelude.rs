@@ -54,3 +54,4 @@ pub(crate) use crate::settings::*;
 pub(crate) use crate::startup::*;
 pub(crate) use crate::ui::*;
 pub(crate) use crate::git::*;
+pub(crate) use crate::backdrop_blur::*;

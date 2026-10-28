@@ -32,6 +32,7 @@ mod theme;
 mod trash_bin;
 mod ui;
 mod git;
+mod backdrop_blur;
 
 fn main() -> eframe::Result<()> {
     startup::run()

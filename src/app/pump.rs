@@ -310,12 +310,8 @@ impl Explorer {
             self.sys_accent = system_accent();
             self.transparency = system_transparency();
         }
-        let accent = if self.settings.use_system_accent {
-            self.sys_accent.unwrap_or_else(Accent::fallback)
-        } else {
-            let c = self.settings.custom_accent;
-            Accent::from_base(Color32::from_rgb(c[0], c[1], c[2]))
-        };
+
+        let accent = self.get_accent();
 
         //Calls function to determine font size.
         let font = self.settings.effective_font_size(self.text_scale);
@@ -341,7 +337,7 @@ impl Explorer {
             if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
                 let pos: egui::Pos2 = rect.min;
                 let (x, y) = (pos.x, pos.y);
-                spawn_window(&self.tabs[self.active].dir, Some((pos.x, pos.y)));
+                spawn_window(&self.tabs[self.active].dir, Some((x, y)));
             }else{
                 spawn_window(&self.tabs[self.active].dir, Some((0.0, 0.0)));
             }
@@ -434,5 +430,15 @@ impl Explorer {
             }
             ctx.request_repaint();
         }
+    }
+
+    pub(crate) fn get_accent(&mut self, ) -> Accent{
+        let accent = if self.settings.use_system_accent {
+        self.sys_accent.unwrap_or_else(Accent::fallback)
+        } else {
+        let c = self.settings.custom_accent;
+        Accent::from_base(Color32::from_rgb(c[0], c[1], c[2]))
+        };
+        accent
     }
 }

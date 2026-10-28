@@ -2,6 +2,75 @@
 
 use crate::prelude::*;
 
+impl Explorer{
+
+    /// Function to draw the Apps entire interface.
+     fn draw_interface(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>){
+         // Background painting.
+         let rect = ui.content_rect();
+
+         // "Try as administrator" is only offered while the error it belongs to is still showing
+         // (the error bar of the table reads which tab that is).
+         if self.admin_retry.as_ref().is_some_and(|(m, _)| self.tabs[self.active].error.as_ref() != Some(m)) {
+             self.admin_retry = None;
+         }
+         let retry_tab = if self.admin_retry.is_some() { self.tabs[self.active].id } else { u64::MAX };
+         ui.data_mut(|d| d.insert_temp(Id::unique("admin_retry_tab"), retry_tab));
+         let painter = ui.layer_painter(egui::LayerId::background());
+
+         // draws a slight overlay (chrome) over the entire frame to achieve the desired transparency effect look.
+         if self.pal.transparency != TransparencyEffect::None {
+             painter.rect_filled(
+                 rect,
+                 8.0,
+                 self.pal.chrome,
+             );
+         } else {
+             painter.rect_filled(rect, if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()){15}else{0}, self.pal.layer);
+         }
+
+         // Draw the interface.
+         self.ui_tabs(ui, actions);
+         self.ui_nav(ui, actions);
+         self.ui_command(ui, actions);
+         self.ui_sidebar(ui, actions);
+         self.ui_status(ui);
+         self.ui_central(ui, actions);
+
+         // Rounded inner corner where the band above meets the file
+         // view, to the right of the sidebar.
+         if let Some(r) = self.sidebar_rect {
+             let painter = ui.layer_painter(egui::LayerId::background());
+
+             corner_fillet(
+                 &painter,
+                 pos2(r.right(), r.top()),
+                 self.m.radius as f32 * 2.0,
+                 -1.0,
+                 1.0,
+                 self.pal.layer,
+             );
+         }
+    }
+
+    fn draw_backdrop_blur(&mut self, ui: &Ui) {
+        // Compute this BEFORE take(), so an early return can't lose the renderer.
+        let accent = self.sys_accent.unwrap_or_else(Accent::fallback); // same value your main apply_style gets
+        let Some(mut backdrop) = self.backdrop_blur.take() else { return };
+
+        apply_style(backdrop.ctx(), &self.m, accent);
+
+        let clear = self.pal.layer;
+        backdrop.render(ui.ctx(), clear, |ui2| {
+            self.is_backdrop = true;
+            let mut discard = Vec::new();
+            self.draw_interface(ui2, &mut discard);
+            self.is_backdrop = false;
+        });
+        self.backdrop_blur = Some(backdrop);
+    }
+}
+
 impl eframe::App for Explorer {
     fn logic(
         &mut self,
@@ -57,28 +126,6 @@ impl eframe::App for Explorer {
         ui: &mut Ui,
         frame: &mut eframe::Frame
     ) {
-        // Background painting.
-        let rect = ui.content_rect();
-
-        // "Try as administrator" is only offered while the error it belongs to is still showing
-        // (the error bar of the table reads which tab that is).
-        if self.admin_retry.as_ref().is_some_and(|(m, _)| self.tabs[self.active].error.as_ref() != Some(m)) {
-            self.admin_retry = None;
-        }
-        let retry_tab = if self.admin_retry.is_some() { self.tabs[self.active].id } else { u64::MAX };
-        ui.data_mut(|d| d.insert_temp(Id::unique("admin_retry_tab"), retry_tab));
-        let painter = ui.layer_painter(egui::LayerId::background());
-
-        if self.pal.transparency != TransparencyEffect::None {
-            painter.rect_filled(
-                rect,
-                8.0,
-                self.pal.chrome,
-            );
-        } else {
-            painter.rect_filled(rect, if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()){15}else{0}, self.pal.layer);
-        }
-
         // Load tabs that are on screen but have never been read (restored session).
         for ti in self.visible_tabs() {
             if self.tabs[ti].load_gen == 0 {
@@ -90,30 +137,14 @@ impl eframe::App for Explorer {
         let mut actions: Vec<Action> = Vec::new();
         self.collect_shortcuts(ui, &mut actions);
 
-        // Draw the interface.
-        self.ui_tabs(ui, &mut actions);
-        self.ui_nav(ui, &mut actions);
-        self.ui_command(ui, &mut actions);
-        self.ui_sidebar(ui, &mut actions);
-        self.ui_status(ui);
-        self.ui_central(ui, &mut actions);
+        if self.tab_drag.is_some() {
+            self.draw_backdrop_blur(ui);
+        } else if let Some(b) = self.backdrop_blur.as_mut() {
+            b.release(); // frees the textures when no drag is active
+        }
+        self.draw_interface( ui, &mut actions);
         self.drive_item_drag(frame, ui, &mut actions);
         self.handle_dropped_files(ui);
-
-        // Rounded inner corner where the band above meets the file
-        // view, to the right of the sidebar.
-        if let Some(r) = self.sidebar_rect {
-            let painter = ui.layer_painter(egui::LayerId::background());
-
-            corner_fillet(
-                &painter,
-                pos2(r.right(), r.top()),
-                self.m.radius as f32 * 2.0,
-                -1.0,
-                1.0,
-                self.pal.layer,
-            );
-        }
 
         self.ui_props(ui);
         self.ui_conflict(ui);
