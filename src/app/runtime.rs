@@ -80,7 +80,9 @@ impl eframe::App for Explorer {
         // System/window state and background processing.
         self.sync_system(ctx, frame);
         self.track_window(ctx);
-        handle_resize(ctx, &self.m);
+        if self.use_custom_window_frame {
+            handle_resize(ctx, &self.m);
+        }
 
         self.pump_messages();
         self.pump_search(ctx);

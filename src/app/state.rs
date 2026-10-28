@@ -91,6 +91,8 @@ pub(crate) struct Explorer {
     pub(crate) backdrop_blur: Option<BackdropBlur>,
     pub(crate) is_backdrop: bool,
 
+    pub(crate) use_custom_window_frame: bool,
+
     pub(crate) text_scale_checked: Instant,
     /// The last known theme.
     pub(crate) theme_choice: ThemeChoice,
@@ -111,6 +113,7 @@ impl Explorer {
 
         let settings = load_settings();
         let git_activated = settings.git_activated;
+        let custom_frame = settings.custom_frame;
         ui.set_theme(match settings.theme {
             ThemeChoice::System => egui::ThemePreference::System,
             ThemeChoice::Light => egui::ThemePreference::Light,
@@ -222,6 +225,7 @@ impl Explorer {
             backdrop_start: Instant::now(),
             backdrop_retries: 0,
             backdrop_blur,
+            use_custom_window_frame: custom_frame,
             is_backdrop: false,
             theme_choice: ThemeChoice::default(),
             text_scale_checked: Instant::now(),
