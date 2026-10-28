@@ -183,6 +183,7 @@ impl Explorer {
     pub(crate) fn sync_special_icons(&mut self) {
         let mut special: Vec<PathBuf> = known_folders().into_iter().filter_map(|(_, _, p)| p).collect();
         special.extend(self.quick.iter().map(|q| q.path.clone()));
+        #[cfg(windows)]
         set_special_folders(special);
         set_custom_folder_icons(
             self.settings.folder_icons.iter().map(|(k, v)| (PathBuf::from(k), PathBuf::from(v))),

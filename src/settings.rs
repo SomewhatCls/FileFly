@@ -104,6 +104,7 @@ pub(crate) struct Settings {
     pub(crate) index_dir: Option<PathBuf>,
     pub(crate) index_ram: usize,
     pub(crate) unlimited_cache: bool,
+    pub(crate) git_activated: bool,
     /// Widths (at 14 pt text) of Date modified, Type, Size.
     pub(crate) col_widths: [f32; 3],
     /// Inner size of the window when it was last closed (points), and whether it was maximised.
@@ -111,6 +112,8 @@ pub(crate) struct Settings {
     /// Top-left of the window (points, screen coordinates) when it was last not maximised.
     pub(crate) window_pos: Option<[f32; 2]>,
     pub(crate) maximized: bool,
+    pub(crate) custom_frame: bool,
+    pub(crate) blur_paning: bool,
     /// Folders with a custom icon chosen by the user: folder path -> `.ico` file.
     pub(crate) folder_icons: HashMap<String, String>,
     /// Open tabs and split layout from the last session.
@@ -121,7 +124,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             font_size: 14.0,
-            follow_text_scale: true,
+            follow_text_scale: if cfg!(windows) {true} else {false},
             use_system_accent: true,
             custom_accent: [0x00, 0x78, 0xD4],
             theme: ThemeChoice::System,
@@ -134,10 +137,13 @@ impl Default for Settings {
             index_dir: None,
             index_ram: 64,
             unlimited_cache: true,
+            git_activated: false,
             col_widths: [150.0, 110.0, 90.0],
             left_drag_space: false,
             window_size: None,
             window_pos: None,
+            custom_frame: true,
+            blur_paning: true,
             session: Session::default(),
             maximized: false,
             folder_icons: HashMap::new(),
@@ -147,10 +153,15 @@ impl Default for Settings {
 }
 
 ///Implements the Settings functions.
-impl Settings {   // <- new, separate block
+impl Settings {
     /// Size the UI actually uses. Following the system replaces the custom size.
-    pub(crate) fn effective_font_size(&self, system_scale: f32) -> f32 {
-        if self.follow_text_scale {
+    pub(crate) fn effective_font_size(&mut self, system_scale: f32) -> f32 {
+        #[cfg(windows)]
+        let scale = self.follow_text_scale;
+        #[cfg(not(windows))]
+        let scale = false;
+        self.follow_text_scale = scale;
+        if scale{
             14.0 * system_scale
         } else {
             self.font_size

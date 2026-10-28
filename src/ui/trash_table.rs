@@ -56,9 +56,9 @@ pub(crate) fn trash_table_ui(
     }
 
     // Columns after Name: Original location, Date deleted, Size. Dropped in that order when narrow.
-    let widths = [m.s * 230.0, m.s * 150.0, m.s * 90.0];
+    let widths = [m.accessibility_scale * 230.0, m.accessibility_scale * 150.0, m.accessibility_scale * 90.0];
     let mut show = [true; 3];
-    let name_min = m.s * 220.0;
+    let name_min = m.accessibility_scale * 220.0;
     let total = |show: &[bool; 3]| (0..3).filter(|&i| show[i]).map(|i| widths[i]).sum::<f32>();
     for d in [0usize, 1, 2] {
         if name_min + total(&show) > avail {
@@ -85,7 +85,7 @@ pub(crate) fn trash_table_ui(
         let crect = Rect::from_min_size(pos2(x, hrect.top()), vec2(cw, header_h));
         x += cw;
         let resp = ui.interact(crect, Id::unique(("trash_hdr", c)), Sense::click());
-        hover_fill(ui, crect.shrink2(vec2(m.s * 2.0, m.s * 2.0)), &resp, pal, m);
+        hover_fill(ui, crect.shrink2(vec2(m.accessibility_scale * 2.0, m.accessibility_scale * 2.0)), &resp, pal, m);
         let active = *sort_col == sorts[c];
         let color = if active { pal.text } else { pal.text_secondary };
         let right = c == 3;
@@ -243,7 +243,7 @@ pub(crate) fn trash_table_ui(
                 };
                 if bg != Color32::TRANSPARENT {
                     ui.painter().rect_filled(
-                        rect.shrink2(vec2(m.s * 2.0, m.s)),
+                        rect.shrink2(vec2(m.accessibility_scale * 2.0, m.accessibility_scale)),
                         CornerRadius::same(m.radius),
                         bg,
                     );

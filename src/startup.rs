@@ -136,7 +136,7 @@ pub(crate) fn run() -> eframe::Result<()> {
         .with_inner_size(size)
         .with_min_inner_size([520.0, 340.0])
         .with_resizable(true)
-        .with_decorations(false) // we draw the title bar and caption buttons ourselves
+        .with_decorations(if saved.custom_frame {false} else {true})
         .with_transparent(true) // required for the Mica backdrop
         .with_icon(Arc::new(icon));
     if let Some(p) = pos {

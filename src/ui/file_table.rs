@@ -26,8 +26,8 @@ pub(crate) fn sel_fill(pal: &Palette, hovered: bool) -> Color32 {
 /// Fluent-style accent indicator on the left edge of a selected row.
 pub(crate) fn paint_sel_marker(ui: &Ui, rect: Rect, m: &Metrics, pal: &Palette) {
     let marker = Rect::from_center_size(
-        pos2(rect.left() + m.s * 4.0, rect.center().y),
-        vec2(m.s * 3.0, rect.height() * 0.5),
+        pos2(rect.left() + m.accessibility_scale * 4.0, rect.center().y),
+        vec2(m.accessibility_scale * 3.0, rect.height() * 0.5),
     );
     ui.painter()
         .rect_filled(marker, CornerRadius::same(2), pal.accent);
@@ -83,7 +83,7 @@ pub(crate) fn rubber_band(
 
     if pressed && enabled && state.is_none() {
         if let Some(p) = pos {
-            let on_scrollbar = viewport.contains(p) && p.x > viewport.right() - m.s * 14.0;
+            let on_scrollbar = viewport.contains(p) && p.x > viewport.right() - m.accessibility_scale * 14.0;
             // layer_id_at() is None over plain panels and Some(..) over dialogs/menus/popups.
             let covered = ui.layer_id_at(p).is_some_and(|l| l != ui.layer_id());
             // `hit` is the viewport plus the blank margins around it: a drag may start there too.
@@ -195,6 +195,7 @@ pub(crate) fn table_ui(
         sort_asc,
         view_dirty,
         error,
+        git_error,
         loading,
         search,
         ..
@@ -210,9 +211,9 @@ pub(crate) fn table_ui(
     let avail = (ui.available_width() - m.pad * 0.5).max(100.0);
 
     // ---- error bar (Fluent InfoBar)
-    if let Some(msg) = error.clone() {
+    if let Some(msg) = error.clone().or_else(|| git_error.clone()) {
         let offer = ui.data(|d| d.get_temp::<u64>(Id::unique("admin_retry_tab"))) == Some(tab_id);
-        let btn_w = if offer { m.s * 150.0 } else { 0.0 };
+        let btn_w = if offer { m.accessibility_scale * 150.0 } else { 0.0 };
         let (r, _) = ui.allocate_exact_size(vec2(avail, m.row_h * 1.1), Sense::hover());
         ui.painter()
             .rect_filled(r, CornerRadius::same(m.radius), pal.danger_bg);
@@ -256,6 +257,7 @@ pub(crate) fn table_ui(
         draw_icon(ui, cr.center(), m.small_icon * 0.8, "close", pal.danger);
         if resp.clicked() {
             *error = None;
+            *git_error = None;
         }
         ui.add_space(m.pad * 0.5);
     }
@@ -271,9 +273,9 @@ pub(crate) fn table_ui(
     // columns are squeezed (never below `col_floor`) so Name keeps its preferred width; a wider
     // pane gets the stored widths back. (Hiding columns with a `>` test also flickered: a drag
     // that exactly filled the pane flipped it on rounding error.)
-    let name_min = m.s * 220.0;
-    let col_floor = m.s * 50.0;
-    let want = [base_cols[0] * m.s, base_cols[1] * m.s, base_cols[2] * m.s];
+    let name_min = m.accessibility_scale * 220.0;
+    let col_floor = m.accessibility_scale * 50.0;
+    let want = [base_cols[0] * m.accessibility_scale, base_cols[1] * m.accessibility_scale, base_cols[2] * m.accessibility_scale];
     let room = (avail - name_min).max(0.0);
     let sum_want: f32 = want.iter().sum();
     let eff_px: [f32; 3] = if sum_want <= room {
@@ -285,7 +287,7 @@ pub(crate) fn table_ui(
         [0, 1, 2].map(|i| col_floor + (want[i] - col_floor).max(0.0) * k)
     };
     // The widths actually on screen, in stored units: drags start from these.
-    let eff_cols = [eff_px[0] / m.s, eff_px[1] / m.s, eff_px[2] / m.s];
+    let eff_cols = [eff_px[0] / m.accessibility_scale, eff_px[1] / m.accessibility_scale, eff_px[2] / m.accessibility_scale];
     let w = |i: usize| eff_px[i];
     let show = [true; 3];
     let name_w = (avail - eff_px.iter().sum::<f32>()).max(0.0);
@@ -312,7 +314,7 @@ pub(crate) fn table_ui(
         let crect = Rect::from_min_size(pos2(x, hrect.top()), vec2(cw, header_h));
         x += cw;
         let resp = ui.interact(crect, Id::unique(("hdr", tab_id, c)), Sense::click());
-        hover_fill(ui, crect.shrink2(vec2(m.s * 2.0, m.s * 2.0)), &resp, pal, m);
+        hover_fill(ui, crect.shrink2(vec2(m.accessibility_scale * 2.0, m.accessibility_scale * 2.0)), &resp, pal, m);
         let active = *sort_col == sorts[c];
         let color = if active { pal.text } else { pal.text_secondary };
         let right = c == 3;
@@ -377,7 +379,7 @@ pub(crate) fn table_ui(
         if let Some((k, next)) = boundary {
             let hr = Rect::from_center_size(
                 pos2(crect.right(), crect.center().y),
-                vec2(m.s * 8.0, header_h),
+                vec2(m.accessibility_scale * 8.0, header_h),
             );
             let hid = Id::unique(("resize", tab_id, c));
             let h = ui.interact(hr, hid, Sense::drag());
@@ -395,13 +397,13 @@ pub(crate) fn table_ui(
                 if let (Some(start), Some(total_drag)) = (start, h.total_drag_delta()) {
                     const MIN_W: f32 = 50.0;
                     const MAX_W: f32 = 600.0;
-                    let dx = total_drag.x / m.s;
+                    let dx = total_drag.x / m.accessibility_scale;
                     let mut nc = start;
                     match next {
                         None => {
                             let shown_sum: f32 = (0..3).filter(|&i| show[i]).map(|i| start[i]).sum();
                             // Name must keep its minimum width, or other columns would vanish.
-                            let room = (avail / m.s - name_min / m.s - shown_sum).max(0.0);
+                            let room = (avail / m.accessibility_scale - name_min / m.accessibility_scale - shown_sum).max(0.0);
                             let hi = (start[k] + room).min(MAX_W).max(start[k]);
                             let lo = MIN_W.min(start[k]);
                             nc[k] = (start[k] - dx).clamp(lo, hi);
@@ -550,7 +552,7 @@ pub(crate) fn table_ui(
                     None
                 }
             });
-            let sb_x = ui.clip_rect().right() - m.s * 14.0; // keep the scrollbar clear
+            let sb_x = ui.clip_rect().right() - m.accessibility_scale * 14.0; // keep the scrollbar clear
             let rows_left = ui.max_rect().left();
             let press_on_row = press_pos.is_some_and(|p| {
                 let y = p.y - content_top;
@@ -608,7 +610,7 @@ pub(crate) fn table_ui(
                 };
                 if bg != Color32::TRANSPARENT {
                     ui.painter().rect_filled(
-                        rect.shrink2(vec2(m.s * 2.0, m.s)),
+                        rect.shrink2(vec2(m.accessibility_scale * 2.0, m.accessibility_scale)),
                         CornerRadius::same(m.radius),
                         bg,
                     );
@@ -644,7 +646,7 @@ pub(crate) fn table_ui(
                             ui,
                             pal,
                             m,
-                            rect.shrink2(vec2(m.s * 2.0, m.s)),
+                            rect.shrink2(vec2(m.accessibility_scale * 2.0, m.accessibility_scale)),
                             &e.path,
                             paths,
                         );
@@ -678,7 +680,7 @@ pub(crate) fn table_ui(
                 if renaming_here {
                     let rs = rename.as_mut().unwrap();
                     let id = Id::unique(("rename_edit", tab_id));
-                    let er = name_rect.shrink2(vec2(0.0, m.s * 2.0));
+                    let er = name_rect.shrink2(vec2(0.0, m.accessibility_scale * 2.0));
                     let te = egui::TextEdit::singleline(&mut rs.text)
                         .id(id)
                         .margin(Margin::symmetric(4, 0))

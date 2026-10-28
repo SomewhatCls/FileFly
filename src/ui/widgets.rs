@@ -48,6 +48,25 @@ pub(crate) fn layer_frame(
         })
 }
 
+/// Wraps a pill around a label with a given color.
+pub(crate) fn status_pill(ui: &mut Ui, m: &Metrics, bg: Color32, text_color:  Color32, text: &str) {
+    ui.style_mut().interaction.selectable_labels = false;
+    ui.spacing_mut().item_spacing.x = 7.0;
+    egui::Frame::new()
+        .fill(bg)
+        .corner_radius(CornerRadius::same(255))
+        .inner_margin(Margin::symmetric(9, 0))
+        .outer_margin(Margin::symmetric(0, (m.pad * 0.6) as i8))
+        .show(ui, |ui| {
+        ui.label(
+            RichText::new(text)
+                .color(text_color)
+                .strong()
+                .size(m.font * 0.93),
+        )}
+    );
+}
+
 pub(crate) fn paint_text(ui: &Ui, rect: Rect, text: &str, font: FontId, color: Color32, right: bool) {
     let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
     job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width().max(1.0));
@@ -95,8 +114,8 @@ pub(crate) fn list_hover(ui: &Ui, rect: Rect, resp: &egui::Response, pal: &Palet
     ui.painter()
         .rect_filled(rect, CornerRadius::same(m.radius), fill);
     let marker = Rect::from_center_size(
-        pos2(rect.left() + m.s * 2.0, rect.center().y),
-        vec2(m.s * 3.0, m.font * 0.8),
+        pos2(rect.left() + m.accessibility_scale * 2.0, rect.center().y),
+        vec2(m.accessibility_scale * 3.0, m.font * 0.8),
     );
     ui.painter()
         .rect_filled(marker, CornerRadius::same(2), pal.accent.gamma_multiply(0.6));
@@ -178,6 +197,94 @@ pub(crate) fn cmd_button(
     resp.on_hover_text(tip)
 }
 
+/// Truncates `text` with "…" so it fits in `max_w`.
+fn fit_text(ui: &Ui, text: &str, font: f32, max_w: f32) -> String {
+    if text_width(ui, text, font) <= max_w {
+        return text.to_owned();
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while chars.pop().is_some() {
+        let cand = format!("{}…", chars.iter().collect::<String>());
+        if text_width(ui, &cand, font) <= max_w {
+            return cand;
+        }
+    }
+    "…".to_owned()
+}
+
+/// creates a drop-down menu for the toolbar.
+pub(crate) fn cmd_dropdown<R>(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    icon: &str,
+    label: Option<&str>,
+    tip: &str,
+    enabled: bool,
+    max_label_w: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let icon_size = m.icon * 0.85;
+    let chevron = m.small_icon * 0.7;
+    let label = label.map(|l| fit_text(ui, l, m.font, max_label_w));
+
+    let width = match &label {
+        Some(l) => m.pad * 3.2 + icon_size + chevron + text_width(ui, l, m.font),
+        None => m.pad * 2.4 + icon_size + chevron,
+    };
+    let (rect, resp) = ui.allocate_exact_size(
+        vec2(width, m.ctl_h),
+        if enabled { Sense::click() } else { Sense::hover() },
+    );
+
+    // Show button as pressed while drop-down menu is opened.
+    let open_id = resp.id.with("dd_open");
+    let open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+
+    if open {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(m.radius), pal.selected);
+    } else if enabled {
+        hover_fill(ui, rect, &resp, pal, m);
+    }
+
+    let color = if enabled { pal.text } else { pal.text_disabled };
+    draw_icon(
+        ui,
+        pos2(rect.left() + m.pad + icon_size / 2.0, rect.center().y),
+        icon_size,
+        icon,
+        color,
+    );
+    let chevron_color = pos2(rect.right() - m.pad - chevron / 2.0, rect.center().y);
+    draw_icon(
+        ui,
+        chevron_color,
+        chevron,
+        "chevron_down",
+        if enabled { pal.text_secondary } else { pal.text_disabled },
+    );
+    if let Some(l) = &label {
+        let tr = Rect::from_min_max(
+            pos2(rect.left() + m.pad * 1.6 + icon_size, rect.top()),
+            pos2(chevron_color.x - chevron / 2.0 - m.pad * 0.6, rect.bottom()),
+        );
+        paint_text(ui, tr, l, FontId::proportional(m.font), color, false);
+    }
+
+    // Don't show the tooltip on top of the menu.
+    let resp = if open { resp } else { resp.on_hover_text(tip) };
+    if !enabled {
+        return None;
+    }
+
+    let res = egui::Popup::menu(&resp)
+        .width(rect.width().max(m.accessibility_scale * 180.0))
+        .show(add_contents);
+    ui.data_mut(|d| d.insert_temp(open_id, res.is_some()));
+    res.map(|r| r.inner)
+}
+
 pub(crate) fn vsep(ui: &mut Ui, m: &Metrics, pal: &Palette) {
     let (r, _) = ui.allocate_exact_size(vec2(m.pad, m.ctl_h * 0.6), Sense::hover());
     ui.painter().line_segment(
@@ -195,7 +302,7 @@ pub(crate) fn menu_item(
     hint: Option<&str>,
     enabled: bool,
 ) -> bool {
-    let w = ui.available_width().max(m.s * 230.0);
+    let w = ui.available_width().max(m.accessibility_scale * 230.0);
     let (rect, resp) = ui.allocate_exact_size(
         vec2(w, m.row_h * 0.95),
         if enabled {
@@ -268,7 +375,7 @@ pub(crate) fn primary_button(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str
             .fill(pal.accent)
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::same(m.radius))
-            .min_size(vec2(m.s * 92.0, m.ctl_h)),
+            .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
     )
 }
 
@@ -276,7 +383,7 @@ pub(crate) fn secondary_button(ui: &mut Ui, m: &Metrics, text: &str) -> egui::Re
     ui.add(
         egui::Button::new(text)
             .corner_radius(CornerRadius::same(m.radius))
-            .min_size(vec2(m.s * 92.0, m.ctl_h)),
+            .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
     )
 }
 
@@ -353,6 +460,6 @@ pub(crate) fn danger_button(ui: &mut Ui, m: &Metrics, text: &str) -> egui::Respo
             .fill(Color32::from_rgb(0xC4, 0x2B, 0x1C))
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::same(m.radius))
-            .min_size(vec2(m.s * 92.0, m.ctl_h)),
+            .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
     )
 }

@@ -64,10 +64,10 @@ pub(crate) fn address_bar(
         }
         ui.painter().line_segment(
             [
-                pill.left_bottom() + vec2(m.s * 3.0, -1.0),
-                pill.right_bottom() + vec2(-m.s * 3.0, -1.0),
+                pill.left_bottom() + vec2(m.accessibility_scale * 3.0, -1.0),
+                pill.right_bottom() + vec2(-m.accessibility_scale * 3.0, -1.0),
             ],
-            Stroke::new(2.0 * m.s, pal.accent),
+            Stroke::new(2.0 * m.accessibility_scale, pal.accent),
         );
         if resp.lost_focus() {
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -88,7 +88,7 @@ pub(crate) fn address_bar(
     let segs = crumbs(&tab.shown_dir());
     let seg_pad = m.pad * 0.7;
     let chev = m.small_icon * 0.7;
-    let sep_w = chev + m.s * 4.0;
+    let sep_w = chev + m.accessibility_scale * 4.0;
     let more_w = m.ctl_h * 0.7;
     let widths: Vec<f32> = segs
         .iter()
@@ -108,8 +108,8 @@ pub(crate) fn address_bar(
         first = i;
     }
 
-    let top = inner.top() + m.s * 3.0;
-    let h = inner.height() - m.s * 6.0;
+    let top = inner.top() + m.accessibility_scale * 3.0;
+    let h = inner.height() - m.accessibility_scale * 6.0;
     let mut x = inner.left();
     if first > 0 {
         let rect = Rect::from_min_size(pos2(x, top), vec2(more_w, h));
@@ -210,10 +210,10 @@ pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab,
     if resp.has_focus() {
         ui.painter().line_segment(
             [
-                pill.left_bottom() + vec2(m.s * 3.0, -1.0),
-                pill.right_bottom() + vec2(-m.s * 3.0, -1.0),
+                pill.left_bottom() + vec2(m.accessibility_scale * 3.0, -1.0),
+                pill.right_bottom() + vec2(-m.accessibility_scale * 3.0, -1.0),
             ],
-            Stroke::new(2.0 * m.s, pal.accent),
+            Stroke::new(2.0 * m.accessibility_scale, pal.accent),
         );
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             tab.search.clear();
@@ -325,7 +325,7 @@ impl Explorer {
             .frame(band_frame(&pal, nw, m.pad, m.pad, m.pad * 0.8, m.pad * 0.2))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = m.s * 2.0;
+                    ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
                     if icon_button(ui, &m, &pal, "back", "Back (Alt+←)", can_back, false).clicked()
                     {
                         actions.push(Action::Back);
@@ -343,14 +343,14 @@ impl Explorer {
                     }
                     if tab.settings {
                         ui.add_space(m.pad * 0.5);
-                        let w = ui.available_width().max(m.s * 120.0);
+                        let w = ui.available_width().max(m.accessibility_scale * 120.0);
                         static_address(ui, &m, &pal, w, "settings", "Settings");
                         return;
                     }
                     ui.add_space(m.pad * 0.5);
                     let gap = ui.spacing().item_spacing.x + m.pad * 0.5;
-                    let search_w = (m.s * 260.0).min(ui.available_width() * 0.38);
-                    let addr_w = (ui.available_width() - search_w - gap).max(m.s * 120.0);
+                    let search_w = (m.accessibility_scale * 260.0).min(ui.available_width() * 0.38);
+                    let addr_w = (ui.available_width() - search_w - gap).max(m.accessibility_scale * 120.0);
                     if tab.trash.is_some() {
                         static_address(ui, &m, &pal, addr_w, "recycle_bin", "Recycle Bin");
                     } else {
@@ -369,12 +369,16 @@ impl Explorer {
             Some(t) => (true, t.selected.len(), !t.rows.is_empty()),
             None => (false, 0, false),
         };
-        let sel = self.tabs[self.active].selected_paths();
+        let selection = self.tabs[self.active].selected_paths();
         let (can_paste, hidden, settings_open) = (
             get_clipboard().is_some(),
             self.settings.show_hidden,
             self.tabs[self.active].settings,
         );
+        // Checks for the existence of a git repository.
+        if let Some(git) = &mut self.git {
+            git.update(ui.ctx(), &self.tabs[self.active].dir);
+        }
         egui::Panel::top("command")
             .show_separator_line(false)
             .frame(layer_frame(
@@ -388,7 +392,7 @@ impl Explorer {
             ))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = m.s * 2.0;
+                    ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
                     if settings_open {
                         // Remove all file interaction buttons for settings tab.
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -459,7 +463,7 @@ impl Explorer {
                         });
                         return;
                     }
-                    let wide = ui.available_width() > m.s * 640.0;
+                    let wide = ui.available_width() > m.accessibility_scale * 640.0;
                     if cmd_button(
                         ui,
                         &m,
@@ -475,13 +479,13 @@ impl Explorer {
                         actions.push(Action::NewFolder);
                     }
                     vsep(ui, &m, &pal);
-                    if !sel.is_empty() {
+                    if !selection.is_empty() {
                         if icon_button(ui, &m, &pal, "cut", "Cut (Ctrl+X)", true, false).clicked() {
-                            actions.push(Action::Cut(sel.clone()));
+                            actions.push(Action::Cut(selection.clone()));
                         }
                         if icon_button(ui, &m, &pal, "copy", "Copy (Ctrl+C)", true, false).clicked()
                         {
-                            actions.push(Action::Copy(sel.clone()));
+                            actions.push(Action::Copy(selection.clone()));
                         }
                     } else {
                         icon_button(ui, &m, &pal, "cut", "Cut (Ctrl+X)", false, false);
@@ -492,16 +496,16 @@ impl Explorer {
                     {
                         actions.push(Action::Paste);
                     }
-                    if !sel.is_empty() {
-                        if icon_button(ui, &m, &pal, "rename", "Rename (F2)", sel.len() == 1, false)
+                    if !selection.is_empty() {
+                        if icon_button(ui, &m, &pal, "rename", "Rename (F2)", selection.len() == 1, false)
                             .clicked()
                         {
-                            actions.push(Action::Rename(sel[0].clone()));
+                            actions.push(Action::Rename(selection[0].clone()));
                         }
                         if icon_button(ui, &m, &pal, "delete", "Delete (Del)", true, false)
                             .clicked()
                         {
-                            actions.push(Action::Delete(sel.clone()));
+                            actions.push(Action::Delete(selection.clone()));
                         }
                     } else {
                         icon_button(ui, &m, &pal, "rename", "Rename (F2)", false, false);
@@ -521,6 +525,73 @@ impl Explorer {
                     .clicked()
                     {
                         actions.push(Action::ToggleHidden);
+                    }
+                    // Display git toolbar options if in a git repository.
+                    let mut picked: Option<String> = None;
+                    if let Some(git) = &self.git {
+                        if let Some(snap) = &git.snapshot {
+                            let (full, current): (String, Option<&str>) = match &snap.head {
+                                Some(Head::Branch(n)) => (n.clone(), Some(n.as_str())),
+                                Some(Head::Detached(h)) => {
+                                    (format!("detached @ {}", &h[..h.len().min(7)]), None)
+                                }
+                                None => ("no HEAD".to_owned(), None),
+                            };
+                            vsep(ui, &m, &pal);
+                            cmd_dropdown(
+                                ui,
+                                &m,
+                                &pal,
+                                "git_branch",
+                                if wide { Some(full.as_str()) } else { None },
+                                &format!("Branch: {full}"),
+                                !git.busy(),
+                                m.accessibility_scale * 140.0, // max label width before "…"
+                                |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .max_height(m.accessibility_scale * 320.0)
+                                        .show(ui, |ui| {
+                                            for b in &snap.branches {
+                                                let is_cur = Some(b.name.as_str()) == current;
+                                                let r = ui
+                                                    .add(egui::Button::selectable(is_cur, &b.name).truncate())
+                                                    .on_hover_text(&b.name);
+                                                if r.clicked() && !is_cur {
+                                                    picked = Some(b.name.clone());
+                                                }
+                                            }
+                                        });
+                                },
+                            );
+                            /*
+                            if !selection.is_empty() {
+                                if icon_button(ui, &m, &pal, "git_add", "add to staging", true, false).clicked() {
+                                    actions.push(Action::GitAdd(selection.clone()));
+                                }
+                            }
+                            if snap.staged_files > 0 {
+                                if icon_button(ui, &m, &pal, "git_commit", "commit staged changes", true, false).clicked() {
+                                    actions.push(Action::GitCommit(snap.root.clone()));
+                                }
+                            }*/
+                        }
+                    }
+                    // Outside the block due to borrowing logic, refreshes the folder contents after
+                    // switching branches.
+                    if let Some(git) = &mut self.git {
+                        if let Some(name) = picked {
+                            git.git_async(ui.ctx(), GitCommand::Checkout {branch: name});
+                        }
+                        if std::mem::take(&mut git.switched) {
+                            actions.push(Action::Refresh);
+                        }
+
+                        git.update(ui.ctx(), &*self.tabs[self.active].dir);
+
+                        // Push error out to the error display.
+                        if let Some(err) = git.error.take() {
+                            self.tabs[self.active].git_error = Some(err);
+                        }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if icon_button(ui, &m, &pal, "settings", "Settings", true, settings_open)

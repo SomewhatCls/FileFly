@@ -9,6 +9,9 @@ pub(crate) struct Explorer {
     pub(crate) active: usize,
     pub(crate) next_tab_id: u64,
 
+    /// The session cache for git repository checks.
+    pub(crate) git: Option<GitState>,
+
     pub(crate) drives: Vec<DriveInfo>,
     /// Background thread that polls the drives live (see drives.rs).
     pub(crate) drive_ctl: Arc<DriveWatchCtl>,
@@ -84,6 +87,12 @@ pub(crate) struct Explorer {
     pub(crate) backdrop_transparency: Option<TransparencyEffect>,
     pub(crate) backdrop_start: Instant,
     pub(crate) backdrop_retries: usize,
+    /// Used to draw a blurred backdrop behind tab paning overlays.
+    pub(crate) backdrop_blur: Option<BackdropBlur>,
+    pub(crate) is_backdrop: bool,
+
+    pub(crate) use_custom_window_frame: bool,
+
     pub(crate) text_scale_checked: Instant,
     /// The last known theme.
     pub(crate) theme_choice: ThemeChoice,
@@ -93,6 +102,7 @@ pub(crate) struct Explorer {
     pub(crate) pane_rects: Vec<(u64, Rect)>,
     /// Set after an OS-level drag-out; ignores the (possibly stale) pointer state until a fresh click.
     pub(crate) drag_lock: bool,
+    pub(crate) require_restart: bool,
 }
 
 impl Explorer {
@@ -102,10 +112,25 @@ impl Explorer {
         install_fonts(&ui);
 
         let settings = load_settings();
+        let git_activated = settings.git_activated;
+        let custom_frame = settings.custom_frame;
         ui.set_theme(match settings.theme {
             ThemeChoice::System => egui::ThemePreference::System,
             ThemeChoice::Light => egui::ThemePreference::Light,
             ThemeChoice::Dark => egui::ThemePreference::Dark,
+        });
+
+        // Declares a false second context to draw the app twice for a blurred backdrop effect.
+        // This effect is used for tab paning drag&drop effects.
+        let backdrop_blur = cc.gl.clone().and_then(|gl| {
+             if settings.blur_paning {
+                BackdropBlur::new(gl, |ctx2| {
+                    egui_extras::install_image_loaders(ctx2);
+                    install_fonts(ctx2);
+                })
+            } else {
+                None
+            }
         });
 
         let (msg_tx, msg_rx) = mpsc::channel();
@@ -160,6 +185,7 @@ impl Explorer {
             msg_rx,
             idx_rx,
             indexer,
+            git: (git_available() && git_activated).then(GitState::new),
             watcher,
             list_debounce: Debounce::default(),
             size_debounce: Debounce::default(),
@@ -202,11 +228,15 @@ impl Explorer {
             backdrop_transparency: None,
             backdrop_start: Instant::now(),
             backdrop_retries: 0,
+            backdrop_blur,
+            use_custom_window_frame: custom_frame,
+            is_backdrop: false,
             theme_choice: ThemeChoice::default(),
             text_scale_checked: Instant::now(),
             peer_under: (Instant::now(), false),
             pane_rects: Vec::new(),
             drag_lock: false,
+            require_restart: false,
             key_state: std::panic::catch_unwind(device_query::DeviceState::new).ok(),
             prev_paste_key: Cell::new(false),
             last_paste: Cell::new(
@@ -223,6 +253,13 @@ impl Explorer {
         // doesn't read every folder and hold every listing in memory at once.
         app.on_active_changed();
         app
+    }
+
+    pub(crate) fn is_maximized(ctx: &egui::Context) -> bool {
+        if ctx.input(|i| i.viewport().maximized) == Some(true) {
+            return true
+        }
+        false
     }
 
     //paste key detection workaround

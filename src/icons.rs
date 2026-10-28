@@ -46,6 +46,7 @@ fn norm(p: &Path) -> PathBuf {
 }
 
 /// Replaces the set of well-known / pinned folders that show their own system icon.
+#[cfg(windows)]
 pub fn set_special_folders<I: IntoIterator<Item = PathBuf>>(paths: I) {
     if let Ok(mut s) = special().write() {
         s.folders = paths.into_iter().map(|p| norm(&p)).collect();
@@ -53,6 +54,7 @@ pub fn set_special_folders<I: IntoIterator<Item = PathBuf>>(paths: I) {
 }
 
 /// Replaces the set of drive roots / mount points that show their own system icon.
+#[cfg(windows)]
 pub fn set_special_drives<I: IntoIterator<Item = PathBuf>>(paths: I) {
     if let Ok(mut s) = special().write() {
         s.drives = paths.into_iter().map(|p| norm(&p)).collect();
@@ -301,7 +303,7 @@ pub fn draw_system_icon(ui: &Ui, center: Pos2, size: f32, e: &Entry, tint: Color
     draw_path_icon(ui, center, size, &e.icon_key, &e.path, fallback_icon_name(e), tint);
 }
 
-/// Built-in SVG icon (moved here from main.rs, so delete it there).
+/// Built-in SVG icon
 pub fn draw_icon(ui: &Ui, center: Pos2, size: f32, name: &str, tint: Color32) {
     egui::Image::new(icon_source(name))
         .tint(tint)
@@ -309,9 +311,20 @@ pub fn draw_icon(ui: &Ui, center: Pos2, size: f32, name: &str, tint: Color32) {
 }
 
 /// Looks up an embedded SVG by name. Unknown names fall back to the generic file icon.
-/// DEPRECATED: FileFly will now always prefer OS provided icons over its default fallbacks listed below.
 pub fn icon_source(name: &str) -> egui::ImageSource<'static> {
     match name {
+        "window_minimize" => egui::include_image!("../assets/window_minimize.svg"),
+        "window_maximize" => egui::include_image!("../assets/window_maximize.svg"),
+        "window_restore"  => egui::include_image!("../assets/window_restore.svg"),
+        "window_close"    => egui::include_image!("../assets/window_close.svg"),
+        "kde_minimize" => egui::include_image!("../assets/kde_minimize.svg"),
+        "kde_maximize" => egui::include_image!("../assets/kde_maximize.svg"),
+        "kde_restore"  => egui::include_image!("../assets/kde_restore.svg"),
+        "kde_close"    => egui::include_image!("../assets/kde_close.svg"),
+        "gnome_minimize" => egui::include_image!("../assets/gnome_minimize.svg"),
+        "gnome_maximize" => egui::include_image!("../assets/gnome_maximize.svg"),
+        "gnome_restore"  => egui::include_image!("../assets/gnome_restore.svg"),
+        "gnome_close"    => egui::include_image!("../assets/gnome_close.svg"),
         "app" => egui::include_image!("../assets/app.svg"),
         "archive" => egui::include_image!("../assets/archive.svg"),
         "audio" => egui::include_image!("../assets/audio.svg"),
@@ -357,6 +370,7 @@ pub fn icon_source(name: &str) -> egui::ImageSource<'static> {
         "videos" => egui::include_image!("../assets/videos.svg"),
         "restore" => egui::include_image!("../assets/restore.svg"),
         "empty_bin" => egui::include_image!("../assets/empty_bin.svg"),
+        "git_branch" => egui::include_image!("../assets/git_branch.svg"),
         _ => egui::include_image!("../assets/file.svg"),
     }
 }

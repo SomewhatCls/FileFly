@@ -8,8 +8,6 @@ impl Explorer {
     pub(crate) fn ui_status(&mut self, ui: &mut Ui) {
         let (m, pal) = (self.m, self.pal);
         let tab = &self.tabs[self.active];
-        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
-        let radius = if maximized { 0 } else { RADIUS };
         let mut text = format!(
             "{} item{}",
             tab.view.len(),
@@ -84,7 +82,7 @@ impl Explorer {
                     nw: 0,
                     ne: 0,
                     sw: 0,
-                    se: radius,
+                    se: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()) && self.settings.custom_frame {15}else{0},
                 }),
             )
             .show(ui, |ui| {
@@ -114,33 +112,14 @@ impl Explorer {
 
                     // If the window runs with administrator rights, notify the user.
                     // If it is an archive path, display "Read-only".
-                    if is_elevated() {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new("Administrator")
-                                    .color(pal.accent)
-                                    .strong()
-                                    .size(m.font * 0.93),
-                            );
-                            if is_archive_path(&*self.tabs[self.active].dir) {
-                                ui.label(
-                                    RichText::new("Read-only")
-                                        .color(pal.text_secondary)
-                                        .strong()
-                                        .size(m.font * 0.93),
-                                );
-                            }
-                        });
-                    }else if is_archive_path(&*self.tabs[self.active].dir) {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new("Read-only")
-                                    .color(pal.text_secondary)
-                                    .strong()
-                                    .size(m.font * 0.93),
-                            );
-                        });
-                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if is_elevated() {
+                            status_pill(ui, &m, pal.selected_hover, pal.text_secondary,"Administrator");
+                        }
+                        if is_archive_path(&*self.tabs[self.active].dir)  {
+                            status_pill(ui, &m, pal.control_hover, pal.text_secondary,"Read-only");
+                        }
+                    });
                 });
             });
     }

@@ -166,7 +166,7 @@ impl Explorer {
     /// the pointer has moved a few pixels. Releasing over a folder row, a sidebar entry or another
     /// pane copies the dragged items there; leaving the window hands them to the OS as a file drag,
     /// so any other program (or FileFly window) can take them.
-    pub(crate) fn drive_item_drag(&mut self, frame: &eframe::Frame, ui: &mut Ui, actions: &mut Vec<Action>) {
+    pub(crate) fn drive_item_drag(&mut self, _frame: &eframe::Frame, ui: &mut Ui, actions: &mut Vec<Action>) {
         let id = item_drag_id();
         let ctx = ui.ctx().clone();
         let (down, released, pressed, latest, esc) = ui.input(|i| {
@@ -283,7 +283,7 @@ impl Explorer {
             ctx.data_mut(|d| d.remove_temp::<bool>(handoff_id));
             clear(&ctx);
             self.drag_lock = true;
-            self.start_os_drag(frame, (*st.paths).clone());
+            self.start_os_drag(_frame, (*st.paths).clone());
             return;
         }
         ctx.data_mut(|d| d.remove_temp::<bool>(Id::unique("item_drag_handoff")));

@@ -55,8 +55,8 @@ pub(crate) fn nav_item_ex(
             ui.painter().rect_filled(inner, r, pal.hover);
         }
         let pill = Rect::from_center_size(
-            pos2(inner.left() + m.s * 2.0, inner.center().y),
-            vec2(m.s * 3.0, m.font * 1.1),
+            pos2(inner.left() + m.accessibility_scale * 2.0, inner.center().y),
+            vec2(m.accessibility_scale * 3.0, m.font * 1.1),
         );
         ui.painter()
             .rect_filled(pill, CornerRadius::same(2), pal.accent);
@@ -115,8 +115,8 @@ pub(crate) fn drive_card(
             ui.painter().rect_filled(inner, r, pal.hover);
         }
         let pill = Rect::from_center_size(
-            pos2(inner.left() + m.s * 2.0, inner.center().y),
-            vec2(m.s * 3.0, m.font * 1.6),
+            pos2(inner.left() + m.accessibility_scale * 2.0, inner.center().y),
+            vec2(m.accessibility_scale * 3.0, m.font * 1.6),
         );
         ui.painter()
             .rect_filled(pill, CornerRadius::same(2), pal.accent);
@@ -165,7 +165,7 @@ pub(crate) fn drive_card(
     } else {
         (used as f32 / d.total as f32).clamp(0.0, 1.0)
     };
-    let bar_h = m.s * 4.0;
+    let bar_h = m.accessibility_scale * 4.0;
     let bar = Rect::from_min_max(
         pos2(x0, inner.top() + h * 0.54),
         pos2(x1, inner.top() + h * 0.54 + bar_h),
@@ -213,20 +213,18 @@ impl Explorer {
             )
         });
         let can_pin = !special_active && !quick.iter().any(|q| same_path(&q.path, &cur));
-        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
-        let radius = if maximized { 0 } else { RADIUS };
         let dragging = item_drag_paths(ui);
         let panel = egui::Panel::left("sidebar")
             .resizable(true)
-            .default_size(m.s * 250.0)
-            .size_range(m.s * 180.0..=m.s * 440.0)
+            .default_size(m.accessibility_scale * 250.0)
+            .size_range(m.accessibility_scale * 180.0..=m.accessibility_scale * 440.0)
             .show_separator_line(false)
             .frame(
                 bar_frame(&pal, m.pad * 0.6, m.pad * 0.6, m.pad * 0.4, m.pad * 0.4).corner_radius(
                     CornerRadius {
                         nw: 0,
                         ne: 0,
-                        sw: radius,
+                        sw: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()) && self.settings.custom_frame {15}else{0},
                         se: 0,
                     },
                 ),
@@ -238,11 +236,11 @@ impl Explorer {
                     {
                         actions.push(Action::OpenRecycleBin);
                     }
-                    ui.add_space(m.s * 2.0);
+                    ui.add_space(m.accessibility_scale * 2.0);
                     let (r, _) =
                         ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
                     ui.painter().rect_filled(r, CornerRadius::ZERO, pal.divider);
-                    ui.add_space(m.s * 2.0);
+                    ui.add_space(m.accessibility_scale * 2.0);
 
                     ui.with_layout(Layout::top_down(Align::Min), |ui| {
                         egui::ScrollArea::vertical()
