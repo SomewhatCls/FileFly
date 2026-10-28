@@ -54,8 +54,7 @@ impl Explorer{
     }
 
     fn draw_backdrop_blur(&mut self, ui: &Ui) {
-        // Compute this BEFORE take(), so an early return can't lose the renderer.
-        let accent = self.sys_accent.unwrap_or_else(Accent::fallback); // same value your main apply_style gets
+        let accent = self.sys_accent.unwrap_or_else(Accent::fallback);
         let Some(mut backdrop) = self.backdrop_blur.take() else { return };
 
         apply_style(backdrop.ctx(), &self.m, accent);

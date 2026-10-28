@@ -360,6 +360,7 @@ pub(crate) fn menu_scroll(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     let max_h = (ui.ctx().content_rect().height() - 40.0).max(120.0);
     egui::ScrollArea::vertical()
         .max_height(max_h)
+        .max_width(100.0)
         .auto_shrink([true, true])
         .show(ui, add);
 }

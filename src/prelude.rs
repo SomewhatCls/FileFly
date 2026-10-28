@@ -3,8 +3,8 @@
 #![allow(unused_imports)]
 
 pub(crate) use eframe::egui::{
-    self, pos2, vec2, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Rect,
-    RichText, Sense, Stroke, StrokeKind, Ui,
+    self, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Rect,
+    RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2,
 };
 pub(crate) use egui::containers::scroll_area::{DragScroll, ScrollSource};
 pub(crate) use jwalk::{Parallelism, WalkDir};
@@ -13,45 +13,48 @@ pub(crate) use std::cell::Cell;
 pub(crate) use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 pub(crate) use std::{
     cmp::Ordering,
-    collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     fs,
     fs::File,
     hash::{Hash, Hasher},
     path::{Component, Path, PathBuf},
     sync::{
+        Arc,
         atomic::{AtomicU64, Ordering as AO},
         mpsc::{self, Receiver, Sender},
-        Arc,
     },
     time::{Duration, Instant, SystemTime},
 };
-pub (crate) use sysinfo::System;
+pub(crate) use sysinfo::System;
 
 pub(crate) use num_format::{Locale, ToFormattedString};
 
-// Sibling crate modules that are referenced by path (`trashbin::Item`, `defaultapp::is_default()`, ...).
-pub(crate) use crate::{default_app, drives, picker, trash_bin};
 pub(crate) use crate::drives::{
-    clean_path, is_network_path, load_drives, path_available, spawn_watcher, DriveInfo, DriveKind,
+    DriveInfo, DriveKind,
     DriveWatchCtl,
+    clean_path, is_network_path, load_drives, path_available, spawn_watcher,
 };
-pub(crate) use crate::peers::{cursor_screen_pos, now_ms, Peers, WinInfo};
+pub(crate) use crate::peers::{Peers, WinInfo, cursor_screen_pos, now_ms};
+// Sibling crate modules that are referenced by path (`trashbin::Item`, `defaultapp::is_default()`, ...).
+pub(crate) use crate::{default_app, trash_bin};
 
-// Global re-exports of the helper modules.
-pub(crate) use crate::fsops::*;
-pub(crate) use crate::icons::*;
-pub(crate) use crate::indexer::*;
-pub(crate) use crate::theme::*;
 pub(crate) use crate::app::*;
+pub(crate) use crate::backdrop_blur::*;
+pub(crate) use crate::data::*;
 pub(crate) use crate::drag_drop::*;
 pub(crate) use crate::elevate::*;
+// Global re-exports of the helper modules.
+pub(crate) use crate::fsops::*;
+pub(crate) use crate::git::*;
+pub(crate) use crate::icons::*;
+pub(crate) use crate::indexer::*;
 pub(crate) use crate::messages::*;
-pub(crate) use crate::data::*;
 pub(crate) use crate::ops::*;
 pub(crate) use crate::quick::*;
 pub(crate) use crate::search::*;
 pub(crate) use crate::settings::*;
 pub(crate) use crate::startup::*;
+pub(crate) use crate::theme::*;
+// Sibling crate modules that are referenced by path (`trashbin::Item`, `defaultapp::is_default()`, ...).
+pub(crate) use crate::ui::picker;
 pub(crate) use crate::ui::*;
-pub(crate) use crate::git::*;
-pub(crate) use crate::backdrop_blur::*;

@@ -22,7 +22,6 @@ mod messages;
 mod data;
 mod ops;
 mod peers;
-mod picker;
 mod prelude;
 mod quick;
 mod search;
