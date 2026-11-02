@@ -67,10 +67,19 @@ pub(crate) fn status_pill(ui: &mut Ui, m: &Metrics, bg: Color32, text_color:  Co
     );
 }
 
-pub(crate) fn paint_text(ui: &Ui, rect: Rect, text: &str, font: FontId, color: Color32, right: bool) {
+/// Draws text and returns whether the text was truncated.
+pub(crate) fn paint_text(
+    ui: &Ui,
+    rect: Rect,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    right: bool,
+) -> bool {
     let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
     job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width().max(1.0));
     let galley = ui.painter().layout_job(job);
+    let elided = galley.elided;
     let x = if right {
         rect.right() - galley.size().x
     } else {
@@ -78,6 +87,7 @@ pub(crate) fn paint_text(ui: &Ui, rect: Rect, text: &str, font: FontId, color: C
     };
     let pos = pos2(x, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, color);
+    elided
 }
 
 pub(crate) fn text_width(ui: &Ui, text: &str, size: f32) -> f32 {
@@ -332,24 +342,37 @@ pub(crate) fn menu_item(
         pos2(rect.left() + m.pad * 2.2 + m.small_icon, rect.top()),
         pos2(rect.right() - m.pad, rect.bottom()),
     );
-    paint_text(
+    let hint_font_size = FontId::proportional(m.font * 0.86);
+
+    // Width the hint occupies, so the label can stop before it.
+    let hint_width = hint.map_or(0.0, |h| {
+        ui.painter()
+            .layout_no_wrap(h.to_owned(), hint_font_size.clone(), pal.text_secondary)
+            .size()
+            .x
+            + m.pad
+    });
+
+    let mut label_rect = text_rect;
+    label_rect.max.x = (text_rect.right() - hint_width).max(text_rect.left() + 1.0);
+
+    let truncated = paint_text(
         ui,
-        text_rect,
+        label_rect,
         label,
         FontId::proportional(m.font),
         col,
         false,
     );
+
     if let Some(h) = hint {
-        paint_text(
-            ui,
-            text_rect,
-            h,
-            FontId::proportional(m.font * 0.86),
-            pal.text_secondary,
-            true,
-        );
+        paint_text(ui, text_rect, h, hint_font_size, pal.text_secondary, true);
     }
+    let resp = if truncated {
+        resp.on_hover_text(label)
+    } else {
+        resp
+    };
     resp.clicked()
 }
 
@@ -360,6 +383,7 @@ pub(crate) fn menu_scroll(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     let max_h = (ui.ctx().content_rect().height() - 40.0).max(120.0);
     egui::ScrollArea::vertical()
         .max_height(max_h)
+        .max_width(100.0)
         .auto_shrink([true, true])
         .show(ui, add);
 }

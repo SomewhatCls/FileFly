@@ -48,11 +48,11 @@ impl Explorer {
             if i.consume_key(M::CTRL, Key::L) || i.consume_key(M::ALT, Key::D) {
                 actions.push(Action::FocusAddress);
             }
-            if i.consume_key(M::CTRL, Key::F) || i.consume_key(M::CTRL, Key::E) {
+            if i.consume_key(M::CTRL, Key::F) {
                 self.tabs[active].chosen_search_scope = SearchScope::CurrentDir;
                 actions.push(Action::FocusSearch);
             }
-            if i.consume_key(M::CTRL, Key::G) || i.consume_key(M::CTRL, Key::E) {
+            if i.consume_key(M::CTRL, Key::G) {
                 self.tabs[active].chosen_search_scope = SearchScope::System;
                 actions.push(Action::FocusSearch);
             }

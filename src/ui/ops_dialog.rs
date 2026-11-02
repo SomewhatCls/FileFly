@@ -100,7 +100,7 @@ impl Explorer {
                 .with_inner_size([win_w, m.accessibility_scale * 220.0])
                 .with_resizable(false)
                 .with_maximize_button(false)
-                .with_decorations(false)
+                .with_decorations(if self.settings.custom_frame{false}else{true})
                 .with_transparent(true);
             let pad = (m.pad * 2.0) as i8;
             let frame = egui::Frame::new().fill(Color32::TRANSPARENT).inner_margin(Margin {

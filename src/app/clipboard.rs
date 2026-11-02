@@ -20,7 +20,7 @@ impl Explorer {
         let verb = if cut { "Moving" } else { "Copying" };
         let title = if n == 1 {
             let name = items[0].dst.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            format!("{verb} “{}”", elide(&name, 34))
+            format!("{verb} “{}”", truncate(&name, 34))
         } else {
             format!("{verb} {n} items")
         };

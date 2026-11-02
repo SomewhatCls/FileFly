@@ -22,7 +22,6 @@ mod messages;
 mod data;
 mod ops;
 mod peers;
-mod picker;
 mod prelude;
 mod quick;
 mod search;
@@ -33,6 +32,8 @@ mod trash_bin;
 mod ui;
 mod git;
 mod backdrop_blur;
+mod update;
+mod lnk_resolver;
 
 fn main() -> eframe::Result<()> {
     startup::run()

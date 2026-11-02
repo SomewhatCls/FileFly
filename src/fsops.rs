@@ -644,7 +644,7 @@ pub fn open_terminal(dir: &Path) -> std::io::Result<()> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "alacritty", "xterm"] {
+        for term in ["kgx", "gnome-terminal", "konsole", "xfce4-terminal", "alacritty", "xterm"] {
             if std::process::Command::new(term).current_dir(dir).spawn().is_ok() {
                 return Ok(());
             }

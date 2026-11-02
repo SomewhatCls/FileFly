@@ -470,7 +470,7 @@ impl Explorer {
                         &pal,
                         "new_folder",
                         Some("New folder"),
-                        "New folder (Ctrl+Shift+N)",
+                        "New folder (Ctrl+Shift+F)",
                         true,
                         false,
                     )

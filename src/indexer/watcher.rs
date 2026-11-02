@@ -16,13 +16,14 @@
 //! the next time it is listed.
 
 use super::live::{is_noisy, ChangeSink};
+use super::priority::lower_priority;
 use eframe::egui;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -50,10 +51,17 @@ impl Group {
 }
 
 pub struct DirWatcher {
+    /// Folders to watch go to a background thread: on Linux, a recursive watch means one
+    /// `inotify_add_watch` per sub-folder, which can take seconds and must not block the UI.
+    tx: mpsc::Sender<PathBuf>,
+    pending: Arc<Mutex<HashSet<PathBuf>>>,
+}
+
+/// The state that decides what is watched; owned by the watcher thread.
+struct Inner {
     watcher: RecommendedWatcher,
     groups: Vec<Group>,
     current: Option<PathBuf>,
-    pending: Arc<Mutex<HashSet<PathBuf>>>,
     sink: Option<Arc<ChangeSink>>,
 }
 
@@ -106,8 +114,23 @@ impl DirWatcher {
             }
             ctx.request_repaint_after(Duration::from_millis(300));
         })
-        .ok()?;
-        Some(Self { watcher, groups: Vec::new(), current: None, pending, sink })
+            .ok()?;
+        let mut inner = Inner { watcher, groups: Vec::new(), current: None, sink };
+        let (tx, rx) = mpsc::channel::<PathBuf>();
+        std::thread::Builder::new()
+            .name("dir-watch".into())
+            .spawn(move || {
+                lower_priority();
+                // Only the newest request matters: quick navigation must not queue up several walks.
+                while let Ok(mut dir) = rx.recv() {
+                    while let Ok(newer) = rx.try_recv() {
+                        dir = newer;
+                    }
+                    inner.watch(&dir);
+                }
+            })
+            .ok()?;
+        Some(Self { tx, pending })
     }
 
     /// Changed paths since the last call. An empty path means "too many to list".
@@ -118,8 +141,15 @@ impl DirWatcher {
         }
     }
 
-    /// Call whenever the listed folder changes.
+    /// Call whenever the listed folder changes. Returns immediately; the watches are set up in
+    /// the background.
     pub fn watch(&mut self, dir: &Path) {
+        let _ = self.tx.send(dir.to_path_buf());
+    }
+}
+
+impl Inner {
+    fn watch(&mut self, dir: &Path) {
         if self.current.as_deref() == Some(dir) {
             return;
         }

@@ -167,6 +167,16 @@ pub(crate) fn paint_band(ui: &Ui, pal: &Palette, rect: Rect) {
     );
 }
 
+/// Where a table is shown.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TableMode {
+    /// An explorer pane: everything.
+    Explorer,
+    /// The folder picker: same look and columns (minus Size), but browsing only.
+    /// `can_make`: whether "New folder" is offered in the empty-space menu.
+    Picker { can_make: bool },
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn table_ui(
     ui: &mut Ui,
@@ -178,6 +188,7 @@ pub(crate) fn table_ui(
     can_paste: bool,
     has_peazip: bool,
     hit: Rect,
+    mode: TableMode,
     actions: &mut Vec<Action>,
 ) {
     let Tab {
@@ -201,6 +212,7 @@ pub(crate) fn table_ui(
         ..
     } = tab;
     let tab_id = *tab_id;
+    let picker = matches!(mode, TableMode::Picker { .. });
     // `view` holds indices into whichever list is on screen.
     let searching_now = !search.trim().is_empty();
     let entries: &Vec<Entry> = if searching_now {
@@ -275,23 +287,25 @@ pub(crate) fn table_ui(
     // that exactly filled the pane flipped it on rounding error.)
     let name_min = m.accessibility_scale * 220.0;
     let col_floor = m.accessibility_scale * 50.0;
-    let want = [base_cols[0] * m.accessibility_scale, base_cols[1] * m.accessibility_scale, base_cols[2] * m.accessibility_scale];
+    // The folder picker has no Size column (nothing is measured there): it takes no room.
+    let show = [true, true, !picker];
+    let n_shown = show.iter().filter(|s| **s).count() as f32;
+    let want = [0, 1, 2].map(|i| if show[i] { base_cols[i] * m.accessibility_scale } else { 0.0 });
     let room = (avail - name_min).max(0.0);
     let sum_want: f32 = want.iter().sum();
     let eff_px: [f32; 3] = if sum_want <= room {
         want
     } else {
-        let floors = 3.0 * col_floor;
+        let floors = n_shown * col_floor;
         let excess = (sum_want - floors).max(f32::EPSILON);
         let k = ((room.max(floors) - floors) / excess).clamp(0.0, 1.0);
-        [0, 1, 2].map(|i| col_floor + (want[i] - col_floor).max(0.0) * k)
+        [0, 1, 2].map(|i| if show[i] { col_floor + (want[i] - col_floor).max(0.0) * k } else { 0.0 })
     };
     // The widths actually on screen, in stored units: drags start from these.
     let eff_cols = [eff_px[0] / m.accessibility_scale, eff_px[1] / m.accessibility_scale, eff_px[2] / m.accessibility_scale];
     let w = |i: usize| eff_px[i];
-    let show = [true; 3];
     let name_w = (avail - eff_px.iter().sum::<f32>()).max(0.0);
-    let last_shown = Some(2usize);
+    let last_shown = Some(if picker { 1usize } else { 2usize });
     let first_shown = Some(0usize);
     let mut new_cols = base_cols;
 
@@ -457,6 +471,15 @@ pub(crate) fn table_ui(
         selected.clear();
         *anchor = None;
     }
+    if let TableMode::Picker { can_make } = mode {
+        // The folder picker only offers "New folder" on empty space.
+        scroll_context_menu(&body_resp, |ui| {
+            if menu_item(ui, m, pal, Some("new_folder"), "New folder", None, can_make) {
+                actions.push(Action::NewFolder);
+            }
+        });
+    }
+    if !picker {
     scroll_context_menu(&body_resp, |ui| {
         let ro = archive_of(dir).is_some(); // inside an opened zip: nothing can be added
         if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+F"), !ro, ) {
@@ -507,6 +530,7 @@ pub(crate) fn table_ui(
             
         }
     });
+    }
 
     if view.is_empty() {
         let msg = if *loading {
@@ -569,7 +593,7 @@ pub(crate) fn table_ui(
                 content_top,
                 row_h,
                 view.len(),
-                rename.is_none() && !press_on_row,
+                rename.is_none() && !press_on_row && !picker,
                 band_hit,
             );
             if let Some(u) = &band {
@@ -619,7 +643,7 @@ pub(crate) fn table_ui(
                     paint_sel_marker(ui, rect, m, pal);
                 }
                 // Drag to copy: remember a press on this row; highlight folders as drop targets.
-                if let Some(pp) = press_pos {
+                if let Some(pp) = press_pos.filter(|_| !picker) {
                     if pp.x <= sb_x
                         && rename.is_none()
                         && rect.contains(pp)
@@ -764,7 +788,7 @@ pub(crate) fn table_ui(
                     cx += cw;
                 }
 
-                if (resp.clicked() || resp.secondary_clicked()) && !renaming_here {
+                if (resp.clicked() || resp.secondary_clicked()) && !renaming_here && !picker {
                     let mods = ui.input(|i| i.modifiers);
                     if resp.clicked() && mods.command {
                         // Ctrl-click toggles one item.
@@ -790,6 +814,22 @@ pub(crate) fn table_ui(
                         *anchor = Some(e.path.clone());
                     }
                 }
+                if picker && resp.clicked() && !resp.double_clicked() && !renaming_here {
+                    // The picker takes one item at a time; clicking the selected row again
+                    // deselects it, so the open folder is the target again.
+                    selected.clear();
+                    *anchor = None;
+                    if !is_sel {
+                        selected.insert(e.path.clone());
+                        *anchor = Some(e.path.clone());
+                    }
+                }
+                if picker && resp.secondary_clicked() && !is_sel && !renaming_here {
+                    // Right-clicking a row selects it, so the menu (and the Del / F2 keys) act on it.
+                    selected.clear();
+                    selected.insert(e.path.clone());
+                    *anchor = Some(e.path.clone());
+                }
                 if resp.double_clicked() && !renaming_here {
                     actions.push(Action::Open(e.path.clone()));
                 }
@@ -797,6 +837,22 @@ pub(crate) fn table_ui(
                     actions.push(Action::NewTabAt(e.path.clone()));
                 }
 
+                if picker {
+                    // The picker's row menu: just the folder operations it can do itself.
+                    scroll_context_menu(&resp, |ui| {
+                        let in_archive = archive_of(&e.path).is_some();
+                        if e.is_dir && menu_item(ui, m, pal, Some("external"), "Open", Some("Enter"), true) {
+                            actions.push(Action::Open(e.path.clone()));
+                        }
+                        if e.is_dir && menu_item(ui, m, pal, Some("rename"), "Rename", Some("F2"), !in_archive) {
+                            actions.push(Action::Rename(e.path.clone()));
+                        }
+                        if menu_item(ui, m, pal, Some("delete"), "Delete", Some("Del"), !in_archive) {
+                            actions.push(Action::Delete(vec![e.path.clone()]));
+                        }
+                    });
+                }
+                if !picker {
                 scroll_context_menu(&resp, |ui| {
                     let p = &e.path;
                     // Menu actions apply to the whole selection when the clicked row is part of it.
@@ -943,6 +999,11 @@ pub(crate) fn table_ui(
                         actions.push(Action::OpenContaining(p.clone()));
                         
                     }
+                    if lnk_resolver::is_lnk(p)
+                        && menu_item(ui, m, pal, Some("folder"), "Open shortcut location", None, true)
+                    {
+                        actions.push(Action::OpenShortcutLocation(p.clone()));
+                    }
                     if menu_item(
                         ui,
                         m,
@@ -956,6 +1017,7 @@ pub(crate) fn table_ui(
                         
                     }
                 });
+                }
             }
 
             if let Some(u) = &band {

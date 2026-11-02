@@ -202,6 +202,8 @@ impl Explorer {
                         }
                     }
                 }
+                AppMsg::UpdateChecked(r) => self.update_checked(r),
+                AppMsg::ShortcutTarget { tab, result } => self.shortcut_resolved(tab, result),
             }
         }
 

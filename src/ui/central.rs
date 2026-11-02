@@ -71,7 +71,7 @@ pub(crate) fn tab_body(
             .max_rect(inner),
         |ui| {
             table_ui(
-                ui, m, pal, tab, cols, cut, can_paste, has_peazip, rect, actions,
+                ui, m, pal, tab, cols, cut, can_paste, has_peazip, rect, TableMode::Explorer, actions,
             );
         },
     );
@@ -168,6 +168,7 @@ impl Explorer {
                 self.indexer.len(),
                 self.default_on,
                 self.default_error.clone(),
+                self.update.clone(),
             ))
         } else {
             None

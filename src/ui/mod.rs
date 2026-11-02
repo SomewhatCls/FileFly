@@ -14,6 +14,7 @@ mod tabs;
 mod toolbar;
 mod trash_table;
 mod widgets;
+pub mod picker;
 
 pub(crate) use central::*;
 pub(crate) use chrome::*;

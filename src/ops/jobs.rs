@@ -91,7 +91,7 @@ impl ActiveOp {
 }
 
 /// Shortens the middle of a long name for use in a title.
-pub(crate) fn elide(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     let n = s.chars().count();
     if n <= max {
         return s.to_owned();
