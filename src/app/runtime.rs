@@ -18,15 +18,23 @@ impl Explorer{
          ui.data_mut(|d| d.insert_temp(Id::unique("admin_retry_tab"), retry_tab));
          let painter = ui.layer_painter(egui::LayerId::background());
 
+        // Draws chrome layer depending on desktop environment
+        let corner_radius = match get_desktop() {
+            d if d.contains("KDE") => 0.0,
+            d if d.contains("GNOME") => 15.0,
+            d if d.is_empty() => 8.0,
+            _ => 15.0,
+        };
+
          // draws a slight overlay (chrome) over the entire frame to achieve the desired transparency effect look.
          if self.pal.transparency != TransparencyEffect::None {
              painter.rect_filled(
                  rect,
-                 8.0,
+                 corner_radius,
                  self.pal.chrome,
              );
          } else {
-             painter.rect_filled(rect, if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()){15}else{0}, self.pal.layer);
+             painter.rect_filled(rect, if !Self::is_maximized(ui.ctx()){corner_radius}else{0.0}, self.pal.layer);
          }
 
          // Draw the interface.

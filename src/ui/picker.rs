@@ -1244,6 +1244,21 @@ impl Explorer {
             if focus_search {
                 ui.ctx().memory_mut(|mem| mem.request_focus(Id::unique("pk_search")));
             }
+
+            // Draws chrome layer depending on desktop environment
+            let corner_radius = match get_desktop() {
+                d if d.contains("KDE") => 0.0,
+                d if d.contains("GNOME") => 15.0,
+                d if d.is_empty() => 8.0,
+                _ => 15.0,
+            };
+
+            if self.pal.transparency != TransparencyEffect::None {
+                ui.painter().rect_filled(ui.ctx().content_rect(), corner_radius, self.pal.chrome);
+            } else {
+                ui.painter().rect_filled(ui.ctx().content_rect(),
+                                         if !Self::is_maximized(ui.ctx()){corner_radius}else{0.0}, self.pal.layer);
+            }
         });
 
         // ---- apply what happened
