@@ -523,8 +523,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             Some("Shows the current branch and allows you to checkout local branches within git repositories. Changing this setting will restart the app."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.git_activated),
         );
-    });
-    fl_card(ui, m, pal, |ui| {
+        fl_divider(ui, m, pal);
         let (hint, label) = match &sp.update {
             UpdateState::Idle => (
                 "Checks the github releases for whether the latest version is installed.".to_owned(),
