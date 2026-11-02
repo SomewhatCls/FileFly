@@ -18,6 +18,7 @@ accepted = [
     "OFL-1.1",          # fonts bundled with egui (epaint_default_fonts)
     "Ubuntu-font-1.0",  # fonts bundled with egui (epaint_default_fonts)
     "MPL-2.0",
+    "CDLA-Permissive-2.0",
     "AGPL-3.0-or-later",
 ]
 
@@ -29,3 +30,10 @@ targets = [
     "x86_64-pc-windows-msvc",
     "x86_64-unknown-linux-gnu",
 ]
+
+[ring.clarify]
+license = "Apache-2.0 AND ISC"
+
+[[ring.clarify.files]]
+path = "LICENSE"
+checksum = "b3d734001a94efff3579978d953391aa7115f877657d25eb54037a43875d078a"
