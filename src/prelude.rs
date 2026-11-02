@@ -58,3 +58,4 @@ pub(crate) use crate::theme::*;
 // Sibling crate modules that are referenced by path (`trashbin::Item`, `defaultapp::is_default()`, ...).
 pub(crate) use crate::ui::picker;
 pub(crate) use crate::ui::*;
+pub(crate) use crate::update::*;

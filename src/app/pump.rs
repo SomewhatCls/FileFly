@@ -202,6 +202,7 @@ impl Explorer {
                         }
                     }
                 }
+                AppMsg::UpdateChecked(r) => self.update_checked(r),
             }
         }
 

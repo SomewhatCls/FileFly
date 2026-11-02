@@ -37,6 +37,8 @@ pub(crate) enum AppMsg {
         rename: bool,
         open: bool,
     },
+    /// The "Check for updates" request finished (None = already up to date).
+    UpdateChecked(Result<Option<UpdateInfo>, String>),
 }
 
 pub(crate) enum Action {
@@ -100,4 +102,8 @@ pub(crate) enum Action {
     TrashEmpty,
     TrashSelectAll,
     SelectAll,
+    /// Requests newest release.
+    CheckForUpdate,
+    /// Opens the download link in the user's browser.
+    DownloadUpdate,
 }

@@ -447,6 +447,8 @@ impl Explorer {
                 tab.select_only(path);
                 tab.scroll_to = Some(i);
             }
+            Action::CheckForUpdate => self.check_for_update(),
+            Action::DownloadUpdate => self.open_update_download(),
         }
     }
 }

@@ -103,6 +103,8 @@ pub(crate) struct Explorer {
     /// Set after an OS-level drag-out; ignores the (possibly stale) pointer state until a fresh click.
     pub(crate) drag_lock: bool,
     pub(crate) require_restart: bool,
+    /// Current state of the update request.
+    pub(crate) update: UpdateState,
 }
 
 impl Explorer {
@@ -244,6 +246,7 @@ impl Explorer {
                     .checked_sub(Duration::from_secs(1))
                     .unwrap_or_else(Instant::now),
             ),
+            update: UpdateState::Idle,
         };
         app.sync_special_icons();
         if START_DIR.get().is_none() {

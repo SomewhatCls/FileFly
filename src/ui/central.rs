@@ -168,6 +168,7 @@ impl Explorer {
                 self.indexer.len(),
                 self.default_on,
                 self.default_error.clone(),
+                self.update.clone(),
             ))
         } else {
             None

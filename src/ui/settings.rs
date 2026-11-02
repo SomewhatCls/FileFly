@@ -21,6 +21,10 @@ pub(crate) struct SettingsPage {
     pub(crate) default_request: Option<bool>,
     /// The "View licenses" button was pressed: open the licensing popup.
     pub(crate) show_licenses: bool,
+    /// Current state of the update check.
+    pub(crate) update: UpdateState,
+    pub(crate) check_update: bool,
+    pub(crate) download_update: bool,
 }
 
 impl SettingsPage {
@@ -31,6 +35,7 @@ impl SettingsPage {
         cache_len: usize,
         default_on: bool,
         default_error: Option<String>,
+        update: UpdateState,
     ) -> Self {
         Self {
             old: settings.clone(),
@@ -47,6 +52,9 @@ impl SettingsPage {
             default_error,
             default_request: None,
             show_licenses: false,
+            update,
+            check_update: false,
+            download_update: false,
         }
     }
 }
@@ -505,7 +513,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
     });
 
     // ---------------------------------------------------------------- Extras
-    fl_section(ui, m, pal, "Extras");
+    fl_section(ui, m, pal, "Miscellaneous");
     fl_card(ui, m, pal, |ui| {
         fl_row(
             ui,
@@ -515,6 +523,42 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             Some("Shows the current branch and allows you to checkout local branches within git repositories. Changing this setting will restart the app."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.git_activated),
         );
+    });
+    fl_card(ui, m, pal, |ui| {
+        let (hint, label) = match &sp.update {
+            UpdateState::Idle => (
+                "Checks the github releases for whether the latest version is installed.".to_owned(),
+                "Check",
+            ),
+            UpdateState::Checking => ("Checking…".to_owned(), "Check"),
+            UpdateState::UpToDate => ("You are running the current-most version.".to_owned(), "Check"),
+            UpdateState::Available(_) => (
+                "You can update to a newer version, click the Download button to start.".to_owned(),
+                "Download",
+            ),
+            UpdateState::Failed(e) => (format!("Couldn't check for updates: {e}."), "Check"),
+        };
+        let available = matches!(sp.update, UpdateState::Available(_));
+        let busy = matches!(sp.update, UpdateState::Checking);
+
+        fl_row(ui, m, pal, "Check for updates", Some(&hint), |ui| {
+            let clicked = ui
+                .add_enabled_ui(!busy, |ui| {
+                    if available {
+                        primary_button(ui, m, pal, label).clicked()
+                    } else {
+                        secondary_button(ui, m, label).clicked()
+                    }
+                })
+                .inner;
+            if clicked {
+                if available {
+                    sp.download_update = true;
+                } else {
+                    sp.check_update = true;
+                }
+            }
+        });
     });
 
     // ---------------------------------------------------------------- About
@@ -568,7 +612,7 @@ impl Explorer {
 
     /// Applies what the Settings tab changed this frame (it works on a copy of the settings).
     pub(crate) fn finish_settings_page(&mut self, ui: &mut Ui, sp: SettingsPage) {
-        let SettingsPage { old, s, font_edit, rescan, choose, delete_index, reset_quick, default_request, show_licenses, .. } = sp;
+        let SettingsPage { old, s, font_edit, rescan, choose, delete_index, reset_quick, default_request, show_licenses, check_update, download_update, .. } = sp;
         self.font_edit = font_edit;
         if show_licenses {
             self.licenses_open = true;
@@ -651,6 +695,12 @@ impl Explorer {
                 self.start_indexing(true);
                 save_settings(&self.settings);
             }
+        }
+        if check_update {
+            self.apply(Action::CheckForUpdate);
+        }
+        if download_update {
+            self.apply(Action::DownloadUpdate);
         }
     }
 }

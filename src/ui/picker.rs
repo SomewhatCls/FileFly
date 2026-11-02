@@ -727,7 +727,7 @@ fn picker_search(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, 
         .margin(Margin::symmetric(4, 0))
         .desired_width(te_rect.width())
         .align(Align2::LEFT_CENTER)
-        .hint_text(format!("Search {}", elide(&folder, 18)));
+        .hint_text(format!("Search {}", truncate(&folder, 18)));
     let resp = ui.put(te_rect, te);
     let mut changed = resp.changed();
     if resp.has_focus() {
