@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "FileFly"
-version = "0.3.5"
+version = "2026.11.2"
 dependencies = [
  "chrono",
  "clipboard-rs",

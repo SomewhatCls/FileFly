@@ -824,6 +824,12 @@ pub(crate) fn table_ui(
                         *anchor = Some(e.path.clone());
                     }
                 }
+                if picker && resp.secondary_clicked() && !is_sel && !renaming_here {
+                    // Right-clicking a row selects it, so the menu (and the Del / F2 keys) act on it.
+                    selected.clear();
+                    selected.insert(e.path.clone());
+                    *anchor = Some(e.path.clone());
+                }
                 if resp.double_clicked() && !renaming_here {
                     actions.push(Action::Open(e.path.clone()));
                 }
@@ -831,6 +837,21 @@ pub(crate) fn table_ui(
                     actions.push(Action::NewTabAt(e.path.clone()));
                 }
 
+                if picker {
+                    // The picker's row menu: just the folder operations it can do itself.
+                    scroll_context_menu(&resp, |ui| {
+                        let in_archive = archive_of(&e.path).is_some();
+                        if e.is_dir && menu_item(ui, m, pal, Some("external"), "Open", Some("Enter"), true) {
+                            actions.push(Action::Open(e.path.clone()));
+                        }
+                        if e.is_dir && menu_item(ui, m, pal, Some("rename"), "Rename", Some("F2"), !in_archive) {
+                            actions.push(Action::Rename(e.path.clone()));
+                        }
+                        if menu_item(ui, m, pal, Some("delete"), "Delete", Some("Del"), !in_archive) {
+                            actions.push(Action::Delete(vec![e.path.clone()]));
+                        }
+                    });
+                }
                 if !picker {
                 scroll_context_menu(&resp, |ui| {
                     let p = &e.path;

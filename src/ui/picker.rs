@@ -489,6 +489,81 @@ impl FolderPicker {
         }
         self.reveal(new);
     }
+
+    /// Starts typing a new name for the folder `path` (F2 / context menu).
+    fn begin_rename(&mut self, path: PathBuf) {
+        if !path.is_dir() || archive_of(&path).is_some() {
+            return;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.select(Some(path.clone()));
+        self.problem = None;
+        self.list.rename = Some(RenameState {
+            text: name,
+            is_dir: true,
+            path,
+            focus_pending: true,
+        });
+    }
+
+    /// Sends `path` (a folder, or an `.ico` file in icon mode) to the recycle bin and drops it from the list.
+    fn delete_item(&mut self, path: PathBuf) {
+        self.list.rename = None;
+        if archive_of(&path).is_some() {
+            self.problem = Some("An opened zip archive is read-only.".to_owned());
+            return;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // NOTE: if the explorer deletes through a helper of its own, call that here instead.
+        if let Err(e) = trash::delete(&path) {
+            self.problem = Some(format!("Could not delete “{name}”: {e}"));
+            return;
+        }
+        self.problem = None;
+        self.list.entries.retain(|e| e.path != path);
+        self.list.search_results.retain(|e| e.path != path);
+        self.list.view_dirty = true;
+        if self.selected() == Some(&path) {
+            self.select(None);
+        }
+        // Back / Forward must not lead into the deleted folder.
+        self.back.retain(|d| !d.starts_with(&path));
+        self.fwd.retain(|d| !d.starts_with(&path));
+    }
+
+    /// Selects the row at position `vi` of the shown list and scrolls to it.
+    fn select_view_index(&mut self, vi: usize) {
+        let Some(&ei) = self.list.view.get(vi) else { return };
+        let entries = if self.searching() { &self.list.search_results } else { &self.list.entries };
+        let path = entries[ei].path.clone();
+        self.list.scroll_to = Some(vi);
+        self.select(Some(path));
+    }
+
+    /// Up / Down / PageUp / PageDown: moves the selection by `delta` rows (nothing selected yet:
+    /// starts at the first row going down, at the last going up).
+    fn move_selection(&mut self, delta: isize) {
+        let n = self.list.view.len();
+        if n == 0 {
+            return;
+        }
+        let entries = if self.searching() { &self.list.search_results } else { &self.list.entries };
+        let cur = self
+            .selected()
+            .and_then(|s| self.list.view.iter().position(|&i| &entries[i].path == s));
+        let next = match cur {
+            Some(c) => (c as isize + delta).clamp(0, n as isize - 1) as usize,
+            None if delta > 0 => 0,
+            None => n - 1,
+        };
+        self.select_view_index(next);
+    }
 }
 
 /// What the user did in the dialog this frame.
@@ -502,6 +577,8 @@ struct PickerInput {
     toggle_hidden: bool,
     accept: bool,
     cancel: bool,
+    /// An item to delete (context menu or Del).
+    delete: Option<PathBuf>,
 }
 
 // ==============================================================================================
@@ -689,7 +766,9 @@ fn picker_search(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, 
         .desired_width(te_rect.width())
         .align(Align2::LEFT_CENTER)
         .hint_text(format!("Search {}", truncate(&folder, 18)));
-    let resp = ui.put(te_rect, te);
+    let resp = ui
+        .put(te_rect, te)
+        .on_hover_text("Search this folder (Ctrl+F)");
     let mut changed = resp.changed();
     if resp.has_focus() {
         ui.painter().line_segment(
@@ -772,6 +851,8 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, in
                 p.list.rename = None;
                 eat_escape(ui); // Esc ends the name box, not the dialog
             }
+            Action::Rename(path) => p.begin_rename(path),
+            Action::Delete(paths) => input.delete = paths.into_iter().next(),
             _ => {}
         }
     }
@@ -879,6 +960,9 @@ impl Explorer {
         let vid = egui::ViewportId::from_hash_of(("folder-picker", instance));
 
         ctx.show_viewport_immediate(vid, builder, |ui, _class| {
+            // Whether a text box had the keyboard when the frame began (a field that loses focus
+            // to Enter / Esc during this frame must not also trigger the shortcuts below).
+            let typing = ui.egui_wants_keyboard_input();
             // Same backdrop as the main window (retried until the native window exists, redone
             // when the theme changes).
             let key = Id::unique(("folder-picker-backdrop", instance));
@@ -1011,7 +1095,7 @@ impl Explorer {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
                         let can_make = !icon_mode && archive_of(&p.dir).is_none() && p.list_error.is_none();
-                        if cmd_button(ui, &m, &pal, "new_folder", Some("New folder"), "Create a new folder here", can_make, false)
+                        if cmd_button(ui, &m, &pal, "new_folder", Some("New folder"), "New folder (Ctrl + Shift + F)", can_make, false)
                             .clicked()
                         {
                             input.new_folder = true;
@@ -1072,26 +1156,93 @@ impl Explorer {
                     folder_list(ui, &m, &pal, &mut p, &mut input);
                 });
 
-            // ---- keyboard: Esc closes, Alt+arrows navigate, F5 refreshes (not while typing)
-            if !ui.egui_wants_keyboard_input() {
-                let (esc, left, right, up, f5) = ui.input(|i| {
-                    (
-                        i.key_pressed(egui::Key::Escape),
-                        i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft),
-                        i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight),
-                        i.modifiers.alt && i.key_pressed(egui::Key::ArrowUp),
-                        i.key_pressed(egui::Key::F5),
-                    )
-                });
-                if esc {
-                    input.cancel = true;
+            // ---- keyboard: the explorer's shortcuts (see `shortcuts.rs`), for this window's own input
+            let can_make = !icon_mode && archive_of(&p.dir).is_none() && p.list_error.is_none();
+            let (mut focus_address, mut focus_search) = (false, false);
+            ui.input_mut(|i| {
+                use egui::{Key, Modifiers as M};
+                // These work while a text box has the keyboard, too. (Shift variants first.)
+                if i.consume_key(M::CTRL | M::SHIFT, Key::F) || i.consume_key(M::CTRL | M::SHIFT, Key::N) {
+                    input.new_folder |= can_make;
                 }
-                input.back |= left;
-                input.forward |= right;
-                input.refresh |= f5;
-                if up && input.go.is_none() {
+                if i.consume_key(M::CTRL, Key::L) || i.consume_key(M::ALT, Key::D) {
+                    focus_address = true;
+                }
+                if i.consume_key(M::CTRL, Key::F) || i.consume_key(M::CTRL, Key::E) {
+                    focus_search = true;
+                }
+                if i.consume_key(M::NONE, Key::F5) {
+                    input.refresh = true;
+                }
+                if i.consume_key(M::ALT, Key::ArrowLeft) {
+                    input.back = true;
+                }
+                if i.consume_key(M::ALT, Key::ArrowRight) {
+                    input.forward = true;
+                }
+                if i.consume_key(M::ALT, Key::ArrowUp) && input.go.is_none() {
                     input.go = p.dir.parent().map(Path::to_path_buf);
                 }
+                // Mouse "back" / "forward" buttons.
+                if i.pointer.button_pressed(egui::PointerButton::Extra1) {
+                    input.back = true;
+                }
+                if i.pointer.button_pressed(egui::PointerButton::Extra2) {
+                    input.forward = true;
+                }
+                if typing {
+                    return;
+                }
+                if i.consume_key(M::NONE, Key::Escape) {
+                    input.cancel = true;
+                }
+                if i.consume_key(M::NONE, Key::Backspace) {
+                    input.back = true;
+                }
+                if i.consume_key(M::NONE, Key::ArrowDown) {
+                    p.move_selection(1);
+                }
+                if i.consume_key(M::NONE, Key::ArrowUp) {
+                    p.move_selection(-1);
+                }
+                if i.consume_key(M::NONE, Key::PageDown) {
+                    p.move_selection(10);
+                }
+                if i.consume_key(M::NONE, Key::PageUp) {
+                    p.move_selection(-10);
+                }
+                if i.consume_key(M::NONE, Key::Home) {
+                    p.select_view_index(0);
+                }
+                if i.consume_key(M::NONE, Key::End) {
+                    p.select_view_index(p.list.view.len().saturating_sub(1));
+                }
+                if i.consume_key(M::NONE, Key::Enter) {
+                    match p.selected().cloned() {
+                        // A folder is opened; an `.ico` file is the answer; with nothing selected
+                        // Enter presses the default button.
+                        Some(path) if path.is_dir() => input.go = Some(path),
+                        _ => input.accept = true,
+                    }
+                }
+                if let Some(path) = p.selected().cloned() {
+                    if i.consume_key(M::NONE, Key::F2) {
+                        p.begin_rename(path.clone());
+                    }
+                    if i.consume_key(M::NONE, Key::Delete) {
+                        input.delete = Some(path);
+                    }
+                }
+            });
+            // (egui state may not be touched while the input is locked, hence after the closure)
+            if focus_address {
+                p.editing_addr = true;
+                p.addr_focus = true;
+                p.address = p.dir.display().to_string();
+                ui.ctx().request_repaint();
+            }
+            if focus_search {
+                ui.ctx().memory_mut(|mem| mem.request_focus(Id::unique("pk_search")));
             }
         });
 
@@ -1101,6 +1252,9 @@ impl Explorer {
             p.finish_rename(true);
             p.stop_search();
             return;
+        }
+        if let Some(path) = input.delete.take() {
+            p.delete_item(path);
         }
         if input.toggle_hidden {
             p.show_hidden = !p.show_hidden;
