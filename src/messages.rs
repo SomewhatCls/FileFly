@@ -39,6 +39,8 @@ pub(crate) enum AppMsg {
     },
     /// The "Check for updates" request finished (None = already up to date).
     UpdateChecked(Result<Option<UpdateInfo>, String>),
+    /// A .lnk file was resolved (see `shortcut.rs`).
+    ShortcutTarget { tab: u64, result: Result<PathBuf, String> },
 }
 
 pub(crate) enum Action {
@@ -106,4 +108,6 @@ pub(crate) enum Action {
     CheckForUpdate,
     /// Opens the download link in the user's browser.
     DownloadUpdate,
+    /// Context menu on a .lnk file: open the folder its target lives in and select the target.
+    OpenShortcutLocation(PathBuf),
 }

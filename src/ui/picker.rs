@@ -43,28 +43,12 @@ fn is_ico_path(p: &Path) -> bool {
     is_ico_ext(p) && p.is_file()
 }
 
-/// One line of the list: a folder, or (in icon mode) an `.ico` file.
-#[derive(Clone)]
-struct Row {
-    name: String,
-    path: PathBuf,
-    is_dir: bool,
-    size: u64,
-}
-
-type Listing = Result<Vec<Row>, String>;
+type Listing = Result<Vec<Entry>, String>;
 
 /// Messages from the background search.
 enum SearchMsg {
-    Batch(Vec<Row>),
+    Batch(Vec<Entry>),
     Done,
-}
-
-/// A folder made with "New folder" whose name is being typed in place.
-struct NewFolder {
-    path: PathBuf,
-    text: String,
-    focus: bool,
 }
 
 pub(crate) struct FolderPicker {
@@ -76,24 +60,22 @@ pub(crate) struct FolderPicker {
     fwd: Vec<PathBuf>,
     /// The picker has its own "hidden items" toggle, starting from the explorer's setting.
     show_hidden: bool,
+    /// Date format and column widths of the explorer, copied when the dialog opens.
+    fmt: DateFormat,
+    cols: [f32; 3],
     address: String,
     editing_addr: bool,
     addr_focus: bool,
-    /// Subfolders (and `.ico` files in icon mode) of `dir`, naturally sorted.
-    rows: Vec<Row>,
+    /// What is on screen: a `Tab` of its own (never part of `Explorer::tabs`), drawn by the same
+    /// `table_ui` as the explorer's panes. Its selection is the picked item (at most one).
+    list: Tab,
     /// Pending background listing of `dir`; replacing it drops (and so ignores) an older one.
     loading: Option<Receiver<Listing>>,
     list_error: Option<String>,
-    /// A clicked row; it is the destination instead of `dir` while selected (like Windows).
-    selected: Option<PathBuf>,
-    new_folder: Option<NewFolder>,
-    scroll_to_selected: bool,
     /// Last failed action (bad path typed, folder could not be created / renamed).
     problem: Option<String>,
-    /// Search text; non-empty means the list shows `search_rows` instead of `rows`.
+    /// Search text; non-empty means the list shows `list.search_results` instead of `list.entries`.
     search: String,
-    search_root: PathBuf,
-    search_rows: Vec<Row>,
     search_rx: Option<Receiver<SearchMsg>>,
     search_cancel: Option<Arc<AtomicBool>>,
     search_running: bool,
@@ -123,52 +105,29 @@ fn name_problem(name: &str) -> Option<&'static str> {
     }
 }
 
-fn sort_rows(v: &mut [Row]) {
-    // Folders first, then files; each naturally sorted.
-    v.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| natural_cmp(&a.name.to_lowercase(), &b.name.to_lowercase()))
-    });
-}
-
-fn list_folders(dir: &Path, show_hidden: bool, with_ico: bool) -> Listing {
-    let rd = fs::read_dir(dir).map_err(|e| format!("Could not read this folder: {e}"))?;
-    let mut out: Vec<Row> = Vec::new();
-    for item in rd.flatten() {
-        let Ok(ft) = item.file_type() else { continue };
-        let path = item.path();
-        let is_dir = ft.is_dir() || (ft.is_symlink() && path.is_dir());
-        let is_ico = with_ico && !is_dir && is_ico_ext(&path);
-        if !(is_dir || is_ico) {
-            continue;
-        }
-        let name = item.file_name().to_string_lossy().into_owned();
-        let md = item.metadata().ok();
-        if !show_hidden && md.as_ref().is_some_and(|md| is_hidden_entry(&name, md)) {
-            continue;
-        }
-        let size = if is_ico { md.map(|m| m.len()).unwrap_or(0) } else { 0 };
-        out.push(Row { name, path, is_dir, size });
-    }
-    sort_rows(&mut out);
-    Ok(out)
+fn list_folders(dir: &Path, show_hidden: bool, fmt: DateFormat, with_ico: bool) -> Listing {
+    // The same listing the explorer's tabs use, cut down to what the picker offers.
+    let mut v = read_listing(dir, show_hidden, fmt)?;
+    v.retain(|e| e.is_dir || (with_ico && is_ico_ext(&e.path)));
+    Ok(v)
 }
 
 /// Breadth-first search below `root` for folders (and `.ico` files) whose name contains `query`
 /// (already lower-cased). Results arrive in batches; `cancel` stops the walk.
+#[allow(clippy::too_many_arguments)]
 fn search_walk(
     root: PathBuf,
     query: String,
     show_hidden: bool,
     with_ico: bool,
+    fmt: DateFormat,
     cancel: Arc<AtomicBool>,
     tx: mpsc::Sender<SearchMsg>,
     ctx: egui::Context,
 ) {
     const MAX_HITS: usize = 5000;
     let mut queue = std::collections::VecDeque::from([root]);
-    let mut batch: Vec<Row> = Vec::new();
+    let mut batch: Vec<Entry> = Vec::new();
     let mut found = 0usize;
     while let Some(dir) = queue.pop_front() {
         if cancel.load(AtomicOrd::Relaxed) {
@@ -195,8 +154,8 @@ fn search_walk(
                 queue.push_back(path.clone());
             }
             if name.to_lowercase().contains(&query) {
-                let size = if is_ico { md.map(|m| m.len()).unwrap_or(0) } else { 0 };
-                batch.push(Row { name, path, is_dir, size });
+                let Some(md) = md else { continue };
+                batch.push(Entry::from_path(name, path, &md, fmt));
                 found += 1;
                 if batch.len() >= 40 || found >= MAX_HITS {
                     if tx.send(SearchMsg::Batch(std::mem::take(&mut batch))).is_err() {
@@ -220,32 +179,31 @@ fn search_walk(
 }
 
 impl FolderPicker {
-    fn new(purpose: PickFor, tab: u64, start: PathBuf, show_hidden: bool, ctx: &egui::Context) -> Self {
+    fn new(purpose: PickFor, tab: u64, start: PathBuf, settings: &Settings, ctx: &egui::Context) -> Self {
+        let instance = PICKER_SEQ.fetch_add(1, AtomicOrd::Relaxed);
         let mut p = Self {
             purpose,
             tab,
             dir: PathBuf::new(),
             back: Vec::new(),
             fwd: Vec::new(),
-            show_hidden,
+            show_hidden: settings.show_hidden,
+            fmt: settings.date_format,
+            cols: settings.col_widths,
             address: String::new(),
             editing_addr: false,
             addr_focus: false,
-            rows: Vec::new(),
+            // An id no explorer tab has, so per-tab UI state (column widths, scroll) never collides.
+            list: Tab::new(u64::MAX - instance, PathBuf::new()),
             loading: None,
             list_error: None,
-            selected: None,
-            new_folder: None,
-            scroll_to_selected: false,
             problem: None,
             search: String::new(),
-            search_root: PathBuf::new(),
-            search_rows: Vec::new(),
             search_rx: None,
             search_cancel: None,
             search_running: false,
             win_pos: None,
-            instance: PICKER_SEQ.fetch_add(1, AtomicOrd::Relaxed),
+            instance,
         };
         p.show(start, ctx);
         p
@@ -260,27 +218,37 @@ impl FolderPicker {
         !self.search.trim().is_empty()
     }
 
-    /// The rows on screen.
-    fn view(&self) -> &Vec<Row> {
-        if self.searching() {
-            &self.search_rows
-        } else {
-            &self.rows
+    /// The clicked row (the table keeps at most one selected in picker mode). It is the
+    /// destination instead of `dir` while selected, like in Windows.
+    fn selected(&self) -> Option<&PathBuf> {
+        self.list.selected.iter().next()
+    }
+
+    fn select(&mut self, path: Option<PathBuf>) {
+        self.list.selected.clear();
+        self.list.anchor = path.clone();
+        if let Some(p) = path {
+            self.list.selected.insert(p);
+        }
+    }
+
+    /// The table filters by `list.search`; keep it equal to the search box.
+    fn sync_search_text(&mut self) {
+        if self.list.search != self.search {
+            self.list.search.clone_from(&self.search);
+            self.list.view_dirty = true;
         }
     }
 
     /// The folder the command will use: the selected subfolder, else the open folder.
     fn target(&self) -> &Path {
-        self.selected.as_deref().unwrap_or(&self.dir)
+        self.selected().map(PathBuf::as_path).unwrap_or(&self.dir)
     }
 
     /// Why the command cannot run on the current target, if it can't.
     fn blocker(&self) -> Option<String> {
         if archive_of(self.target()).is_some() {
             return Some("An opened zip archive is read-only. Choose a folder outside of it.".to_owned());
-        }
-        if self.loading.is_none() && self.list_error.is_some() && self.selected.is_none() {
-            return self.list_error.clone();
         }
         if let PickFor::Extract { zips, name, subfolder, .. } = &self.purpose {
             if *subfolder && zips.len() == 1 {
@@ -293,9 +261,12 @@ impl FolderPicker {
     }
 
     fn can_accept(&self) -> bool {
+        // (the table's error bar explains an unreadable folder; it is only usable via a subfolder)
+        let unreadable = self.loading.is_none() && self.list_error.is_some() && self.selected().is_none();
         self.blocker().is_none()
+            && !unreadable
             && match &self.purpose {
-                PickFor::Icon { .. } => self.selected.as_ref().is_some_and(|f| is_ico_path(f)),
+                PickFor::Icon { .. } => self.selected().is_some_and(|f| is_ico_path(f)),
                 PickFor::Extract { .. } => self.target().is_dir(),
             }
     }
@@ -304,21 +275,28 @@ impl FolderPicker {
     fn show(&mut self, dir: PathBuf, ctx: &egui::Context) {
         self.stop_search();
         self.search.clear();
-        self.search_rows.clear();
         self.address = dir.display().to_string();
         self.editing_addr = false;
         self.dir = dir.clone();
-        self.rows.clear();
         self.list_error = None;
-        self.selected = None;
-        self.new_folder = None;
         self.problem = None;
+        let l = &mut self.list;
+        l.dir = dir.clone();
+        l.search.clear();
+        l.entries.clear();
+        l.search_results.clear();
+        l.view.clear();
+        l.view_dirty = true;
+        l.rename = None;
+        l.error = None;
+        l.loading = true;
+        l.clear_selection();
         let (tx, rx) = mpsc::channel();
         self.loading = Some(rx);
         let ctx = ctx.clone();
-        let (with_ico, show_hidden) = (self.wants_files(), self.show_hidden);
+        let (with_ico, show_hidden, fmt) = (self.wants_files(), self.show_hidden, self.fmt);
         std::thread::spawn(move || {
-            let _ = tx.send(list_folders(&dir, show_hidden, with_ico));
+            let _ = tx.send(list_folders(&dir, show_hidden, fmt, with_ico));
             ctx.request_repaint();
         });
     }
@@ -360,21 +338,31 @@ impl FolderPicker {
         if let Some(rx) = &self.loading {
             match rx.try_recv() {
                 Ok(Ok(v)) => {
-                    self.rows = v;
+                    self.list.entries = v;
+                    self.list.view_dirty = true;
+                    self.list.loading = false;
                     self.loading = None;
                 }
                 Ok(Err(e)) => {
+                    self.list.error = Some(e.clone());
                     self.list_error = Some(e);
+                    self.list.loading = false;
                     self.loading = None;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => self.loading = None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.list.loading = false;
+                    self.loading = None;
+                }
             }
         }
         if let Some(rx) = &self.search_rx {
             loop {
                 match rx.try_recv() {
-                    Ok(SearchMsg::Batch(b)) => self.search_rows.extend(b),
+                    Ok(SearchMsg::Batch(b)) => {
+                        self.list.search_results.extend(b);
+                        self.list.view_dirty = true;
+                    }
                     Ok(SearchMsg::Done) => {
                         self.search_running = false;
                     }
@@ -400,29 +388,31 @@ impl FolderPicker {
     /// (Re)starts the search for the current `search` text below the open folder.
     fn start_search(&mut self, ctx: &egui::Context) {
         self.stop_search();
-        self.search_rows.clear();
-        self.selected = None;
-        self.new_folder = None;
+        self.list.search_results.clear();
+        self.list.view_dirty = true;
+        self.list.rename = None;
+        self.select(None);
         let query = self.search.trim().to_lowercase();
         if query.is_empty() {
             return;
         }
-        self.search_root = self.dir.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         self.search_cancel = Some(cancel.clone());
         self.search_rx = Some(rx);
         self.search_running = true;
-        let (root, show_hidden, with_ico, ctx) =
-            (self.dir.clone(), self.show_hidden, self.wants_files(), ctx.clone());
-        std::thread::spawn(move || search_walk(root, query, show_hidden, with_ico, cancel, tx, ctx));
+        let (root, show_hidden, with_ico, fmt, ctx) =
+            (self.dir.clone(), self.show_hidden, self.wants_files(), self.fmt, ctx.clone());
+        std::thread::spawn(move || search_walk(root, query, show_hidden, with_ico, fmt, cancel, tx, ctx));
     }
 
     fn clear_search(&mut self) {
         self.stop_search();
         self.search.clear();
-        self.search_rows.clear();
-        self.selected = None;
+        self.list.search.clear();
+        self.list.search_results.clear();
+        self.list.view_dirty = true;
+        self.select(None);
     }
 
     fn make_folder(&mut self) {
@@ -438,56 +428,66 @@ impl FolderPicker {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        self.rows.push(Row {
-            name: name.clone(),
-            path: path.clone(),
-            is_dir: true,
-            size: 0,
-        });
-        sort_rows(&mut self.rows);
-        self.selected = Some(path.clone());
-        self.scroll_to_selected = true;
+        let Ok(md) = fs::metadata(&path) else { return };
+        self.list.entries.push(Entry::from_path(name.clone(), path.clone(), &md, self.fmt));
+        self.reveal(path.clone());
         self.problem = None;
-        self.new_folder = Some(NewFolder {
-            path,
+        // The table's own inline rename takes over, like "New folder" in the explorer.
+        self.list.rename = Some(RenameState {
             text: name,
-            focus: true,
+            is_dir: true,
+            path,
+            focus_pending: true,
         });
     }
 
-    /// Ends typing the new folder's name; `keep` false leaves the name it was created with.
-    fn finish_new_folder(&mut self, keep: bool) {
-        let Some(nf) = self.new_folder.take() else { return };
-        let text = nf.text.trim();
-        let old = nf
-            .path
+    /// Sorts the list again, selects `path` and scrolls to it.
+    fn reveal(&mut self, path: PathBuf) {
+        self.list.view_dirty = true;
+        rebuild_view(&mut self.list);
+        self.list.scroll_to = self.list.view.iter().position(|&i| self.list.entries[i].path == path);
+        self.select(Some(path));
+    }
+
+    /// Ends typing a folder name; `keep` false leaves the name it was created with.
+    fn finish_rename(&mut self, keep: bool) {
+        if let Some(rs) = self.list.rename.take() {
+            if keep {
+                self.rename_folder(rs.path, rs.text);
+            }
+        }
+    }
+
+    fn rename_folder(&mut self, path: PathBuf, text: String) {
+        let text = text.trim();
+        let old = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if !keep || text == old {
+        if text == old {
             return;
         }
         if let Some(why) = name_problem(text) {
             self.problem = Some(why.to_owned());
             return;
         }
-        let new = nf.path.with_file_name(text);
+        let new = path.with_file_name(text);
         // (a case-only rename is the same item on Windows / macOS, not a clash)
         if new.exists() && !text.eq_ignore_ascii_case(&old) {
             self.problem = Some(format!("There is already a folder named “{text}” here."));
             return;
         }
-        if let Err(e) = fs::rename(&nf.path, &new) {
+        if let Err(e) = fs::rename(&path, &new) {
             self.problem = Some(format!("Could not rename the folder: {e}"));
             return;
         }
-        if let Some(r) = self.rows.iter_mut().find(|r| r.path == nf.path) {
-            r.name = text.to_owned();
-            r.path = new.clone();
+        if let Some(e) = self.list.entries.iter_mut().find(|e| e.path == path) {
+            e.name = text.to_owned();
+            e.name_lc = text.to_lowercase();
+            e.path = new.clone();
+            e.icon_key = make_icon_key(true, None, &new);
         }
-        sort_rows(&mut self.rows);
-        self.selected = Some(new);
-        self.scroll_to_selected = true;
+        self.reveal(new);
     }
 }
 
@@ -506,20 +506,6 @@ struct PickerInput {
 
 // ==============================================================================================
 // Widgets
-
-/// Fluent 2 text-field focus indicator: a 2 px accent line along the bottom edge of the field.
-fn focus_underline(ui: &Ui, resp: &egui::Response, m: &Metrics, pal: &Palette) {
-    if !resp.has_focus() {
-        return;
-    }
-    let r = resp.rect;
-    let y = r.bottom() - 1.0;
-    let inset = m.radius as f32 * 0.6;
-    ui.painter().line_segment(
-        [pos2(r.left() + inset, y), pos2(r.right() - inset, y)],
-        Stroke::new(2.0_f32, pal.accent),
-    );
-}
 
 /// Esc inside a text field only leaves the field; it must not close the window.
 fn eat_escape(ui: &Ui) -> bool {
@@ -550,31 +536,6 @@ fn message_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str) {
                 ui.add(egui::Label::new(RichText::new(text).color(pal.text)).wrap());
             });
         });
-}
-
-/// Quiet card with a caption and one value line (the path is cut off with an ellipsis).
-fn info_card(ui: &mut Ui, m: &Metrics, pal: &Palette, caption: &str, value: &str) {
-    egui::Frame::new()
-        .fill(fl_card_fill(pal))
-        .stroke(Stroke::new(1.0_f32, pal.divider))
-        .corner_radius(CornerRadius::same(m.radius))
-        .inner_margin(Margin::symmetric((m.pad * 0.8) as i8, (m.pad * 0.6) as i8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.add(
-                egui::Label::new(RichText::new(caption).size(m.font * 0.9).color(pal.text_secondary)).wrap(),
-            );
-            ui.add_space(m.pad * 0.2);
-            ui.add(egui::Label::new(RichText::new(value).color(pal.text)).truncate());
-        });
-}
-
-/// Small chevron drawn from two strokes: "this row opens".
-fn chevron_right(ui: &Ui, c: egui::Pos2, size: f32, color: Color32) {
-    let s = size * 0.5;
-    let st = Stroke::new(1.4_f32, color);
-    ui.painter().line_segment([pos2(c.x - s * 0.4, c.y - s), pos2(c.x + s * 0.4, c.y)], st);
-    ui.painter().line_segment([pos2(c.x + s * 0.4, c.y), pos2(c.x - s * 0.4, c.y + s)], st);
 }
 
 /// Breadcrumb address bar; click empty space (or "…") to type a path.
@@ -766,211 +727,53 @@ fn picker_search(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, 
     changed
 }
 
-/// The list of folders (and `.ico` files in icon mode, or search hits): click selects, double
-/// click opens a folder. The folder being named after "New folder" shows a text field in its row.
+/// The list of folders (and `.ico` files in icon mode, or search hits). It is the explorer's own
+/// file table (`table_ui`, picker mode): click selects, double click opens a folder, and a folder
+/// made with "New folder" is named in place.
 fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, input: &mut PickerInput) {
-    let row_h = m.row_h;
-    let icon_mode = p.wants_files();
-    let searching = p.searching();
-    let avail = ui.available_width();
-    let size_w = m.accessibility_scale * 90.0;
-    let type_w = m.accessibility_scale * 130.0;
-    let name_w = (avail - size_w - type_w).max(m.accessibility_scale * 100.0);
-
-    // ---- column header
-    let header_h = row_h * 0.95;
-    let (hrect, _) = ui.allocate_exact_size(vec2(avail, header_h), Sense::hover());
-    let hfont = FontId::proportional(m.font * 0.93);
-    paint_text(
+    p.sync_search_text();
+    if p.list.view_dirty {
+        rebuild_view(&mut p.list);
+    }
+    let can_make = !p.wants_files() && archive_of(&p.dir).is_none() && p.list_error.is_none();
+    let hit = ui.max_rect();
+    let mut actions: Vec<Action> = Vec::new();
+    table_ui(
         ui,
-        Rect::from_min_max(pos2(hrect.left() + m.pad * 1.7 + m.icon, hrect.top()), pos2(hrect.left() + name_w, hrect.bottom())),
-        "Name",
-        hfont.clone(),
-        pal.text_secondary,
+        m,
+        pal,
+        &mut p.list,
+        &mut p.cols,
+        None,
         false,
-    );
-    paint_text(
-        ui,
-        Rect::from_min_max(pos2(hrect.left() + name_w + m.pad * 0.6, hrect.top()), pos2(hrect.left() + name_w + type_w, hrect.bottom())),
-        "Type",
-        hfont.clone(),
-        pal.text_secondary,
         false,
+        hit,
+        TableMode::Picker { can_make },
+        &mut actions,
     );
-    paint_text(
-        ui,
-        Rect::from_min_max(pos2(hrect.right() - size_w, hrect.top()), pos2(hrect.right() - m.pad * 0.6, hrect.bottom())),
-        "Size",
-        hfont,
-        pal.text_secondary,
-        true,
-    );
-    ui.painter().line_segment(
-        [pos2(hrect.left(), hrect.bottom()), pos2(hrect.right(), hrect.bottom())],
-        Stroke::new(1.0_f32, pal.divider),
-    );
-    ui.add_space(m.pad * 0.3);
-
-    // ---- right-click on empty space: New folder (rows are added later and take priority)
-    let bg = ui.interact(ui.available_rect_before_wrap(), Id::unique("pk_list_bg"), Sense::click());
-    if bg.clicked() {
-        p.selected = None;
-    }
-    let can_make = !icon_mode && archive_of(&p.dir).is_none() && p.list_error.is_none();
-    scroll_context_menu(&bg, |ui| {
-        if menu_item(ui, m, pal, Some("new_folder"), "New folder", None, can_make) {
-            input.new_folder = true;
-        }
-    });
-
-    // ---- placeholder messages
-    let rows_len = p.view().len();
-    let message = if p.loading.is_some() {
-        Some("Loading…".to_owned())
-    } else if let Some(e) = &p.list_error {
-        Some(e.clone())
-    } else if searching && rows_len == 0 {
-        Some(if p.search_running { "Searching…" } else { "No items match your search" }.to_owned())
-    } else if rows_len == 0 {
-        Some(if icon_mode { "No folders or .ico files here." } else { "This folder has no subfolders." }.to_owned())
-    } else {
-        None
-    };
-    if let Some(text) = message {
-        let rect = ui.available_rect_before_wrap();
-        ui.painter().text(
-            pos2(rect.center().x, rect.top() + row_h * 2.5),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::proportional(m.font),
-            pal.text_secondary,
-        );
-        return;
-    }
-
-    let height = ui.available_height();
-    let mut scroll = egui::ScrollArea::vertical()
-        .id_salt(("pk_list", &p.dir, searching))
-        .max_height(height)
-        .auto_shrink([false, false]);
-    if std::mem::take(&mut p.scroll_to_selected) {
-        if let Some(i) = p.view().iter().position(|r| Some(&r.path) == p.selected.as_ref()) {
-            scroll = scroll.vertical_scroll_offset((i as f32 * row_h - height / 2.0).max(0.0));
-        }
-    }
-    let mut finish: Option<bool> = None;
-    let rows: &Vec<Row> = if searching { &p.search_rows } else { &p.rows };
-    scroll.show_rows(ui, row_h, rows.len(), |ui, range| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        for row in &rows[range] {
-            let (rect, resp) = ui.allocate_exact_size(vec2(avail, row_h), Sense::click());
-            let inner = rect.shrink2(vec2(m.accessibility_scale * 2.0, m.accessibility_scale));
-            let selected = p.selected.as_ref() == Some(&row.path);
-            if selected {
-                ui.painter()
-                    .rect_filled(inner, CornerRadius::same(m.radius), sel_fill(pal, resp.hovered()));
-                paint_sel_marker(ui, rect, m, pal);
-            } else {
-                list_hover(ui, inner, &resp, pal, m);
-            }
-            let icon_c = pos2(rect.left() + m.pad + m.icon / 2.0, rect.center().y);
-            draw_path_icon(
-                ui,
-                icon_c,
-                m.icon,
-                &make_icon_key(row.is_dir, if row.is_dir { None } else { Some("ico") }, &row.path),
-                &row.path,
-                if row.is_dir { "folder" } else { "image" },
-                Color32::WHITE,
-            );
-            let name_rect = Rect::from_min_max(
-                pos2(rect.left() + m.pad * 1.7 + m.icon, rect.top()),
-                pos2(rect.left() + name_w - m.pad * 0.5, rect.bottom()),
-            );
-            let renaming_here = p.new_folder.as_ref().is_some_and(|nf| nf.path == row.path);
-            match &mut p.new_folder {
-                Some(nf) if renaming_here => {
-                    let id = Id::unique("pk_new_folder");
-                    let te = egui::TextEdit::singleline(&mut nf.text)
-                        .id(id)
-                        .background_color(pal.control)
-                        .desired_width(name_rect.width())
-                        .align(Align2::LEFT_CENTER);
-                    let r = ui.put(name_rect.shrink2(vec2(0.0, m.accessibility_scale * 2.0)), te);
-                    if nf.focus {
-                        nf.focus = false;
-                        r.request_focus();
-                        select_range(ui, id, 0, nf.text.chars().count());
-                    } else if r.lost_focus() {
-                        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                        if esc {
-                            eat_escape(ui);
-                        }
-                        finish = Some(!esc);
-                    }
-                }
-                _ => {
-                    // In search results, show where the item lives relative to the searched folder.
-                    let label;
-                    let text: &str = if searching {
-                        let rel = row.path.parent().and_then(|pp| pp.strip_prefix(&p.search_root).ok());
-                        match rel {
-                            Some(rel) if !rel.as_os_str().is_empty() => {
-                                label = format!("{}   \u{2192}   {}", row.name, rel.display());
-                                &label
-                            }
-                            _ => &row.name,
-                        }
-                    } else {
-                        &row.name
-                    };
-                    paint_text(ui, name_rect, text, FontId::proportional(m.font), pal.text, false);
-                }
-            }
-            paint_text(
-                ui,
-                Rect::from_min_max(pos2(rect.left() + name_w + m.pad * 0.6, rect.top()), pos2(rect.left() + name_w + type_w, rect.bottom())),
-                if row.is_dir { "File folder" } else { "Icon" },
-                FontId::proportional(m.font),
-                pal.text_secondary,
-                false,
-            );
-            if !row.is_dir {
-                paint_text(
-                    ui,
-                    Rect::from_min_max(pos2(rect.right() - size_w, rect.top()), pos2(rect.right() - m.pad * 0.6, rect.bottom())),
-                    &format_size(row.size),
-                    FontId::proportional(m.font),
-                    pal.text_secondary,
-                    true,
-                );
-            }
-            if (resp.hovered() || selected) && !renaming_here && row.is_dir && !searching {
-                // (hint that a double click opens the folder; kept off the size column)
-                chevron_right(
-                    ui,
-                    pos2(rect.left() + name_w - m.pad * 0.2, rect.center().y),
-                    m.font * 0.8,
-                    pal.text_secondary,
-                );
-            }
-
-            if resp.double_clicked() && !renaming_here {
-                if row.is_dir {
-                    input.go = Some(row.path.clone());
+    // The table reports what happened as `Action`s; the picker only cares about a few of them.
+    for a in actions {
+        match a {
+            Action::Open(path) => {
+                if path.is_dir() {
+                    input.go = Some(path);
                 } else {
-                    p.selected = Some(row.path.clone());
+                    // an `.ico` file: choose it
+                    p.select(Some(path));
                     input.accept = true;
                 }
-            } else if resp.clicked() && !renaming_here {
-                // Clicking the selected row again selects the open folder instead (like Windows,
-                // where the open folder is the destination when nothing is selected).
-                p.selected = if selected { None } else { Some(row.path.clone()) };
             }
+            Action::NewFolder => input.new_folder = true,
+            Action::CommitRename(path, text) => {
+                p.list.rename = None;
+                p.rename_folder(path, text);
+            }
+            Action::CancelRename => {
+                p.list.rename = None;
+                eat_escape(ui); // Esc ends the name box, not the dialog
+            }
+            _ => {}
         }
-    });
-    if let Some(keep) = finish {
-        p.finish_new_folder(keep);
     }
 }
 
@@ -998,7 +801,7 @@ impl Explorer {
             purpose,
             self.tabs[ti].id,
             start,
-            self.settings.show_hidden,
+            &self.settings,
             &self.ui,
         ));
     }
@@ -1014,7 +817,7 @@ impl Explorer {
             PickFor::Icon { folder },
             self.tabs[ti].id,
             start,
-            self.settings.show_hidden,
+            &self.settings,
             &self.ui,
         ));
     }
@@ -1220,7 +1023,7 @@ impl Explorer {
                             input.toggle_hidden = true;
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let n = p.view().len();
+                            let n = p.list.view.len();
                             let mut text = format!("{n} {}{}", if icon_mode { "item" } else { "folder" }, if n == 1 { "" } else { "s" });
                             if p.search_running {
                                 text.push_str("   |   searching…");
@@ -1295,7 +1098,7 @@ impl Explorer {
         // ---- apply what happened
         if input.cancel {
             // A new folder that is still being named stays.
-            p.finish_new_folder(true);
+            p.finish_rename(true);
             p.stop_search();
             return;
         }
@@ -1317,12 +1120,12 @@ impl Explorer {
                 p.start_search(&self.ui);
             }
         } else if input.new_folder {
-            p.finish_new_folder(true);
+            p.finish_rename(true);
             p.make_folder();
         }
         if input.accept && p.can_accept() {
             p.problem = None;
-            p.finish_new_folder(true);
+            p.finish_rename(true);
             if p.problem.is_none() {
                 p.stop_search();
                 self.accept_picker(p);
@@ -1335,9 +1138,10 @@ impl Explorer {
     fn accept_picker(&mut self, p: FolderPicker) {
         let ti = self.tabs.iter().position(|t| t.id == p.tab).unwrap_or(self.active);
         let target = p.target().to_path_buf();
+        let chosen = p.selected().cloned();
         match p.purpose {
             PickFor::Icon { folder } => {
-                if let Some(icon) = p.selected.filter(|f| is_ico_path(f)) {
+                if let Some(icon) = chosen.filter(|f| is_ico_path(f)) {
                     self.set_folder_icon(&folder, Some(icon));
                 }
             }

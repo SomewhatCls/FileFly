@@ -335,6 +335,7 @@ impl Explorer {
                     self.tabs[ti].select_only(p);
                 }
             }
+            Action::OpenShortcutLocation(p) => self.open_shortcut_location(ti, p),
             Action::PeaOpen(p) => {
                 if let Some(exe) = &self.peazip {
                     if let Err(e) = open_with_peazip(exe, &p) {

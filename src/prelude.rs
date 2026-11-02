@@ -59,3 +59,4 @@ pub(crate) use crate::theme::*;
 pub(crate) use crate::ui::picker;
 pub(crate) use crate::ui::*;
 pub(crate) use crate::update::*;
+pub(crate) use crate::lnk_resolver;

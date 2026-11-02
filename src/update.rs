@@ -1,4 +1,4 @@
-/// This file queries GitHub for the newest release and pushes the results through Actions.
+//! This file queries GitHub for the newest release and pushes the results through Actions.
 
 use crate::prelude::*;
 use semver::Version;

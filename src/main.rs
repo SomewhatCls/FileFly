@@ -33,6 +33,7 @@ mod ui;
 mod git;
 mod backdrop_blur;
 mod update;
+mod lnk_resolver;
 
 fn main() -> eframe::Result<()> {
     startup::run()
