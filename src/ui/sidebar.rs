@@ -214,6 +214,8 @@ impl Explorer {
         });
         let can_pin = !special_active && !quick.iter().any(|q| same_path(&q.path, &cur));
         let dragging = item_drag_paths(ui);
+        let old_grab_radius = ui.style().interaction.resize_grab_radius_side;
+        ui.style_mut().interaction.resize_grab_radius_side = 2.0;
         let panel = egui::Panel::left("sidebar")
             .resizable(true)
             .default_size(m.accessibility_scale * 250.0)
@@ -335,6 +337,8 @@ impl Explorer {
                     });
                 });
             });
+        // Reset the style's drag radius for other widgets.
+        ui.style_mut().interaction.resize_grab_radius_side = old_grab_radius;
         self.sidebar_rect = Some(panel.response.rect);
     }
 }
