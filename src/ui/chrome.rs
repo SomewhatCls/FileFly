@@ -217,12 +217,19 @@ pub(crate) fn caption_buttons_windows(ui: &mut Ui, m: &Metrics, pal: &Palette, m
     // Windows Icon size approximation
     let icon_size = snap(13.33 * m.accessibility_scale);
 
+    // The press that began a window resize also hit the button underneath it, and the release
+    // injected after the OS resize loop would complete that click, so ignore it.
+    let resize_started = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(Id::unique("resize_started")))
+        .unwrap_or(false);
+
     for (slot, &k) in kinds.iter().enumerate() {
         let r = Rect::from_min_size(pos2(left + bw * slot as f32, origin.y), vec2(bw, bh));
         let resp = ui.interact(r, Id::unique(("caption", k)), Sense::click());
         let close = k == 2;
 
-        let bg = if resp.is_pointer_button_down_on() {
+        let bg = if resp.is_pointer_button_down_on() && !resize_started {
             if close {
                 Color32::from_rgb(0xB3, 0x28, 0x1A)
             } else {
@@ -255,7 +262,7 @@ pub(crate) fn caption_buttons_windows(ui: &mut Ui, m: &Metrics, pal: &Palette, m
         };
         draw_icon(ui, r.center(), icon_size, name, fg);
 
-        if resp.clicked() {
+        if resp.clicked() && !resize_started {
             ui.send_viewport_cmd(match k {
                 0 => egui::ViewportCommand::Minimized(true),
                 1 => egui::ViewportCommand::Maximized(!maximized),
@@ -268,6 +275,10 @@ pub(crate) fn caption_buttons_windows(ui: &mut Ui, m: &Metrics, pal: &Palette, m
 /// Undecorated windows have no native resize border, so handle the edges ourselves.
 pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
     use egui::viewport::ResizeDirection as D;
+    // A new press starts afresh; set below when a resize begins (see `caption_buttons_windows`).
+    if ctx.input(|i| i.pointer.primary_pressed()) {
+        ctx.data_mut(|d| d.remove_temp::<bool>(Id::unique("resize_started")));
+    }
     let (maximized, fullscreen) = ctx.input(|i| {
         (
             i.viewport().maximized.unwrap_or(false),
@@ -311,6 +322,7 @@ pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
     ctx.set_cursor_icon(cursor);
     if ctx.input(|i| i.pointer.primary_pressed()) {
         ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+        ctx.data_mut(|d| d.insert_temp(Id::unique("resize_started"), true));
         // The OS resize loop swallows the button/touch release (see `raw_input_hook`).
         ctx.data_mut(|d| d.insert_temp(Id::unique("pointer_reset"), true));
         ctx.request_repaint();

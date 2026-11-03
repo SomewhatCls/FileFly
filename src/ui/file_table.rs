@@ -82,15 +82,18 @@ pub(crate) fn rubber_band(
     let mut state: Option<Rubber> = ui.data_mut(|d| d.get_temp(id));
 
     if pressed && enabled && state.is_none() {
-        if let Some(p) = pos {
-            let on_scrollbar = viewport.contains(p) && p.x > viewport.right() - m.accessibility_scale * 14.0;
+        if let Some(press_position) = pos {
+            let on_scrollbar = viewport.contains(press_position) && press_position.x > viewport.right() - m.accessibility_scale * 14.0;
             // layer_id_at() is None over plain panels and Some(..) over dialogs/menus/popups.
-            let covered = ui.layer_id_at(p).is_some_and(|l| l != ui.layer_id());
+            let covered = ui.layer_id_at(press_position).is_some_and(|l| l != ui.layer_id());
+            // Another widget already owns this drag.
+            let other_drag = ui.ctx().dragged_id().is_some();
             // `hit` is the viewport plus the blank margins around it: a drag may start there too.
-            if hit.contains(p) && !on_scrollbar && !covered {
+            // If another widget already owns this drag interaction, do not draw the rubber band selection.
+            if hit.contains(press_position) && !on_scrollbar && !covered && !other_drag {
                 state = Some(Rubber {
-                    press: p,
-                    origin: pos2(p.x, p.y - content_top),
+                    press: press_position,
+                    origin: pos2(press_position.x, press_position.y - content_top),
                     active: false,
                     additive: mods.command || mods.shift,
                 });
@@ -586,6 +589,12 @@ pub(crate) fn table_ui(
                     && y >= 0.0
                     && ((y / row_h) as usize) < view.len()
             });
+            // Prevent overlap between the sidebar drag area and the rubber_band drag area.
+            let sidebar_edge_margin = m.accessibility_scale * 2.5;
+            let band_start_area = Rect::from_min_max(
+                pos2(band_hit.left() + sidebar_edge_margin, band_hit.top()),
+                band_hit.max,
+            );
             let band = rubber_band(
                 ui,
                 m,
@@ -594,7 +603,7 @@ pub(crate) fn table_ui(
                 row_h,
                 view.len(),
                 rename.is_none() && !press_on_row && !picker,
-                band_hit,
+                band_start_area,
             );
             if let Some(u) = &band {
                 let base_id = Id::unique(("rubber_base", tab_id));
