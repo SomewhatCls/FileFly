@@ -379,8 +379,9 @@ pub(crate) fn menu_item(
 /// Contents of a context menu that can never run off the window: when the menu is taller than the
 /// window it scrolls instead of being cut off (the popup itself already shifts to stay on screen).
 pub(crate) fn menu_scroll(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
-    // Room for the popup frame (margins + stroke) and a little air to the window edges.
-    let max_h = (ui.ctx().content_rect().height() - 40.0).max(120.0);
+    let max_h = ui.ctx().content_rect().height();
+    // Set the UI height for the scroll menu to the same height as the entire Window.
+    ui.set_max_height(max_h);
     egui::ScrollArea::vertical()
         .max_height(max_h)
         .max_width(100.0)
