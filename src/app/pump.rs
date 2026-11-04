@@ -122,7 +122,9 @@ impl Explorer {
                     set_special_drives(d.iter().map(|x| x.mount_point.clone()));
                     self.drives = d;
                     self.drives_ready = true;
-                    self.apply_quick_availability();
+                    if self.apply_quick_availability() {
+                        self.resolve_quick_kinds();
+                    }
                 }
                 AppMsg::Job(id, result) => {
                     self.ops.retain(|o| o.id != id);
@@ -204,6 +206,21 @@ impl Explorer {
                 }
                 AppMsg::UpdateChecked(r) => self.update_checked(r),
                 AppMsg::ShortcutTarget { tab, result } => self.shortcut_resolved(tab, result),
+                AppMsg::QuickKind { path, is_dir } => {
+                    self.probed_icons.remove(&path);
+                    if let Some(d) = is_dir {
+                        let mut changed = false;
+                        for q in &mut self.quick {
+                            if same_path(&q.path, &path) && q.is_dir != d {
+                                q.set_dir(d);
+                                changed = true;
+                            }
+                        }
+                        if changed {
+                            self.sync_special_icons();
+                        }
+                    }
+                }
             }
         }
 

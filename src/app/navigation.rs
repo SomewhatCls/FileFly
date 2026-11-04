@@ -175,9 +175,34 @@ impl Explorer {
     /// Rebuilds the Quick access list from the settings and tells the icon cache which folders
     /// have an icon of their own.
     pub(crate) fn rebuild_quick(&mut self) {
+        // keep already-resolved kinds so the sidebar doesn't flicker on every rebuild
+        let old: HashMap<PathBuf, bool> =
+            self.quick.iter().map(|q| (q.path.clone(), q.is_dir)).collect();
         self.quick = build_quick(&self.settings);
-        self.apply_quick_availability();
+        for q in &mut self.quick {
+            if let Some(&d) = old.get(&q.path) {
+                q.set_dir(d);
+            }
+        }
+        if self.apply_quick_availability() {
+            self.resolve_quick_kinds();
+        }
         self.sync_special_icons();
+        self.resolve_quick_kinds();
+    }
+
+    pub(crate) fn resolve_quick_kinds(&mut self) {
+        for q in self.quick.iter().filter(|q| q.available) {
+            if !self.probed_icons.insert(q.path.clone()) {
+                continue; // already being probed
+            }
+            let (p, tx, ui) = (q.path.clone(), self.msg_tx.clone(), self.ui.clone());
+            std::thread::spawn(move || {
+                let is_dir = fs::metadata(&p).ok().map(|m| m.is_dir());
+                let _ = tx.send(AppMsg::QuickKind { path: p, is_dir });
+                ui.request_repaint();
+            });
+        }
     }
 
     pub(crate) fn sync_special_icons(&mut self) {
@@ -201,7 +226,7 @@ impl Explorer {
     }
 
     pub(crate) fn pin_quick(&mut self, p: PathBuf) {
-        if self.quick.iter().any(|q| same_path(&q.path, &p)) || !p.is_dir() {
+        if self.quick.iter().any(|q| same_path(&q.path, &p)) || !p.exists() {
             return;
         }
         let mut list = self.quick_paths();

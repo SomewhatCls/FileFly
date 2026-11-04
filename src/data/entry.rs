@@ -45,6 +45,7 @@ impl Entry {
             }
         };
 
+        // TODO: resolve blocking issue.
         let icon_key = make_icon_key(is_dir, ext.as_deref(), &path);
 
         note_name(&name); // may need a fallback font for this script
@@ -69,11 +70,45 @@ impl Entry {
 pub(crate) struct QuickItem {
     pub(crate) label: String,
     pub(crate) path: PathBuf,
-    /// Built-in icon shown until (or unless) the platform icon of the folder is available.
+    /// Folder or file. Decides what a click does and which fallback icon is used.
+    pub(crate) is_dir: bool,
+    /// Fallback default icon.
     pub(crate) icon: &'static str,
-    /// False while the folder sits on a removable / network drive that is not connected: the entry stays
+    /// Key to the designated icon location.
+    pub(crate) icon_key: String,
+    /// False while the entry sits on a removable / network drive that is not connected: the entry stays
     /// pinned in the settings but is hidden from the sidebar until the drive comes back.
     pub(crate) available: bool,
+}
+
+impl QuickItem {
+    /// No I/O. `is_dir` is a guess until `resolve_quick_kinds` has checked the disk.
+    pub(crate) fn new(path: PathBuf, label: Option<&str>, icon: Option<&'static str>, is_dir: bool) -> Self {
+        let mut q = Self {
+            label: label.map(str::to_owned).unwrap_or_else(|| folder_label(&path)),
+            icon: icon.unwrap_or("folder"),
+            icon_key: String::new(),
+            is_dir,
+            available: true,
+            path,
+        };
+        q.set_dir(is_dir);
+        q
+    }
+
+    pub(crate) fn set_dir(&mut self, is_dir: bool) {
+        self.is_dir = is_dir;
+        // only the generic fallbacks follow the type; known-folder icons (home, music, ...) stay
+        if self.icon == "folder" || self.icon == "file" {
+            self.icon = if is_dir { "folder" } else { "file" };
+        }
+        self.rekey();
+    }
+
+    pub(crate) fn rekey(&mut self) {
+        let ext = self.path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase());
+        self.icon_key = make_icon_key(self.is_dir, ext.as_deref(), &self.path);
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

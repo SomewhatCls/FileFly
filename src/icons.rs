@@ -93,6 +93,19 @@ fn is_special_dir(path: &Path) -> bool {
     }
 }
 
+/// Creates a temp folder to use as icon source for generic folders,
+/// instead of relying on a race condition where the first given
+/// folder's icon is used.
+fn generic_dir_probe() -> Option<&'static Path> {
+    static P: OnceLock<Option<PathBuf>> = OnceLock::new();
+    P.get_or_init(|| {
+        let p = std::env::temp_dir().join("yourapp-generic-folder"); // use your app's name
+        std::fs::create_dir_all(&p).ok()?;
+        Some(p)
+    })
+        .as_deref()
+}
+
 /// Cache key for a platform icon: one per extension, one per path for per-file icons like .exe on
 /// Windows, and one per path for special folders (Documents, drives, pinned folders).
 pub fn make_icon_key(is_dir: bool, ext: Option<&str>, path: &Path) -> String {
@@ -249,8 +262,23 @@ impl IconCache {
             return slot.tex.clone();
         }
         if self.pending.insert(key.to_owned()) {
-            // "ico:<file>" keys (custom folder icons) load the .ico instead of the folder itself.
-            let load = key.strip_prefix("ico:").map(PathBuf::from).unwrap_or_else(|| path.to_owned());
+            let load = if let Some(ico) = key.strip_prefix("ico:") {
+                // custom folder icons load the .ico instead of the folder itself
+                PathBuf::from(ico)
+            } else if key == "<dir>" {
+                // shared generic folder icon: never taken from whichever real folder asked first
+                match generic_dir_probe() {
+                    Some(p) => p.to_path_buf(),
+                    None => {
+                        // no probe available: use the built-in folder.svg
+                        self.pending.remove(key);
+                        self.slots.insert(key.to_owned(), Slot { tex: None, last_used: self.frame });
+                        return None;
+                    }
+                }
+            } else {
+                path.to_owned()
+            };
             self.queue.jobs.lock().unwrap().push_back(Job { key: key.to_owned(), path: load });
             self.queue.cv.notify_one();
         }

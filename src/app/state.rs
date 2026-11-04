@@ -111,6 +111,10 @@ pub(crate) struct Explorer {
     /// Width (points) of the expanded sidebar: restored from the session, kept current by
     /// `ui_sidebar`, and written back with the session. None until it is known.
     pub(crate) sidebar_width: Option<f32>,
+
+    /// This stores which entry icons are currently being probed, to prevent
+    /// threads from probing the same ones.
+    pub(crate) probed_icons: HashSet<PathBuf>,
 }
 
 impl Explorer {
@@ -257,6 +261,7 @@ impl Explorer {
             update: UpdateState::Idle,
             sidebar_compact: false,
             sidebar_width: None,
+            probed_icons: HashSet::new(),
         };
         // Independent of the tabs, so it also applies when FileFly is started on a given folder.
         app.sidebar_width = app.settings.session.sidebar_width;

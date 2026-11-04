@@ -21,27 +21,36 @@ pub(crate) fn folder_label(p: &Path) -> String {
         .unwrap_or_else(|| p.display().to_string())
 }
 
-/// The Quick access list: the user's pinned folders, or the defaults if never customised.
+fn guess_dir(p: &Path) -> bool {
+    p.extension().is_none()
+}
+
+/// The Quick access list.
 pub(crate) fn build_quick(s: &Settings) -> Vec<QuickItem> {
     let known = known_folders();
     let Some(list) = &s.quick_access else {
         return known
             .into_iter()
             .filter_map(|(icon, label, p)| {
+                // defaults are folders by definition; this one stat stays as it was in your original
                 p.filter(|p| p.is_dir())
-                    .map(|path| QuickItem { label: label.to_owned(), path, icon, available: true })
+                    .map(|path| QuickItem::new(path, Some(label), Some(icon), true))
             })
             .collect();
     };
     list.iter()
         .map(PathBuf::from)
         .map(|path| match known.iter().find(|(_, _, p)| p.as_deref() == Some(path.as_path())) {
-            Some((icon, label, _)) => QuickItem { label: (*label).to_owned(), path, icon: *icon, available: true },
-            None => QuickItem { label: folder_label(&path), path, icon: "folder", available: true },
+            Some((icon, label, _)) => QuickItem::new(path, Some(label), Some(*icon), true),
+            None => {
+                let g = guess_dir(&path);
+                QuickItem::new(path, None, None, g)
+            }
         })
         .collect()
 }
 
+/// Compares paths lossily to avoid issues caused by bad characters.
 pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     if cfg!(windows) {
         a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())

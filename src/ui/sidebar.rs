@@ -580,22 +580,34 @@ impl Explorer {
                                     } else {
                                         nav_item_ex(ui, &m, &pal, q.icon, path, &q.label, sel)
                                     };
-                                    if let Some(ps) = &dragging {
-                                        drag_drop_zone(ui, &pal, &m, resp.rect, &q.path, ps);
+                                    if q.is_dir {
+                                        if let Some(ps) = &dragging {
+                                            drag_drop_zone(ui, &pal, &m, resp.rect, &q.path, ps);
+                                        }
                                     }
                                     if resp.clicked() {
-                                        actions.push(Action::Navigate(q.path.clone()));
-                                    } else if resp.middle_clicked() {
+                                        actions.push(if q.is_dir {
+                                            Action::Navigate(q.path.clone())
+                                        } else {
+                                            Action::Open(q.path.clone())
+                                        });
+                                    } else if resp.middle_clicked() && q.is_dir {
                                         actions.push(Action::NewTabAt(q.path.clone()));
                                     }
                                     scroll_context_menu(&resp, |ui| {
                                         if menu_item(ui, &m, &pal, Some("external"), "Open", None, true) {
-                                            actions.push(Action::Navigate(q.path.clone()));
+                                            actions.push(if q.is_dir {
+                                                Action::Navigate(q.path.clone())
+                                            } else {
+                                                Action::Open(q.path.clone())
+                                            });
                                         }
-                                        if menu_item(ui, &m, &pal, Some("new_tab"), "Open in new tab", None, true) {
+                                        if q.is_dir
+                                            && menu_item(ui, &m, &pal, Some("new_tab"), "Open in new tab", None, true)
+                                        {
                                             actions.push(Action::NewTabAt(q.path.clone()));
                                         }
-                                        if archive_of(&q.path).is_none() {
+                                        if q.is_dir && archive_of(&q.path).is_none() {
                                             if menu_item(ui, &m, &pal, Some("image"), "Change folder icon…", None, true) {
                                                 actions.push(Action::ChangeFolderIcon(q.path.clone()));
                                             }
