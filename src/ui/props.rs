@@ -153,11 +153,12 @@ impl Explorer {
                 ui.add_space(m.pad * 0.5);
                 ui.separator();
                 ui.add_space(m.pad * 0.5);
+                /*
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut readonly, "Read-only");
                     let mut hidden = p.hidden;
                     ui.add_enabled(false, egui::Checkbox::new(&mut hidden, "Hidden"));
-                });
+                });*/
                 ui.add_space(m.pad);
                 ui.horizontal(|ui| {
                     if secondary_button(ui, &m, "Copy path").clicked() {
