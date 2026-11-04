@@ -1010,8 +1010,14 @@ impl Explorer {
 
             // ---- navigation pane: Quick access + drives
             egui::Panel::left("pk_side")
-                .resizable(false)
-                .exact_size(m.accessibility_scale * 200.0)
+                .resizable(true)
+                .default_size(
+                    self.sidebar_width
+                        .unwrap_or(m.accessibility_scale * 200.0)
+                )
+                .size_range(
+                    m.accessibility_scale * 150.0..=m.accessibility_scale * 400.0
+                )
                 .show_separator_line(false)
                 .frame(bar_frame(&pal, m.pad * 0.6, m.pad * 0.6, m.pad * 0.4, m.pad * 0.4))
                 .show(ui, |ui| {
