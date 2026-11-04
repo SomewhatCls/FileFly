@@ -51,7 +51,7 @@ pub(crate) struct Explorer {
     pub(crate) sys_accent: Option<Accent>,
     pub(crate) text_scale: f32,
     pub(crate) last_poll: Instant,
-    pub(crate) applied_style: Option<(f32, Accent)>,
+    pub(crate) applied_style: Option<(f32, Accent, bool, f32)>,
     /// Error text + what "Try as administrator" does for it (only offered while that error shows).
     pub(crate) admin_retry: Option<(String, AdminRetry)>,
     pub(crate) m: Metrics,
@@ -122,6 +122,7 @@ impl Explorer {
         let settings = load_settings();
         let git_activated = settings.git_activated;
         let custom_frame = settings.custom_frame;
+        let compact = settings.compact;
 
         ui.set_theme(match settings.theme {
             ThemeChoice::System => egui::ThemePreference::System,
@@ -215,7 +216,7 @@ impl Explorer {
             last_poll: Instant::now(),
             applied_style: None,
             admin_retry: None,
-            m: Metrics::new(14.0, 1.0),
+            m: Metrics::new(14.0, 1.0, compact),
             pal: Palette::new(egui::Theme::Dark, Accent::fallback(), TransparencyEffect::None),
             last_title: String::new(),
             last_save: Instant::now(),

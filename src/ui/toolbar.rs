@@ -207,6 +207,8 @@ pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab,
     if resp.changed() {
         tab.view_dirty = true;
     }
+
+    // Fluent-style underline on focus.
     if resp.has_focus() {
         ui.painter().line_segment(
             [

@@ -317,14 +317,9 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// Regular (non-compact) metrics.
-    pub fn new(font: f32, ppp: f32) -> Self {
-        Self::with_compact(font, ppp, false)
-    }
-
-    /// `compact`: the app-wide compact setting. Only the row/control heights shrink;
-    /// the icon size and text size don't.
-    pub fn with_compact(font: f32, ppp: f32, compact: bool) -> Self {
+    /// Various sizing metrics, affected by whether the user activated compact mode.
+    /// These metrics are updated by re-initializing them in sync_system().
+    pub fn new(font: f32, ppp: f32, compact: bool) -> Self {
         let snap = |v: f32| (v * ppp).round() / ppp; // align to physical pixels so SVGs stay crisp
         // Row heights as a multiple of the font size: (regular, compact).
         let height = |regular: f32, tight: f32| snap(font * if compact { tight } else { regular });
