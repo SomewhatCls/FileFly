@@ -45,7 +45,6 @@ impl Entry {
             }
         };
 
-        // TODO: resolve blocking issue.
         let icon_key = make_icon_key(is_dir, ext.as_deref(), &path);
 
         note_name(&name); // may need a fallback font for this script

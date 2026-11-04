@@ -173,7 +173,7 @@ impl Explorer {
         } else {
             None
         };
-        let can_paste = get_clipboard().is_some();
+        let can_paste = self.can_paste();
         let has_peazip = self.peazip.is_some();
         let cut_set: Option<HashSet<PathBuf>> = self
             .clipboard

@@ -137,12 +137,16 @@ impl Explorer {
             Action::ExtractTo(p) => self.open_extract_to(ti, p),
             Action::Copy(p) => {
                 if !p.is_empty() {
-                    let _ = set_clipboard(&p, false); // `true` in the Cut arm
+                    // DO NOT USE THE SYSTEM CLIPBOARD ON NON-WINDOWS
+                    #[cfg(windows)]
+                    let _ = set_clipboard(&p, false);
                     self.clipboard = Some((p, false));
                 }
             }
             Action::Cut(p) => {
                 if !p.is_empty() {
+                    // DO NOT USE THE SYSTEM CLIPBOARD ON NON-WINDOWS
+                    #[cfg(windows)]
                     let _ = set_clipboard(&p, true);
                     self.clipboard = Some((p, true));
                 }

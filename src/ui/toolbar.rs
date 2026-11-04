@@ -371,16 +371,13 @@ impl Explorer {
             Some(t) => (true, t.selected.len(), !t.rows.is_empty()),
             None => (false, 0, false),
         };
+        let can_paste = self.can_paste();
         let selection = self.tabs[self.active].selected_paths();
         let (can_paste, hidden, settings_open) = (
-            get_clipboard().is_some(),
+            can_paste,
             self.settings.show_hidden,
             self.tabs[self.active].settings,
         );
-        // Checks for the existence of a git repository.
-        if let Some(git) = &mut self.git {
-            git.update(ui.ctx(), &self.tabs[self.active].dir);
-        }
         egui::Panel::top("command")
             .show_separator_line(false)
             .frame(layer_frame(

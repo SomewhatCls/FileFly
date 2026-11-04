@@ -37,13 +37,42 @@ impl Explorer{
              painter.rect_filled(rect, if !Self::is_maximized(ui.ctx()){corner_radius}else{0.0}, self.pal.layer);
          }
 
-         // Draw the interface.
+        // Draw the interface.
+        self.ui_tabs(ui, actions);
+        self.ui_nav(ui, actions);
+        self.ui_command(ui, actions);
+        self.ui_sidebar(ui, actions);
+        self.ui_status(ui);
+        self.ui_central(ui, actions);
+
+         // Draw the interface (time measurement debug version).
+        /*
+        let t_tabs = Instant::now();
          self.ui_tabs(ui, actions);
+        let delta = t_tabs.elapsed();
+        if delta.as_millis() > 30 { eprintln!("slow tabs: {delta:?}"); }
+        let t_nav = Instant::now();
          self.ui_nav(ui, actions);
+        let delta = t_nav.elapsed();
+        if delta.as_millis() > 30 { eprintln!("slow nav: {delta:?}"); }
+        let t_command = Instant::now();
          self.ui_command(ui, actions);
+        let delta = t_command.elapsed();
+        if delta.as_millis() > 30 { eprintln!("slow command: {delta:?}"); }
+        let t_sidebar = Instant::now();
          self.ui_sidebar(ui, actions);
+        let delta = t_sidebar.elapsed();
+        if delta.as_millis() > 30 { eprintln!("slow sidebar: {delta:?}"); }
+        let t_status = Instant::now();
          self.ui_status(ui);
+        let delta = t_status.elapsed();
+        if delta.as_millis() > 30 { eprintln!("slow status: {delta:?}"); }
+        let t_central = Instant::now();
          self.ui_central(ui, actions);
+        let delta = t_central.elapsed();
+        if delta.as_millis() > 30 { eprintln!("slow central: {delta:?}"); }
+        */
+
 
          // Rounded inner corner where the band above meets the file
          // view, to the right of the sidebar.
