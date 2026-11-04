@@ -125,7 +125,7 @@ impl Default for Settings {
         Self {
             font_size: 14.0,
             follow_text_scale: if cfg!(windows) {true} else {false},
-            use_system_accent: true,
+            use_system_accent: if cfg!(windows) {true} else {false},
             custom_accent: [0x00, 0x78, 0xD4],
             theme: ThemeChoice::System,
             show_hidden: false,

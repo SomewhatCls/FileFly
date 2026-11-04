@@ -329,6 +329,11 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                         }
                     });
             });
+        }else {
+            fl_divider(ui, m, pal);
+            fl_row(ui, m, pal, "Accent color", None, |ui| {
+                ui.color_edit_button_srgb(&mut sp.s.custom_accent);
+            });
         }
         fl_divider(ui, m, pal);
         fl_row(

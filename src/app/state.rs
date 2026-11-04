@@ -119,6 +119,7 @@ impl Explorer {
         let settings = load_settings();
         let git_activated = settings.git_activated;
         let custom_frame = settings.custom_frame;
+
         ui.set_theme(match settings.theme {
             ThemeChoice::System => egui::ThemePreference::System,
             ThemeChoice::Light => egui::ThemePreference::Light,
