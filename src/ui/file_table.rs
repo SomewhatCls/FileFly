@@ -170,6 +170,27 @@ pub(crate) fn paint_band(ui: &Ui, pal: &Palette, rect: Rect) {
     );
 }
 
+/// Logic for pinning and unpinning items to the quick access list.
+fn pin_menu_item(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    target: &Path,
+    actions: &mut Vec<Action>,
+) {
+    let pinned = ui
+        .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::unique("pinned_paths")))
+        .is_some_and(|s| s.contains(target));
+
+    if pinned {
+        if menu_item(ui, m, pal, Some("close"), "Remove from Quick access", None, true) {
+            actions.push(Action::UnpinQuick(target.to_path_buf()));
+        }
+    } else if menu_item(ui, m, pal, Some("plus"), "Pin to Quick access", None, true) {
+        actions.push(Action::PinQuick(target.to_path_buf()));
+    }
+}
+
 /// Where a table is shown.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TableMode {
@@ -483,56 +504,47 @@ pub(crate) fn table_ui(
         });
     }
     if !picker {
-    scroll_context_menu(&body_resp, |ui| {
-        let ro = archive_of(dir).is_some(); // inside an opened zip: nothing can be added
-        if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+F"), !ro, ) {
-            actions.push(Action::NewFolder);
-            
-        }
-        if menu_item(ui, m, pal, Some("new_file"), "New file", Some("Ctrl+Shift+N"), !ro, ) {
-            actions.push(Action::NewFile);
+        scroll_context_menu(&body_resp, |ui| {
+            let ro = archive_of(dir).is_some(); // inside an opened zip: nothing can be added
+            if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+F"), !ro, ) {
+                actions.push(Action::NewFolder);
 
-        }
-        if menu_item(
-            ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), can_paste && !ro, ) {
-            actions.push(Action::Paste);
-            
-        }
-        if menu_item(ui, m, pal, Some("code"), "Open in Terminal", None, true) {
-            actions.push(Action::OpenTerminal(dir.clone()));
-            
-        }
-        if menu_item(ui, m, pal, Some("app"), "Open folder as administrator", None, !ro) {
-            actions.push(Action::OpenFolderAsAdmin(dir.clone()));
-        }
-        if let Some(zip) = archive_of(dir) {
-            if menu_item(ui, m, pal, Some("archive"), "Extract all", None, true) {
-                actions.push(Action::Extract(vec![zip.clone()]));
             }
-            if menu_item(ui, m, pal, Some("browse"), "Extract to…", None, true) {
-                actions.push(Action::ExtractTo(vec![zip]));
+            if menu_item(ui, m, pal, Some("new_file"), "New file", Some("Ctrl+Shift+N"), !ro, ) {
+                actions.push(Action::NewFile);
+
             }
-        }
-        let dir_pinned = ui
-            .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::unique("pinned_paths")))
-            .is_some_and(|s| s.contains(dir));
-        if dir_pinned {
-            if menu_item(ui, m, pal, Some("close"), "Remove folder from Quick access", None, true) {
-                actions.push(Action::UnpinQuick(dir.clone()));
+            if menu_item(
+                ui, m, pal, Some("paste"), "Paste", Some("Ctrl+V"), can_paste && !ro, ) {
+                actions.push(Action::Paste);
+
             }
-        } else if menu_item(ui, m, pal, Some("plus"), "Pin folder to Quick access", None, true) {
-            actions.push(Action::PinQuick(dir.clone()));
-        }
-        ui.separator();
-        if menu_item(ui, m, pal, Some("refresh"), "Refresh", Some("F5"), true) {
-            actions.push(Action::Refresh);
-            
-        }
-        if menu_item(ui, m, pal, Some("info"), "Properties", None, true) {
-            actions.push(Action::Properties(dir.clone()));
-            
-        }
-    });
+            if menu_item(ui, m, pal, Some("code"), "Open in Terminal", None, true) {
+                actions.push(Action::OpenTerminal(dir.clone()));
+
+            }
+            if menu_item(ui, m, pal, Some("app"), "Open folder as administrator", None, !ro) {
+                actions.push(Action::OpenFolderAsAdmin(dir.clone()));
+            }
+            if let Some(zip) = archive_of(dir) {
+                if menu_item(ui, m, pal, Some("archive"), "Extract all", None, true) {
+                    actions.push(Action::Extract(vec![zip.clone()]));
+                }
+                if menu_item(ui, m, pal, Some("browse"), "Extract to…", None, true) {
+                    actions.push(Action::ExtractTo(vec![zip]));
+                }
+            }
+            pin_menu_item(ui, m, pal, dir, actions);
+            ui.separator();
+            if menu_item(ui, m, pal, Some("refresh"), "Refresh", Some("F5"), true) {
+                actions.push(Action::Refresh);
+
+            }
+            if menu_item(ui, m, pal, Some("info"), "Properties", None, true) {
+                actions.push(Action::Properties(dir.clone()));
+
+            }
+        });
     }
 
     if view.is_empty() {
@@ -908,18 +920,7 @@ pub(crate) fn table_ui(
                         actions.push(Action::NewTabAt(p.clone()));
                         
                     }
-                    if e.is_dir {
-                        let pinned = ui
-                            .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::unique("pinned_paths")))
-                            .is_some_and(|s| s.contains(p));
-                        if pinned {
-                            if menu_item(ui, m, pal, Some("close"), "Remove from Quick access", None, true) {
-                                actions.push(Action::UnpinQuick(p.clone()));
-                            }
-                        } else if menu_item(ui, m, pal, Some("plus"), "Pin to Quick access", None, true) {
-                            actions.push(Action::PinQuick(p.clone()));
-                        }
-                    }
+                    pin_menu_item(ui, m, pal, p, actions);
                     ui.separator();
                     if menu_item(ui, m, pal, Some("cut"), "Cut", Some("Ctrl+X"), !in_archive) {
                         actions.push(Action::Cut(targets.clone()));

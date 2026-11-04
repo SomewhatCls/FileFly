@@ -1,10 +1,11 @@
 use eframe::egui::{self, vec2, Color32, Pos2, Rect, Ui};
-use file_icon_provider::get_file_icon;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock, RwLock};
+#[cfg(not(target_os = "linux"))]
+use file_icon_provider::get_file_icon;
 use crate::data::Entry;
 
 //Consts for Worker thread metrics and icon size
@@ -93,6 +94,19 @@ fn is_special_dir(path: &Path) -> bool {
     }
 }
 
+/// Creates a temp folder to use as icon source for generic folders,
+/// instead of relying on a race condition where the first given
+/// folder's icon is used.
+fn generic_dir_probe() -> Option<&'static Path> {
+    static P: OnceLock<Option<PathBuf>> = OnceLock::new();
+    P.get_or_init(|| {
+        let p = std::env::temp_dir().join("yourapp-generic-folder"); // use your app's name
+        std::fs::create_dir_all(&p).ok()?;
+        Some(p)
+    })
+        .as_deref()
+}
+
 /// Cache key for a platform icon: one per extension, one per path for per-file icons like .exe on
 /// Windows, and one per path for special folders (Documents, drives, pinned folders).
 pub fn make_icon_key(is_dir: bool, ext: Option<&str>, path: &Path) -> String {
@@ -156,20 +170,87 @@ fn load_ico_file(path: &Path) -> Option<egui::ColorImage> {
     Some(egui::ColorImage::from_rgba_unmultiplied([s as usize, s as usize], img.as_raw()))
 }
 
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::*;
+
+    fn theme() -> &'static str {
+        static T: OnceLock<String> = OnceLock::new();
+        T.get_or_init(|| freedesktop_icons::default_theme_gtk().unwrap_or_else(|| "hicolor".into()))
+    }
+
+    fn find(names: &[String]) -> Option<PathBuf> {
+        for t in [theme(), "Adwaita", "hicolor"] {
+            for n in names {
+                if let Some(p) = freedesktop_icons::lookup(n)
+                    .with_size(ICON_SIZE)
+                    .with_theme(t)
+                    .with_cache()
+                    .find()
+                {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    }
+
+    fn rasterize_svg(path: &Path) -> Option<egui::ColorImage> {
+        use resvg::{tiny_skia, usvg};
+        let data = std::fs::read(path).ok()?;
+        let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).ok()?;
+        let s = ICON_SIZE as u32;
+        let mut pm = tiny_skia::Pixmap::new(s, s)?;
+        let sz = tree.size();
+        let t = tiny_skia::Transform::from_scale(s as f32 / sz.width(), s as f32 / sz.height());
+        resvg::render(&tree, t, &mut pm.as_mut());
+        Some(egui::ColorImage::from_rgba_premultiplied([s as usize; 2], pm.data()))
+    }
+
+    fn load_image_file(p: &Path) -> Option<egui::ColorImage> {
+        if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+            rasterize_svg(p)
+        } else {
+            load_ico_file(p) // image::open + resize works for png too
+        }
+    }
+
+    pub fn load(path: &Path) -> Option<egui::ColorImage> {
+        let names: Vec<String> = if path.is_dir() {
+            vec!["inode-directory".into(), "folder".into()]
+        } else {
+            let mime = mime_guess::from_path(path).first()?;
+            let full = format!("{}-{}", mime.type_(), mime.subtype()); // text/plain -> text-plain
+            let generic = format!("{}-x-generic", mime.type_());       // text-x-generic
+            vec![full, generic, "application-x-generic".into(), "text-x-generic".into()]
+        };
+        load_image_file(&find(&names)?)
+    }
+}
+
 fn load_icon(path: &Path) -> Option<egui::ColorImage> {
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ico")) {
         if let Some(img) = load_ico_file(path) {
             return Some(img);
         }
     }
-    let icon = get_file_icon(path, ICON_SIZE).ok()?;
-    if icon.width == 0 || icon.height == 0 {
-        return None;
+
+    #[cfg(target_os = "linux")]
+    {
+        return linux::load(path);
     }
-    Some(egui::ColorImage::from_rgba_unmultiplied(
-        [icon.width as usize, icon.height as usize],
-        &icon.pixels,
-    ))
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let icon = get_file_icon(path, ICON_SIZE).ok()?;
+        if icon.width == 0 || icon.height == 0 {
+            return None;
+        }
+        Some(egui::ColorImage::from_rgba_unmultiplied(
+            [icon.width as usize, icon.height as usize],
+            &icon.pixels,
+        ))
+    }
 }
 
 impl IconCache {
@@ -242,15 +323,30 @@ impl IconCache {
         }
     }
 
-    /// Never blocks. None = not ready yet or no platform icon -> caller draws the built-in one.
+    /// TODO: Sanity-check this function and associated ones regarding its threaded nature.
     pub fn get(&mut self, key: &str, path: &Path) -> Option<egui::TextureHandle> {
         if let Some(slot) = self.slots.get_mut(key) {
             slot.last_used = self.frame;
             return slot.tex.clone();
         }
         if self.pending.insert(key.to_owned()) {
-            // "ico:<file>" keys (custom folder icons) load the .ico instead of the folder itself.
-            let load = key.strip_prefix("ico:").map(PathBuf::from).unwrap_or_else(|| path.to_owned());
+            let load = if let Some(ico) = key.strip_prefix("ico:") {
+                // custom folder icons load the .ico instead of the folder itself
+                PathBuf::from(ico)
+            } else if key == "<dir>" {
+                // shared generic folder icon: never taken from whichever real folder asked first
+                match generic_dir_probe() {
+                    Some(p) => p.to_path_buf(),
+                    None => {
+                        // no probe available: use the built-in folder.svg
+                        self.pending.remove(key);
+                        self.slots.insert(key.to_owned(), Slot { tex: None, last_used: self.frame });
+                        return None;
+                    }
+                }
+            } else {
+                path.to_owned()
+            };
             self.queue.jobs.lock().unwrap().push_back(Job { key: key.to_owned(), path: load });
             self.queue.cv.notify_one();
         }

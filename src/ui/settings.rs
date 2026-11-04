@@ -329,6 +329,11 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                         }
                     });
             });
+        }else {
+            fl_divider(ui, m, pal);
+            fl_row(ui, m, pal, "Accent color", None, |ui| {
+                ui.color_edit_button_srgb(&mut sp.s.custom_accent);
+            });
         }
         fl_divider(ui, m, pal);
         fl_row(
@@ -356,6 +361,15 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             "Paning blur effects",
             Some("Blurs the backdrop behind the paning overlay when dragging tabs.  Changing this setting will restart the app."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.blur_paning),
+        );
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Compact mode",
+            Some("Reduces margins app-wide."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.compact),
         );
     });
 
@@ -635,6 +649,7 @@ impl Explorer {
             st.index_ram = s.index_ram;
             st.unlimited_cache = s.unlimited_cache;
             st.git_activated = s.git_activated;
+            st.compact = s.compact;
             self.settings_dirty = true;
             if s.theme != old.theme {
                 ui.set_theme(theme_pref(s.theme));

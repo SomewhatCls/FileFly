@@ -122,7 +122,9 @@ impl Explorer {
                     set_special_drives(d.iter().map(|x| x.mount_point.clone()));
                     self.drives = d;
                     self.drives_ready = true;
-                    self.apply_quick_availability();
+                    if self.apply_quick_availability() {
+                        self.resolve_quick_kinds();
+                    }
                 }
                 AppMsg::Job(id, result) => {
                     self.ops.retain(|o| o.id != id);
@@ -204,6 +206,21 @@ impl Explorer {
                 }
                 AppMsg::UpdateChecked(r) => self.update_checked(r),
                 AppMsg::ShortcutTarget { tab, result } => self.shortcut_resolved(tab, result),
+                AppMsg::QuickKind { path, is_dir } => {
+                    self.probed_icons.remove(&path);
+                    if let Some(d) = is_dir {
+                        let mut changed = false;
+                        for q in &mut self.quick {
+                            if same_path(&q.path, &path) && q.is_dir != d {
+                                q.set_dir(d);
+                                changed = true;
+                            }
+                        }
+                        if changed {
+                            self.sync_special_icons();
+                        }
+                    }
+                }
             }
         }
 
@@ -315,12 +332,16 @@ impl Explorer {
 
         let accent = self.get_accent();
 
-        //Calls function to determine font size.
+        // If the font size was changed or compact mode was toggled,
+        // the metrics and style scaling have to be re-calculated.
+        // This also happens when the accessibility scale in windows is changed,
+        // which affects the pixels_per_point() return value.
+        let ppp = ctx.pixels_per_point();
         let font = self.settings.effective_font_size(self.text_scale);
-        self.m = Metrics::new(font, ctx.pixels_per_point());
-        if self.applied_style != Some((font, accent)) {
+        self.m = Metrics::new(font, ppp, self.settings.compact);
+        if self.applied_style != Some((font, accent, self.settings.compact, ppp)) {
             apply_style(ctx, &self.m, accent);
-            self.applied_style = Some((font, accent));
+            self.applied_style = Some((font, accent, self.settings.compact, ppp));
         }
 
         // Checks and changes the font size based on system accessibility settings if activated.
@@ -333,7 +354,7 @@ impl Explorer {
             }
         }
 
-        // Schedules restart if custom frame has been toggled on/off
+        // Schedules restart for settings requiring it.
         if self.require_restart{
             self.require_restart = false;
             if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {

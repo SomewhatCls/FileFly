@@ -158,7 +158,13 @@ impl Explorer {
     }
 
     pub(crate) fn paste(&mut self) {
-        let Some((sources, cut)) = get_clipboard() else {
+        // DO NOT USE THE SYSTEM CLIPBOARD ON NON-WINDOWS
+        #[cfg(windows)]
+        let clip = get_clipboard();
+        #[cfg(not(windows))]
+        let clip = self.clipboard.clone();
+
+        let Some((sources, cut)) = clip else {
             return;
         };
         let dir = self.tabs[self.active].dir.clone();
@@ -214,6 +220,24 @@ impl Explorer {
                 apply_all: false,
                 merged_dirs: plan.merged_dirs,
             });
+        }
+    }
+
+    /// Checking whether pasting is possible has to be done differently
+    /// for Windows and Linux because unlike Windows, Linux does not
+    /// offer cheap OS clipboard calls. This is why we have to either
+    /// significantly throttle clipboard performance to get an acceptable
+    /// result or use our own clipboard.
+    /// Since FileFly does NOT offer support for cross-app drag and drop on
+    /// Linux systems, the second option is my choice.
+    pub(crate) fn can_paste(&self) -> bool {
+        #[cfg(windows)]
+        {
+            get_clipboard().is_some()
+        }
+        #[cfg(not(windows))]
+        {
+            self.clipboard.is_some()
         }
     }
 }

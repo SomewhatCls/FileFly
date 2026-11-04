@@ -41,6 +41,7 @@ pub(crate) enum AppMsg {
     UpdateChecked(Result<Option<UpdateInfo>, String>),
     /// A .lnk file was resolved (see `shortcut.rs`).
     ShortcutTarget { tab: u64, result: Result<PathBuf, String> },
+    QuickKind { path: PathBuf, is_dir: Option<bool> },
 }
 
 pub(crate) enum Action {

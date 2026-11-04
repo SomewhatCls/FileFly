@@ -1,15 +1,22 @@
 [package]
 name = "FileFly"
-version = "2026.11.3"
+version = "2026.11.4"
 edition = "2024"
 license="AGPL-3.0-or-later"
 
-[target.'cfg(windows)'.dependencies]
-window-vibrancy = "0"
+[target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0"
 
-[dependencies]
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+window-vibrancy = "0"
 file_icon_provider = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+freedesktop-icons = "0.4"
+mime_guess = "2"
+resvg = "0"
+
+[dependencies]
 device_query = "4"
 clipboard-rs = "0"
 url = "2"

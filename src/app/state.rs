@@ -51,7 +51,7 @@ pub(crate) struct Explorer {
     pub(crate) sys_accent: Option<Accent>,
     pub(crate) text_scale: f32,
     pub(crate) last_poll: Instant,
-    pub(crate) applied_style: Option<(f32, Accent)>,
+    pub(crate) applied_style: Option<(f32, Accent, bool, f32)>,
     /// Error text + what "Try as administrator" does for it (only offered while that error shows).
     pub(crate) admin_retry: Option<(String, AdminRetry)>,
     pub(crate) m: Metrics,
@@ -105,6 +105,16 @@ pub(crate) struct Explorer {
     pub(crate) require_restart: bool,
     /// Current state of the update request.
     pub(crate) update: UpdateState,
+
+    /// Whether the sidebar is compacted.
+    pub(crate) sidebar_compact: bool,
+    /// Width (points) of the expanded sidebar: restored from the session, kept current by
+    /// `ui_sidebar`, and written back with the session. None until it is known.
+    pub(crate) sidebar_width: Option<f32>,
+
+    /// This stores which entry icons are currently being probed, to prevent
+    /// threads from probing the same ones.
+    pub(crate) probed_icons: HashSet<PathBuf>,
 }
 
 impl Explorer {
@@ -116,6 +126,8 @@ impl Explorer {
         let settings = load_settings();
         let git_activated = settings.git_activated;
         let custom_frame = settings.custom_frame;
+        let compact = settings.compact;
+
         ui.set_theme(match settings.theme {
             ThemeChoice::System => egui::ThemePreference::System,
             ThemeChoice::Light => egui::ThemePreference::Light,
@@ -208,7 +220,7 @@ impl Explorer {
             last_poll: Instant::now(),
             applied_style: None,
             admin_retry: None,
-            m: Metrics::new(14.0, 1.0),
+            m: Metrics::new(14.0, 1.0, compact),
             pal: Palette::new(egui::Theme::Dark, Accent::fallback(), TransparencyEffect::None),
             last_title: String::new(),
             last_save: Instant::now(),
@@ -247,7 +259,12 @@ impl Explorer {
                     .unwrap_or_else(Instant::now),
             ),
             update: UpdateState::Idle,
+            sidebar_compact: false,
+            sidebar_width: None,
+            probed_icons: HashSet::new(),
         };
+        // Independent of the tabs, so it also applies when FileFly is started on a given folder.
+        app.sidebar_width = app.settings.session.sidebar_width;
         app.sync_special_icons();
         if START_DIR.get().is_none() {
             app.restore_session();
@@ -289,6 +306,7 @@ impl Explorer {
                 .tiles
                 .as_ref()
                 .and_then(|t| SavedTile::from_tile(t, &kept)),
+            sidebar_width: self.sidebar_width,
         }
     }
 
