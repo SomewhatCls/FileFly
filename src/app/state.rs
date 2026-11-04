@@ -106,8 +106,11 @@ pub(crate) struct Explorer {
     /// Current state of the update request.
     pub(crate) update: UpdateState,
 
-    /// Whether the sidebar is compact.
+    /// Whether the sidebar is compacted.
     pub(crate) sidebar_compact: bool,
+    /// Width (points) of the expanded sidebar: restored from the session, kept current by
+    /// `ui_sidebar`, and written back with the session. None until it is known.
+    pub(crate) sidebar_width: Option<f32>,
 }
 
 impl Explorer {
@@ -252,7 +255,10 @@ impl Explorer {
             ),
             update: UpdateState::Idle,
             sidebar_compact: false,
+            sidebar_width: None,
         };
+        // Independent of the tabs, so it also applies when FileFly is started on a given folder.
+        app.sidebar_width = app.settings.session.sidebar_width;
         app.sync_special_icons();
         if START_DIR.get().is_none() {
             app.restore_session();
@@ -294,6 +300,7 @@ impl Explorer {
                 .tiles
                 .as_ref()
                 .and_then(|t| SavedTile::from_tile(t, &kept)),
+            sidebar_width: self.sidebar_width,
         }
     }
 

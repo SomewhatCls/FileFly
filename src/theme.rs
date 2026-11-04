@@ -317,19 +317,27 @@ pub struct Metrics {
 }
 
 impl Metrics {
+    /// Regular (non-compact) metrics.
     pub fn new(font: f32, ppp: f32) -> Self {
+        Self::with_compact(font, ppp, false)
+    }
+
+    /// `compact`: the app-wide compact setting. Only the row/control heights shrink;
+    /// the icon size and text size don't.
+    pub fn with_compact(font: f32, ppp: f32, compact: bool) -> Self {
         let snap = |v: f32| (v * ppp).round() / ppp; // align to physical pixels so SVGs stay crisp
+        // Row heights as a multiple of the font size: (regular, compact).
+        let height = |regular: f32, tight: f32| snap(font * if compact { tight } else { regular });
         Self {
-            font,
-            accessibility_scale: font / 14.0,
-            row_h: snap(font * 2.35),
+            font, accessibility_scale: font / 14.0,
+            row_h: height(2.35, 2.0),
             icon: snap(font * 1.35),
             small_icon: snap(font * 0.95),
-            ctl_h: snap(font * 2.4),
-            tab_h: snap(font * 2.6),
-            titlebar_h: snap(font * 3.0),
-            nav_h: snap(font * 2.5),
-            pad: snap(font * 0.6),
+            ctl_h: height(2.4, 1.9),
+            tab_h: height(2.6, 2.0),
+            titlebar_h: height(3.0, 2.3),
+            nav_h: height(2.5, 1.95),
+            pad: height(0.6, 0.45),
             radius: ((font * 0.3).round() as u8).max(3),
         }
     }

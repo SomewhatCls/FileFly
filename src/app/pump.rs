@@ -317,7 +317,7 @@ impl Explorer {
 
         //Calls function to determine font size.
         let font = self.settings.effective_font_size(self.text_scale);
-        self.m = Metrics::new(font, ctx.pixels_per_point());
+        self.m = Metrics::with_compact(font, ctx.pixels_per_point(), self.settings.compact);
         if self.applied_style != Some((font, accent)) {
             apply_style(ctx, &self.m, accent);
             self.applied_style = Some((font, accent));

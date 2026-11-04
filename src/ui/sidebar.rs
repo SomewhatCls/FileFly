@@ -145,44 +145,32 @@ fn drive_letter(d: &DriveInfo) -> Option<String> {
 // Compact-mode metrics
 // ---------------------------------------------------------------------------------------------
 
-/// Vertical margins between sidebar entries. All "spacing" (as opposed to the size of an entry)
-/// lives here, so the app-wide compact mode setting only has to change `SidebarSpacing::new`.
-/// Note that this is independent of the sidebar's own compact (icon-only) mode.
-#[derive(Clone, Copy)]
-pub(crate) struct SidebarSpacing {
-    /// Height of a drive card (expanded mode).
-    pub(crate) card_h: f32,
-    /// Visible gap between two drive rings (sidebar compact mode).
-    pub(crate) ring_gap: f32,
-    /// Minimum visible gap on each side of a divider (sidebar compact mode).
-    pub(crate) divider_gap: f32,
-    /// Space above a drive group's title (expanded mode).
-    pub(crate) group_gap: f32,
-    /// Space on each side of the divider above the Recycle Bin (expanded mode).
-    pub(crate) bin_divider_pad: f32,
+// Fixed spacings (regular margins). Row heights that must follow the app-wide compact setting
+// live in `Metrics` (e.g. `nav_h`) instead.
+
+/// Height of a drive card (expanded mode).
+fn card_h(m: &Metrics) -> f32 {
+    m.font * 4.4
 }
 
-impl SidebarSpacing {
-    /// `compact_mode`: the app-wide compact (reduced margins) setting.
-    pub(crate) fn new(m: &Metrics, compact_mode: bool) -> Self {
-        if compact_mode {
-            Self {
-                card_h: m.font * 4.0,
-                ring_gap: m.font * 0.45,
-                divider_gap: m.font * 0.3,
-                group_gap: m.pad * 0.5,
-                bin_divider_pad: m.accessibility_scale,
-            }
-        } else {
-            Self {
-                card_h: m.font * 4.4,
-                ring_gap: m.font * 0.7,
-                divider_gap: m.font * 0.45,
-                group_gap: m.pad,
-                bin_divider_pad: m.accessibility_scale * 2.0,
-            }
-        }
-    }
+/// Visible gap between two drive rings (sidebar compact mode).
+fn ring_gap(m: &Metrics) -> f32 {
+    m.font * 0.7
+}
+
+/// Minimum visible gap on each side of a divider (sidebar compact mode).
+fn divider_gap(m: &Metrics) -> f32 {
+    m.font * 0.45
+}
+
+/// Space above a drive group's title (expanded mode).
+fn group_gap(m: &Metrics) -> f32 {
+    m.pad
+}
+
+/// Space on each side of the divider above the Recycle Bin (expanded mode).
+fn bin_divider_pad(m: &Metrics) -> f32 {
+    m.accessibility_scale * 2.0
 }
 
 fn ring_radius(m: &Metrics) -> f32 {
@@ -194,8 +182,8 @@ fn ring_thick(m: &Metrics) -> f32 {
 }
 
 /// Compact drive row: the ring plus the visible gap to the next ring.
-fn compact_ring_row_h(m: &Metrics, sp: &SidebarSpacing) -> f32 {
-    2.0 * ring_radius(m) + ring_thick(m) + sp.ring_gap
+fn compact_ring_row_h(m: &Metrics) -> f32 {
+    2.0 * ring_radius(m) + ring_thick(m) + ring_gap(m)
 }
 
 /// x of the icon column's centre, shared by the hamburger, the folder icons and the rings: the
@@ -210,8 +198,8 @@ fn compact_icon_pad(m: &Metrics) -> f32 {
 }
 
 /// Empty space between a drive ring and the edge of its row.
-fn compact_ring_pad(sp: &SidebarSpacing) -> f32 {
-    sp.ring_gap / 2.0
+fn compact_ring_pad(m: &Metrics) -> f32 {
+    ring_gap(m) / 2.0
 }
 
 /// A divider with the same visible gap on both sides. `above_pad` / `below_pad` are the paddings
@@ -221,14 +209,12 @@ fn compact_divider(
     ui: &mut Ui,
     m: &Metrics,
     pal: &Palette,
-    sp: &SidebarSpacing,
     above_pad: f32,
     below_pad: f32,
 ) {
-    let gap = sp
-        .divider_gap
+    let gap = divider_gap(m)
         .max(compact_icon_pad(m))
-        .max(compact_ring_pad(sp));
+        .max(compact_ring_pad(m));
     ui.add_space((gap - above_pad).max(0.0));
     divider(ui, pal);
     ui.add_space((gap - below_pad).max(0.0));
@@ -262,9 +248,6 @@ fn draw_hamburger(ui: &mut Ui, m: &Metrics, pal: &Palette, c: egui::Pos2) {
 }
 
 /// Top row of the sidebar. Returns `(toggle_compact, pin_current_folder)`.
-/// - Compact: just the hamburger button.
-/// - Expanded: hamburger, the "Quick access" title on the same line, and the "+" (pin) button at
-///   the right end.
 pub(crate) fn sidebar_header(
     ui: &mut Ui,
     m: &Metrics,
@@ -349,7 +332,7 @@ pub(crate) fn nav_item_ex(
     resp
 }
 
-/// Icon-only navigation item for compact mode; the label is shown as a hover hint.
+/// Icon-only navigation item for compacted sidebar.
 pub(crate) fn nav_item_compact(
     ui: &mut Ui,
     m: &Metrics,
@@ -374,11 +357,10 @@ pub(crate) fn drive_card(
     ui: &mut Ui,
     m: &Metrics,
     pal: &Palette,
-    sp: &SidebarSpacing,
     d: &DriveInfo,
     active: bool,
 ) -> egui::Response {
-    let h = sp.card_h;
+    let h = card_h(m);
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     let inner = rect.shrink2(vec2(0.0, 1.0));
     paint_row_bg(ui, m, pal, inner, &resp, active.then_some(pal.control_hover), m.font * 1.6);
@@ -467,12 +449,11 @@ pub(crate) fn drive_compact(
     ui: &mut Ui,
     m: &Metrics,
     pal: &Palette,
-    sp: &SidebarSpacing,
     d: &DriveInfo,
     active: bool,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
-        vec2(ui.available_width(), compact_ring_row_h(m, sp)),
+        vec2(ui.available_width(), compact_ring_row_h(m)),
         Sense::click(),
     );
     let inner = rect.shrink2(vec2(0.0, 1.0));
@@ -515,9 +496,6 @@ impl Explorer {
     pub(crate) fn ui_sidebar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
         let compact = self.sidebar_compact;
-        // TODO: pass the app-wide compact mode setting here (reduces margins between entries;
-        // unrelated to `sidebar_compact`).
-        let sp = SidebarSpacing::new(&m, false);
         let mut toggle_compact = false;
         let cur = self.tabs[self.active].dir.clone();
         let special_active = self.tabs[self.active].special();
@@ -542,12 +520,15 @@ impl Explorer {
             .default_size(if compact {
                 compact_w
             } else {
-                m.accessibility_scale * 250.0
+                // Only used the first time the panel is shown; egui remembers the dragged width
+                // after that. The size range below keeps a stale saved value in bounds.
+                self.sidebar_width
+                    .unwrap_or(m.accessibility_scale * 200.0)
             })
             .size_range(if compact {
                 compact_w..=compact_w
             } else {
-                m.accessibility_scale * 180.0..=m.accessibility_scale * 440.0
+                m.accessibility_scale * 150.0..=m.accessibility_scale * 400.0
             })
             .show_separator_line(false)
             .frame(
@@ -573,11 +554,11 @@ impl Explorer {
                     }
                     if compact {
                         // Below the divider is the Recycle Bin row, above it the drive rings.
-                        compact_divider(ui, &m, &pal, &sp, compact_icon_pad(&m), compact_ring_pad(&sp));
+                        compact_divider(ui, &m, &pal, compact_icon_pad(&m), compact_ring_pad(&m));
                     } else {
-                        ui.add_space(sp.bin_divider_pad);
+                        ui.add_space(bin_divider_pad(&m));
                         divider(ui, &pal);
-                        ui.add_space(sp.bin_divider_pad);
+                        ui.add_space(bin_divider_pad(&m));
                     }
 
                     ui.with_layout(Layout::top_down(Align::Min), |ui| {
@@ -650,22 +631,22 @@ impl Explorer {
                                         // No room for a title: a divider separates the groups. The
                                         // first one follows the folder icons, the others a ring.
                                         let above = if any_drive {
-                                            compact_ring_pad(&sp)
+                                            compact_ring_pad(&m)
                                         } else {
                                             compact_icon_pad(&m)
                                         };
-                                        compact_divider(ui, &m, &pal, &sp, above, compact_ring_pad(&sp));
+                                        compact_divider(ui, &m, &pal, above, compact_ring_pad(&m));
                                     } else {
-                                        ui.add_space(sp.group_gap);
+                                        ui.add_space(group_gap(&m));
                                         section_label(ui, &m, &pal, title);
                                     }
                                     any_drive = true;
                                     for d in group {
                                         let active = same_path(&d.mount_point, &cur) && !special_active;
                                         let resp = if compact {
-                                            drive_compact(ui, &m, &pal, &sp, d, active)
+                                            drive_compact(ui, &m, &pal, d, active)
                                         } else {
-                                            drive_card(ui, &m, &pal, &sp, d, active)
+                                            drive_card(ui, &m, &pal, d, active)
                                         };
                                         if let Some(ps) = &dragging {
                                             drag_drop_zone(ui, &pal, &m, resp.rect, &d.mount_point, ps);
@@ -678,7 +659,7 @@ impl Explorer {
                                     }
                                 }
                                 if !any_drive && !compact {
-                                    ui.add_space(sp.group_gap);
+                                    ui.add_space(group_gap(&m));
                                     section_label(ui, &m, &pal, "Drives");
                                     section_label(ui, &m, &pal, "No drives found");
                                 }
@@ -689,6 +670,11 @@ impl Explorer {
         // Reset the style's drag radius for other widgets.
         ui.style_mut().interaction.resize_grab_radius_side = old_grab_radius;
         self.sidebar_rect = Some(panel.response.rect);
+        // Track the expanded width for the session (the compact width is fixed, not saved).
+        // Whole points, so sub-pixel jitter doesn't count as a change.
+        if !compact {
+            self.sidebar_width = Some(panel.response.rect.width().round());
+        }
         if toggle_compact {
             self.sidebar_compact = !self.sidebar_compact;
         }

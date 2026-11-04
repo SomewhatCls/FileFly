@@ -80,6 +80,7 @@ pub(crate) struct Session {
     pub(crate) active: usize,
     /// `None` when not split.
     pub(crate) tiles: Option<SavedTile>,
+    pub sidebar_width: Option<f32>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -114,6 +115,7 @@ pub(crate) struct Settings {
     pub(crate) maximized: bool,
     pub(crate) custom_frame: bool,
     pub(crate) blur_paning: bool,
+    pub(crate) compact: bool,
     /// Folders with a custom icon chosen by the user: folder path -> `.ico` file.
     pub(crate) folder_icons: HashMap<String, String>,
     /// Open tabs and split layout from the last session.
@@ -143,6 +145,7 @@ impl Default for Settings {
             window_size: None,
             window_pos: None,
             custom_frame: true,
+            compact: false,
             blur_paning: true,
             session: Session::default(),
             maximized: false,
