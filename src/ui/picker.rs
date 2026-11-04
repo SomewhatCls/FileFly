@@ -1043,7 +1043,7 @@ impl Explorer {
                                 for d in group {
                                     // Produces the drive card the same way as in sidebar.
                                     let sel = same_path(&d.mount_point, &p.dir);
-                                    if drive_card(ui, &m, &pal, d, sel).clicked() {
+                                    if drive_card(ui, &m, &pal, &SidebarSpacing::new(&m, false), d, sel).clicked() {
                                         input.go = Some(d.mount_point.clone());
                                     }
                                 }

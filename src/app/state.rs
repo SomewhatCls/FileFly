@@ -105,6 +105,9 @@ pub(crate) struct Explorer {
     pub(crate) require_restart: bool,
     /// Current state of the update request.
     pub(crate) update: UpdateState,
+
+    /// Whether the sidebar is compact.
+    pub(crate) sidebar_compact: bool,
 }
 
 impl Explorer {
@@ -247,6 +250,7 @@ impl Explorer {
                     .unwrap_or_else(Instant::now),
             ),
             update: UpdateState::Idle,
+            sidebar_compact: false,
         };
         app.sync_special_icons();
         if START_DIR.get().is_none() {
