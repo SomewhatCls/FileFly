@@ -7,7 +7,7 @@ GNU Affero General Public License v3.0 or later
 ================================================================================
 
 Used by:
-  - FileFly 2026.11.3
+  - FileFly 2026.11.4
 
 --------------------------------------------------------------------------------
 
@@ -2808,6 +2808,38 @@ MIT License
 ================================================================================
 
 Used by:
+  - rustybuzz 0.20.1  https://github.com/harfbuzz/rustybuzz
+
+--------------------------------------------------------------------------------
+
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
   - uds_windows 1.2.1  https://github.com/haraldh/rust_uds_windows
 
 --------------------------------------------------------------------------------
@@ -3282,6 +3314,7 @@ Used by:
   - num-integer 0.1.47  https://github.com/rust-num/num-integer
   - num-rational 0.4.2  https://github.com/rust-num/num-rational
   - num-traits 0.2.19  https://github.com/rust-num/num-traits
+  - xdg 2.5.2  https://github.com/whitequark/rust-xdg
 
 --------------------------------------------------------------------------------
 
@@ -3665,6 +3698,7 @@ MIT License
 Used by:
   - heck 0.4.1  https://github.com/withoutboats/heck
   - heck 0.5.0  https://github.com/withoutboats/heck
+  - unicode-bidi 0.3.18  https://github.com/servo/unicode-bidi
   - unicode-properties 0.1.4  https://github.com/unicode-rs/unicode-properties
   - unicode-segmentation 1.13.3  https://github.com/unicode-rs/unicode-segmentation
   - unicode-width 0.1.14  https://github.com/unicode-rs/unicode-width
@@ -4782,7 +4816,9 @@ MIT License
 ================================================================================
 
 Used by:
+  - dirs-sys 0.4.1  https://github.com/dirs-dev/dirs-sys-rs
   - dirs-sys 0.5.0  https://github.com/dirs-dev/dirs-sys-rs
+  - dirs 5.0.1  https://github.com/soc/dirs-rs
   - dirs 7.0.0  https://codeberg.org/dirs/dirs-rs
 
 --------------------------------------------------------------------------------
@@ -5374,6 +5410,24 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - ini_core 0.2.0  https://github.com/CasualX/ini_core
+
+--------------------------------------------------------------------------------
+
+Copyright (c) 2020-2021 Casper <CasualX@users.noreply.github.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 ================================================================================
@@ -7251,6 +7305,38 @@ MIT License
 ================================================================================
 
 Used by:
+  - freedesktop-icons 0.4.0  https://github.com/oknozor/freedestkop-icons
+
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2022 Paul Delafosse
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
   - arboard 3.6.1  https://github.com/1Password/arboard
 
 --------------------------------------------------------------------------------
@@ -7446,6 +7532,37 @@ MIT License
 ================================================================================
 
 Used by:
+  - core_maths 0.1.1  https://github.com/robertbastian/core_maths
+
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2024 Robert Bastian
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
   - clipboard-rs 0.3.5  https://github.com/ChurchTao/clipboard-rs
 
 --------------------------------------------------------------------------------
@@ -7564,6 +7681,7 @@ Used by:
   - windows-strings 0.1.0  https://github.com/microsoft/windows-rs
   - windows-strings 0.3.1  https://github.com/microsoft/windows-rs
   - windows-strings 0.5.1  https://github.com/microsoft/windows-rs
+  - windows-sys 0.48.0  https://github.com/microsoft/windows-rs
   - windows-sys 0.52.0  https://github.com/microsoft/windows-rs
   - windows-sys 0.59.0  https://github.com/microsoft/windows-rs
   - windows-sys 0.60.2  https://github.com/microsoft/windows-rs
@@ -7583,7 +7701,9 @@ Used by:
   - windows_x86_64_msvc 0.48.5  https://github.com/microsoft/windows-rs
   - windows_x86_64_msvc 0.52.6  https://github.com/microsoft/windows-rs
   - windows_x86_64_msvc 0.53.1  https://github.com/microsoft/windows-rs
+  - zune-core 0.4.12
   - zune-inflate 0.2.54
+  - zune-jpeg 0.4.21  https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg
 
 --------------------------------------------------------------------------------
 
@@ -7904,6 +8024,38 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - fontconfig-parser 0.5.8  https://github.com/Riey/fontconfig-parser
+
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2021 Riey
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 
 ================================================================================
@@ -8277,6 +8429,22 @@ MIT License
 ================================================================================
 
 Used by:
+  - tinyvec 1.13.3  https://github.com/Lokathor/tinyvec
+
+--------------------------------------------------------------------------------
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
   - tracing-core 0.1.36  https://github.com/tokio-rs/tracing
 
 --------------------------------------------------------------------------------
@@ -8506,6 +8674,7 @@ MIT License
 ================================================================================
 
 Used by:
+  - gif 0.13.3  https://github.com/image-rs/image-gif
   - gif 0.14.2  https://github.com/image-rs/image-gif
 
 --------------------------------------------------------------------------------
@@ -8707,6 +8876,7 @@ MIT License
 
 Used by:
   - simplecss 0.2.2  https://github.com/linebender/simplecss
+  - unicode-vo 0.1.0  https://github.com/RazrFalcon/unicode-vo
 
 --------------------------------------------------------------------------------
 
@@ -8907,6 +9077,40 @@ MIT License
 ================================================================================
 
 Used by:
+  - fontdb 0.23.0  https://github.com/RazrFalcon/fontdb
+  - unicode-bidi-mirroring 0.4.0  https://github.com/RazrFalcon/unicode-bidi-mirroring
+  - unicode-ccc 0.4.0  https://github.com/RazrFalcon/unicode-ccc
+
+--------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2020 Yevhenii Reizner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
   - async-broadcast 0.7.2  https://github.com/smol-rs/async-broadcast
 
 --------------------------------------------------------------------------------
@@ -9004,6 +9208,7 @@ MIT License
 
 Used by:
   - harfrust 0.12.0  https://github.com/harfbuzz/harfrust
+  - rustybuzz 0.20.1  https://github.com/harfbuzz/rustybuzz
 
 --------------------------------------------------------------------------------
 
@@ -9164,6 +9369,39 @@ HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  - mime_guess 2.0.5  https://github.com/abonander/mime_guess
+
+--------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Austin Bonander
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 
 
 ================================================================================
@@ -9992,6 +10230,36 @@ SPDX-License-Identifier: Unicode-3.0
 
 Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
+
+
+================================================================================
+zlib License
+================================================================================
+
+Used by:
+  - slotmap 1.1.1  https://github.com/orlp/slotmap
+
+--------------------------------------------------------------------------------
+
+Copyright (c) 2021 Orson Peters <orsonpeters@gmail.com>
+
+This software is provided 'as-is', without any express or implied warranty. In
+no event will the authors be held liable for any damages arising from the use of
+this software.
+
+Permission is granted to anyone to use this software for any purpose, including
+commercial applications, and to alter it and redistribute it freely, subject to
+the following restrictions:
+
+ 1. The origin of this software must not be misrepresented; you must not claim
+    that you wrote the original software. If you use this software in a product,
+    an acknowledgment in the product documentation would be appreciated but is
+    not required.
+
+ 2. Altered source versions must be plainly marked as such, and must not be
+    misrepresented as being the original software.
+
+ 3. This notice may not be removed or altered from any source distribution.
 
 
 ================================================================================
