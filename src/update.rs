@@ -63,11 +63,17 @@ fn fetch_latest() -> Result<Option<UpdateInfo>, String> {
         return Ok(None);
     }
 
-    let installer = rel.assets.iter().find(|a| {
+    #[cfg(target_os = "windows")]
+    let file = rel.assets.iter().find(|a| {
         let n = a.name.to_ascii_lowercase();
         n.ends_with(".msi") || (n.ends_with(".exe") && (n.contains("setup") || n.contains("install")))
     });
-    let url = installer.map(|a| a.browser_download_url.clone()).unwrap_or(rel.html_url);
+    #[cfg(target_os = "linux")]
+    let file = rel.assets.iter().find(|a| {
+        let n = a.name.to_ascii_lowercase();
+        n.ends_with(".appimage")
+    });
+    let url = file.map(|a| a.browser_download_url.clone()).unwrap_or(rel.html_url);
     Ok(Some(UpdateInfo { version: latest.to_string(), url }))
 }
 

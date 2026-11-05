@@ -1,48 +1,48 @@
 [package]
 name = "FileFly"
-version = "2026.11.4"
+version = "2026.11.5"
 edition = "2024"
 license="AGPL-3.0-or-later"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-winreg = "0"
+winreg = "0.56.0"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-window-vibrancy = "0"
-file_icon_provider = "1"
+window-vibrancy = "0.8.1"
+file_icon_provider = "1.0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-freedesktop-icons = "0.4"
-mime_guess = "2"
-resvg = "0"
+freedesktop-icons = "0.4.0"
+mime_guess = "2.0.5"
+resvg = "0.45.1"
 
 [dependencies]
-device_query = "4"
-clipboard-rs = "0"
-url = "2"
-eframe = { version = "0.37", features = ["glow"] }
-egui_extras = { version = "0.37", features = ["svg"] }
-dirs = "7"
-drag = "2"
-dunce = "1"
-open = "5"
-rfd = "0.17"
-sysinfo = "0.39"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-image = { version = "0", features = ["ico"] }
-trash = "5.2"
-chrono = "0.4"
-notify = "8.2"
-raw-window-handle = "0.6"
-jwalk = "0.9"
-num-format = "0.4"
-libc = "0.2"
-semver = "1"
-ureq = { version = "3", features = ["json"] }
+device_query = "4.0.1"
+clipboard-rs = "0.3.5"
+url = "2.5.8"
+eframe = { version = "0.37.0", features = ["glow"] }
+egui_extras = { version = "0.37.0", features = ["svg"] }
+dirs = "7.0.0"
+drag = "2.1.1"
+dunce = "1.0.5"
+open = "5.4.4"
+rfd = "0.17.2"
+sysinfo = "0.39.6"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+image = { version = "0.25.10", features = ["ico"] }
+trash = "5.2.9"
+chrono = "0.4.45"
+notify = "8.2.0"
+raw-window-handle = "0.6.2"
+jwalk = "0.9.0"
+num-format = "0.4.4"
+libc = "0.2.190"
+semver = "1.0.28"
+ureq = { version = "3.5.1", features = ["json"] }
 
 [build-dependencies]
-winres = "0"
+winres = "0.1.12"
 
 [package.metadata.appimage]
 icon = "assets/logo.png"
