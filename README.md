@@ -9,7 +9,7 @@ I started working on this project for 4 reasons:
 - I wanted to experience the capabilities of current chatbots in coding
 - I wanted to familiarize myself with the Rust programming language
 
-My take on each of these objectives will be found at the [bottom](#re-project-background-and-quality) of this README.
+My take on each of these objectives (especially the use of AI) will be found at the [bottom](#re-project-background-and-quality) of this README.
 
 ## Project scope
 
