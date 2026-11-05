@@ -116,6 +116,33 @@ FileFly offers a specific Syntax as follows for its search:
 
 To find files with the given extension .ext.
 
+## Installation and Updating
+### Notes
+FileFly is a free project. As such, I am not capable of paying to sign its executables. [Microsoft SmartScreen](https://en.wikipedia.org/wiki/Microsoft_SmartScreen) might show you a warning when executing FileFly or its installer. As FileFly is a public, fully open source project, it is up to you to trust it.
+### Windows
+#### Installation:
+On Windows, FileFly is distributed as both a portable (FileFly.exe) as well as an installer. To install it, simply execute the installer and follow its steps. To uninstall, use the uninstaller in the install location, or the Windows settings.
+
+#### Updating:
+To update FileFly, simply download the newest installer. This can be done from here, or by pressing the "check" button in the update section of FileFly's settings. If an update was found, FileFly will then offer you a "Download" button, which will download the newest installer release from this github page. You will then have to execute said installer.
+
+### Linux
+#### Installation:
+On Linux, FileFly is distributed as an AppImage. That means it will come with the necessary .desktop file, executable and App icon. However, you will have to unpack the AppImage and put these files in the appropriate locations if you wish to use them. Otherwise, You can also directly execute the AppImage by making it executable with the following command:
+
+```bash
+chmod a+x FileFly.AppImage
+```
+If you then wish to unpack it to access the files mentioned above, execute the following command:
+
+```bash
+./FileFly.AppImage --appimage-extract
+```
+The mentioned files will then be in a folder called "squashfs-root". From there, follow typical instructions for the use of .desktop entries.
+
+#### Updating:
+To update FileFly, simply download the newest AppImage. This can be done from here, or by pressing the "check" button in the update section of FileFly's settings. If an update was found, FileFly will then offer you a "Download" button, which will download the newest AppImage release from this github page. If updating a proper installation using a .desktop file, replace all extracted files. It is generally not necessary to replace the .desktop file, as it simply needs to point to your executable binary's location. However, it doesn't harm the app to do so.
+
 ## Planned features
 
 ### Eject-able media formatting:
@@ -129,6 +156,9 @@ Currently, FileFly only supports English. It does however support all UTF-8 char
 
 ### Default setting
 Currently, file explorer does allow you to set it as your default File Explorer on Windows. However, this does not apply to file picker dialogues, as the file picker is spawned as a child process of an already open FileFly window instead of its own instance.
+
+### Updates
+As of now, FileFly supports fetching updates from its github source. Because FileFly is a free student project, it is not signed. Therefore, I am currently opening the browser to download the installer from its source on Windows, or the AppImage on Linux. I would like to improve this process to support proper installation without user input in the future.
 
 ### More customization
 I wish to add more options for customization, regarding things such as fonts and backgrounds.
