@@ -37,7 +37,7 @@ FileFly is a WiP. However, I do daily drive it for a number of features:
 In my Testing, FileFly searches through Windows directories about 1000x faster than Windows File Explorer. It also supports global (system wide) search
 
 ### Resources:
-In my Testing, FileFly uses between 3-5x less RAM than the Windows File Explorer in regular use. Thus, it usually stays below 100MB RAM usage, and often below 60MB too.
+In my Testing, FileFly uses between 3-5x less RAM than the Windows File Explorer in regular use. Thus, it usually stays below 100MB RAM usage, and often below 60MB too. It is also possible to further reduce the RAM usage in the indexer cache section of the settings.
 
 ### Panning: 
 FileFly supports intelligent panning, with up to 4 directories being open at once. "Intelligent" here refers to the panes automatically being split along the shorter axis.
