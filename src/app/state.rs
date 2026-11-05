@@ -107,7 +107,7 @@ pub(crate) struct Explorer {
     pub(crate) update: UpdateState,
 
     /// Whether the sidebar is compacted.
-    pub(crate) sidebar_compact: bool,
+    pub(crate) sidebar_collapsed: bool,
     /// Width (points) of the expanded sidebar: restored from the session, kept current by
     /// `ui_sidebar`, and written back with the session. None until it is known.
     pub(crate) sidebar_width: Option<f32>,
@@ -259,7 +259,7 @@ impl Explorer {
                     .unwrap_or_else(Instant::now),
             ),
             update: UpdateState::Idle,
-            sidebar_compact: false,
+            sidebar_collapsed: false,
             sidebar_width: None,
             probed_icons: HashSet::new(),
         };

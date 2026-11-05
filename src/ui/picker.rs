@@ -1029,7 +1029,7 @@ impl Explorer {
                             section_label(ui, &m, &pal, "Quick access");
                             for q in quick.iter().filter(|q| q.available) {
                                 let sel = same_path(&q.path, &p.dir);
-                                if nav_item_ex(ui, &m, &pal, q.icon, Some(q.path.as_path()), &q.label, sel).clicked() {
+                                if nav_item_expanded(ui, &m, &pal, q.icon, Some(q.path.as_path()), &q.label, sel).clicked() {
                                     input.go = Some(q.path.clone());
                                 }
                             }

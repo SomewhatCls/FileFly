@@ -141,32 +141,16 @@ fn drive_letter(d: &DriveInfo) -> Option<String> {
         .map(|ch| format!("{}:", ch.to_ascii_uppercase()))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Compact-mode metrics
-// ---------------------------------------------------------------------------------------------
-
-// Fixed spacings (regular margins). Row heights that must follow the app-wide compact setting
-// live in `Metrics` (e.g. `nav_h`) instead.
-
 /// Height of a drive card (expanded mode).
 fn card_h(m: &Metrics) -> f32 {
     m.font * 4.4
 }
 
-/// Visible gap between two drive rings (sidebar compact mode).
-fn ring_gap(m: &Metrics) -> f32 {
-    m.font * 0.7
-}
-
-/// Minimum visible gap on each side of a divider (sidebar compact mode).
-fn divider_gap(m: &Metrics) -> f32 {
-    m.font * 0.45
-}
+/// Minimum visible gap on each side of a divider (sidebar collapsed mode).
+fn divider_gap(m: &Metrics) -> f32 { m.pad * 2.0 }
 
 /// Space above a drive group's title (expanded mode).
-fn group_gap(m: &Metrics) -> f32 {
-    m.pad
-}
+fn group_gap(m: &Metrics) -> f32 { m.pad }
 
 /// Space on each side of the divider above the Recycle Bin (expanded mode).
 fn bin_divider_pad(m: &Metrics) -> f32 {
@@ -181,31 +165,31 @@ fn ring_thick(m: &Metrics) -> f32 {
     m.accessibility_scale * 3.0
 }
 
-/// Compact drive row: the ring plus the visible gap to the next ring.
-fn compact_ring_row_h(m: &Metrics) -> f32 {
-    2.0 * ring_radius(m) + ring_thick(m) + ring_gap(m)
+/// Collapsed drive row: the ring plus the visible gap to the next ring.
+fn collapse_ring_row_h(m: &Metrics) -> f32 {
+    2.0 * ring_radius(m) + ring_thick(m) + m.pad * 2.0
 }
 
 /// x of the icon column's centre, shared by the hamburger, the folder icons and the rings: the
-/// position the icons have in expanded mode. Compact folder rows are as tall as expanded ones.
-fn compact_icon_cx(m: &Metrics, inner: Rect) -> f32 {
+/// position the icons have in expanded mode. Collapsed folder rows are as tall as expanded ones.
+fn collapse_icon_cx(m: &Metrics, inner: Rect) -> f32 {
     inner.left() + m.pad * 1.5 + m.icon / 2.0
 }
 
 /// Empty space between a folder icon and the edge of its row.
-fn compact_icon_pad(m: &Metrics) -> f32 {
-    (m.nav_h - m.icon) / 2.0
+fn collapse_icon_pad(m: &Metrics) -> f32 {
+    m.nav_h / 2.0 - m.icon / 2.0
 }
 
 /// Empty space between a drive ring and the edge of its row.
-fn compact_ring_pad(m: &Metrics) -> f32 {
-    ring_gap(m) / 2.0
+fn collapse_ring_pad(m: &Metrics) -> f32 {
+    (collapse_ring_row_h(m) - (2.0 * (ring_radius(m) + ring_thick(m)))) / 2.0
 }
 
 /// A divider with the same visible gap on both sides. `above_pad` / `below_pad` are the paddings
 /// the neighbouring rows already carry; only the rest is added as space. (In a bottom-up layout
 /// the arguments are in call order, i.e. the first one ends up below the divider.)
-fn compact_divider(
+fn collapse_divider(
     ui: &mut Ui,
     m: &Metrics,
     pal: &Palette,
@@ -213,8 +197,8 @@ fn compact_divider(
     below_pad: f32,
 ) {
     let gap = divider_gap(m)
-        .max(compact_icon_pad(m))
-        .max(compact_ring_pad(m));
+        .max(collapse_icon_pad(m))
+        .max(collapse_ring_pad(m));
     ui.add_space((gap - above_pad).max(0.0));
     divider(ui, pal);
     ui.add_space((gap - below_pad).max(0.0));
@@ -247,12 +231,12 @@ fn draw_hamburger(ui: &mut Ui, m: &Metrics, pal: &Palette, c: egui::Pos2) {
     }
 }
 
-/// Top row of the sidebar. Returns `(toggle_compact, pin_current_folder)`.
+/// Top row of the sidebar. Returns `(toggle_collapse, pin_current_folder)`.
 pub(crate) fn sidebar_header(
     ui: &mut Ui,
     m: &Metrics,
     pal: &Palette,
-    compact: bool,
+    collapsed: bool,
     can_pin: bool,
 ) -> (bool, bool) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), m.nav_h), Sense::hover());
@@ -262,13 +246,13 @@ pub(crate) fn sidebar_header(
     // "+" button is registered afterwards, so it wins where the two overlap.
     let resp = ui.interact(inner, ui.scope_id().with("menu_btn"), Sense::click());
     list_hover(ui, inner, &resp, pal, m);
-    draw_hamburger(ui, m, pal, pos2(compact_icon_cx(m, inner), inner.center().y));
+    draw_hamburger(ui, m, pal, pos2(collapse_icon_cx(m, inner), inner.center().y));
     let toggle = resp
-        .on_hover_text(if compact { "Expand sidebar" } else { "Collapse sidebar" })
+        .on_hover_text(if collapsed { "Expand sidebar" } else { "Collapse sidebar" })
         .clicked();
 
     let mut pin = false;
-    if !compact {
+    if !collapsed {
         let sz = m.font * 1.6;
         let btn = Rect::from_center_size(
             pos2(rect.right() - m.pad * 1.5 - sz / 2.0, rect.center().y),
@@ -306,12 +290,12 @@ pub(crate) fn nav_item(
     label: &str,
     selected: bool,
 ) -> egui::Response {
-    nav_item_ex(ui, m, pal, icon, None, label, selected)
+    nav_item_expanded(ui, m, pal, icon, None, label, selected)
 }
 
 /// Navigation item. With a `path` the folder's own platform icon is shown (Documents, Downloads,
 /// ... have special icons on Windows); `icon` is the built-in stand-in.
-pub(crate) fn nav_item_ex(
+pub(crate) fn nav_item_expanded(
     ui: &mut Ui,
     m: &Metrics,
     pal: &Palette,
@@ -323,7 +307,7 @@ pub(crate) fn nav_item_ex(
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), m.nav_h), Sense::click());
     let inner = rect.shrink2(vec2(0.0, 1.0));
     paint_row_bg(ui, m, pal, inner, &resp, selected.then_some(pal.control), m.font * 1.1);
-    draw_nav_icon(ui, pos2(compact_icon_cx(m, inner), inner.center().y), m.icon, icon, path);
+    draw_nav_icon(ui, pos2(collapse_icon_cx(m, inner), inner.center().y), m.icon, icon, path);
     let tr = Rect::from_min_max(
         pos2(inner.left() + m.pad * 2.3 + m.icon, inner.top()),
         pos2(inner.right() - m.pad, inner.bottom()),
@@ -332,8 +316,8 @@ pub(crate) fn nav_item_ex(
     resp
 }
 
-/// Icon-only navigation item for compacted sidebar.
-pub(crate) fn nav_item_compact(
+/// Icon-only navigation item for collapsed sidebar.
+pub(crate) fn nav_item_collapsed(
     ui: &mut Ui,
     m: &Metrics,
     pal: &Palette,
@@ -345,7 +329,7 @@ pub(crate) fn nav_item_compact(
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), m.nav_h), Sense::click());
     let inner = rect.shrink2(vec2(0.0, 1.0));
     paint_row_bg(ui, m, pal, inner, &resp, selected.then_some(pal.control), m.font * 1.1);
-    draw_nav_icon(ui, pos2(compact_icon_cx(m, inner), inner.center().y), m.icon, icon, path);
+    draw_nav_icon(ui, pos2(collapse_icon_cx(m, inner), inner.center().y), m.icon, icon, path);
     resp.on_hover_text(label)
 }
 
@@ -443,9 +427,9 @@ fn paint_ring(
     }
 }
 
-/// Compact drive: a ring showing the fill percentage, with the drive letter ("N:") inside on
+/// Collapsed drive UI: a ring showing the fill percentage, with the drive letter ("N:") inside on
 /// Windows and the drive's icon elsewhere. The hover hint has the full name and free/total space.
-pub(crate) fn drive_compact(
+pub(crate) fn drive_collapsed(
     ui: &mut Ui,
     m: &Metrics,
     pal: &Palette,
@@ -453,7 +437,7 @@ pub(crate) fn drive_compact(
     active: bool,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
-        vec2(ui.available_width(), compact_ring_row_h(m)),
+        vec2(ui.available_width(), collapse_ring_row_h(m)),
         Sense::click(),
     );
     let inner = rect.shrink2(vec2(0.0, 1.0));
@@ -462,7 +446,7 @@ pub(crate) fn drive_compact(
     // Snap the ring's centre to a whole physical pixel so a half-pixel row centre can't shift it.
     let ppp = ui.ctx().pixels_per_point();
     let snap = |v: f32| (v * ppp).round() / ppp;
-    let c = pos2(snap(compact_icon_cx(m, inner)), snap(inner.center().y));
+    let c = pos2(snap(collapse_icon_cx(m, inner)), snap(inner.center().y));
     let radius = ring_radius(m);
 
     let frac = drive_fraction(d);
@@ -495,8 +479,8 @@ pub(crate) fn drive_compact(
 impl Explorer {
     pub(crate) fn ui_sidebar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
-        let compact = self.sidebar_compact;
-        let mut toggle_compact = false;
+        let collapsed = self.sidebar_collapsed;
+        let mut toggle_collapse = false;
         let cur = self.tabs[self.active].dir.clone();
         let special_active = self.tabs[self.active].special();
         let trash_active = self.tabs[self.active].trash.is_some();
@@ -513,20 +497,22 @@ impl Explorer {
         let old_grab_radius = ui.style().interaction.resize_grab_radius_side;
         ui.style_mut().interaction.resize_grab_radius_side = 2.0;
 
-        let compact_w = m.accessibility_scale * 56.0;
+        // the width is calculated from the total item size of m.pad * 3.0 + icon (see collapse_icon_cx())
+        // and the sidebars inner margins of 0.6 * m.pad per side (left and right).
+        let collapsed_w = m.pad * 4.2 + m.icon;
         // A separate id per mode, so the expanded width the user dragged to is remembered.
-        let panel = egui::Panel::left(if compact { "sidebar_compact" } else { "sidebar" })
-            .resizable(!compact)
-            .default_size(if compact {
-                compact_w
+        let panel = egui::Panel::left(if collapsed { "sidebar_collapsed" } else { "sidebar" })
+            .resizable(!collapsed)
+            .default_size(if collapsed {
+                collapsed_w
             } else {
                 // Only used the first time the panel is shown; egui remembers the dragged width
                 // after that. The size range below keeps a stale saved value in bounds.
                 self.sidebar_width
                     .unwrap_or(m.accessibility_scale * 200.0)
             })
-            .size_range(if compact {
-                compact_w..=compact_w
+            .size_range(if collapsed {
+                collapsed_w..=collapsed_w
             } else {
                 m.accessibility_scale * 150.0..=m.accessibility_scale * 400.0
             })
@@ -544,17 +530,17 @@ impl Explorer {
             .show(ui, |ui| {
                 // Bottom-up: the Recycle Bin is pinned, the rest scrolls only when it has to.
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    let bin = if compact {
-                        nav_item_compact(ui, &m, &pal, "recycle_bin", None, "Recycle Bin", trash_active)
+                    let bin = if collapsed {
+                        nav_item_collapsed(ui, &m, &pal, "recycle_bin", None, "Recycle Bin", trash_active)
                     } else {
                         nav_item(ui, &m, &pal, "recycle_bin", "Recycle Bin", trash_active)
                     };
                     if bin.clicked() {
                         actions.push(Action::OpenRecycleBin);
                     }
-                    if compact {
+                    if collapsed {
                         // Below the divider is the Recycle Bin row, above it the drive rings.
-                        compact_divider(ui, &m, &pal, compact_icon_pad(&m), compact_ring_pad(&m));
+                        collapse_divider(ui, &m, &pal, collapse_icon_pad(&m), collapse_ring_pad(&m));
                     } else {
                         ui.add_space(bin_divider_pad(&m));
                         divider(ui, &pal);
@@ -563,8 +549,8 @@ impl Explorer {
 
                     ui.with_layout(Layout::top_down(Align::Min), |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        let (toggle, pin) = sidebar_header(ui, &m, &pal, compact, can_pin);
-                        toggle_compact = toggle;
+                        let (toggle, pin) = sidebar_header(ui, &m, &pal, collapsed, can_pin);
+                        toggle_collapse = toggle;
                         if pin {
                             actions.push(Action::PinQuick(cur.clone()));
                         }
@@ -575,10 +561,10 @@ impl Explorer {
                                 for q in quick.iter().filter(|q| q.available) {
                                     let sel = same_path(&q.path, &cur) && !special_active;
                                     let path = Some(q.path.as_path());
-                                    let resp = if compact {
-                                        nav_item_compact(ui, &m, &pal, q.icon, path, &q.label, sel)
+                                    let resp = if collapsed {
+                                        nav_item_collapsed(ui, &m, &pal, q.icon, path, &q.label, sel)
                                     } else {
-                                        nav_item_ex(ui, &m, &pal, q.icon, path, &q.label, sel)
+                                        nav_item_expanded(ui, &m, &pal, q.icon, path, &q.label, sel)
                                     };
                                     if q.is_dir {
                                         if let Some(ps) = &dragging {
@@ -623,7 +609,7 @@ impl Explorer {
                                         }
                                     });
                                 }
-                                if !compact && !quick.iter().any(|q| q.available) {
+                                if !collapsed && !quick.iter().any(|q| q.available) {
                                     section_label(ui, &m, &pal, "Nothing pinned");
                                 }
 
@@ -639,15 +625,15 @@ impl Explorer {
                                     if group.is_empty() {
                                         continue;
                                     }
-                                    if compact {
+                                    if collapsed {
                                         // No room for a title: a divider separates the groups. The
                                         // first one follows the folder icons, the others a ring.
                                         let above = if any_drive {
-                                            compact_ring_pad(&m)
+                                            collapse_ring_pad(&m)
                                         } else {
-                                            compact_icon_pad(&m)
+                                            collapse_icon_pad(&m)
                                         };
-                                        compact_divider(ui, &m, &pal, above, compact_ring_pad(&m));
+                                        collapse_divider(ui, &m, &pal, above, collapse_ring_pad(&m));
                                     } else {
                                         ui.add_space(group_gap(&m));
                                         section_label(ui, &m, &pal, title);
@@ -655,8 +641,8 @@ impl Explorer {
                                     any_drive = true;
                                     for d in group {
                                         let active = same_path(&d.mount_point, &cur) && !special_active;
-                                        let resp = if compact {
-                                            drive_compact(ui, &m, &pal, d, active)
+                                        let resp = if collapsed {
+                                            drive_collapsed(ui, &m, &pal, d, active)
                                         } else {
                                             drive_card(ui, &m, &pal, d, active)
                                         };
@@ -670,7 +656,7 @@ impl Explorer {
                                         }
                                     }
                                 }
-                                if !any_drive && !compact {
+                                if !any_drive && !collapsed {
                                     ui.add_space(group_gap(&m));
                                     section_label(ui, &m, &pal, "Drives");
                                     section_label(ui, &m, &pal, "No drives found");
@@ -682,13 +668,13 @@ impl Explorer {
         // Reset the style's drag radius for other widgets.
         ui.style_mut().interaction.resize_grab_radius_side = old_grab_radius;
         self.sidebar_rect = Some(panel.response.rect);
-        // Track the expanded width for the session (the compact width is fixed, not saved).
+        // Track the expanded width for the session (the collapsed width is fixed, not saved).
         // Whole points, so sub-pixel jitter doesn't count as a change.
-        if !compact {
+        if !collapsed {
             self.sidebar_width = Some(panel.response.rect.width().round());
         }
-        if toggle_compact {
-            self.sidebar_compact = !self.sidebar_compact;
+        if toggle_collapse {
+            self.sidebar_collapsed = !self.sidebar_collapsed;
         }
     }
 }
