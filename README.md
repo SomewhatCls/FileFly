@@ -140,7 +140,7 @@ To find files with the given extension .ext.
 FileFly is a free project. As such, I am not capable of paying to sign its executables. [Microsoft SmartScreen](https://en.wikipedia.org/wiki/Microsoft_SmartScreen) might show you a warning when executing FileFly or its installer. As FileFly is a public, fully open source project, it is up to you to trust it.
 ### Windows
 #### Installation:
-On Windows, FileFly is distributed as both a portable (FileFly.exe) as well as an installer. To install it, simply [download](https://github.com/SomewhatCls/FileFly/releases/latest/FileFlyInstaller.exe) and execute the latest installer and follow its steps. To uninstall, use the uninstaller in the install location, or the Windows settings.
+On Windows, FileFly is distributed as both a portable (FileFly.exe) as well as an installer. To install it, simply [download](https://github.com/SomewhatCls/FileFly/releases/latest/download/FileFlyInstaller.exe) and execute the latest installer and follow its steps. To uninstall, use the uninstaller in the install location, or the Windows settings.
 
 #### Updating:
 To update FileFly, simply download the newest installer. This can be done from here, or by pressing the "check" button in the update section of FileFly's settings. If an update was found, FileFly will then offer you a "Download" button, which will download the newest installer release from this github page. You will then have to execute said installer.
