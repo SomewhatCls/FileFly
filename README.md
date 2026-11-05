@@ -1,7 +1,19 @@
 # FileFly - a cross-platform, quad-panning file manager
 <img width="1804" height="1328" alt="image" src="https://github.com/user-attachments/assets/60aab92b-76a3-4a78-871d-e3a83e1d5a10" />
 
-## Project background
+## Table of contents
+
+- [Project Background](#project-background)
+- [Project Scope](#project-scope)
+- [Current State](#current-state)
+- [Feature Gallery](#feature-gallery)
+- [Shortcuts and Syntax](#shortcuts-and-syntax)
+- [Installation and Updating](#installation-and-updating)
+- [Planned Features](#planned-features)
+- [Privacy](#privacy)
+- [Re: Project Background and Quality](#re-project-background-and-quality)
+
+## Project Background
 
 I started working on this project for 4 reasons:
 - I was tired of Windows Explorers lack of features and slow speed
@@ -11,13 +23,13 @@ I started working on this project for 4 reasons:
 
 My take on each of these objectives (especially the use of AI) will be found at the [bottom](#re-project-background-and-quality) of this README.
 
-## Project scope
+## Project Scope
 
 FileFly was born out of a deep disdain for Windows File Explorer's low directory loading speeds, high resource usage and lack of features which should be common place in modern file managers. In addition, I felt the need to start this project as current, high performance alternatives such as [File Pilot](https://filepilot.tech/), although deeply impressive, are closed-source and paid.
 
 Thus, the goal for FileFly is to implement features I personally desire in Windows File Explorers while maintaining cross-compatibility with Linux systems, all the while being much less RAM intensive.
 
-## Current state
+## Current State
 
 FileFly is a WiP. However, I do daily drive it for a number of features:
 
@@ -41,6 +53,10 @@ FileFly supports many actions through a custom right click context menu. Those i
 FileFly supports all UTF-8 names for files and folders.
 ### Trash bin:
 FileFly allows access to the native OS trash bin via a sidebar button.
+### Session persistence
+FileFly opens the same tabs/panes as when you closed it.
+### OS paste bin
+On Windows, FileFly uses the Windows paste bin. This means you can copy files in another app and paste them into FileFly. You can also drag and drop files into and out of a FileFly window.
 ### And of course:
 All common file operations, such as copy, paste, cut (move), delete, rename, drag to copy and multi-file operations. To prevent file loss and corruption, operations like cut (move) are implemented safely and if FileFly crashes, leftover temp files will be deleted.
 
@@ -54,7 +70,7 @@ All common file operations, such as copy, paste, cut (move), delete, rename, dra
 - Support for optional paning blur effects.
 - Font size, accessibility scaling and date/time format options.
 
-## Feature gallery
+## Feature Gallery
 ### Panning
 <img width="1804" height="1328" alt="image" src="https://github.com/user-attachments/assets/f2311272-e328-451c-8ce6-75c289b57583" />
 <br><br>
@@ -143,7 +159,7 @@ The mentioned files will then be in a folder called "squashfs-root". From there,
 #### Updating:
 To update FileFly, simply download the newest AppImage. This can be done from here, or by pressing the "check" button in the update section of FileFly's settings. If an update was found, FileFly will then offer you a "Download" button, which will download the newest AppImage release from this github page. If updating a proper installation using a .desktop file, replace all extracted files. It is generally not necessary to replace the .desktop file, as it simply needs to point to your executable binary's location. However, it doesn't harm the app to do so.
 
-## Planned features
+## Planned Features
 
 ### Eject-able media formatting:
 Currently, FileFly supports eject-able media for reading and writing, as well as updating its status live. However, I would like to allow users to open a formatting menu through the right click context menu.
@@ -163,7 +179,17 @@ As of now, FileFly supports fetching updates from its github source. Because Fil
 ### More customization
 I wish to add more options for customization, regarding things such as fonts and backgrounds.
 
-## Re: Project background and quality
+## Privacy
+FileFly does NOT collect telemetry. FileFly does NOT share user data.
+
+FileFly does save the following information on your device ONLY:
+- Folder sizes (To display them in the file table)
+- FileFly user settings
+- Information about its session, to open the same tabs and to open the window at the same size as before.
+
+In addition, FileFly will contact the Internet ONLY if you decide to check for updates. It is otherwise completely offline.
+
+## Re: Project Background and Quality
 A short preamble; At its current state, I believe this project has already proven both much faster and more efficient than Windows File Explorer, achieving results similar enough to those of proprietary projects such as File Pilot while being open source. At the same time, I find it file operation safe and stable enough to use it in my own daily use. However, this code was not written by an expert or a professional, but by a student.
 
 I have long held that chatbots supplied me with insufficient code in languages I am well versed in. Although I am thoroughly impressed by Claude's ability to write absurdly more complex and functional code than previous chatbots I have tried in other years, I did not pay for access to it (which also means it does not have access to my code base). As such, this code has been increasingly written by me and my likely lacking Rust abilities. Nonetheless, the 10 or so minutes a day I get to use Claude for free are still highly useful in understanding the various crate APIs I implement. As such, while I am impressed by Claude's capabilities and while this project has achieved a much more performant and efficient result than the Windows File Explorer, current feature progress is gonna be determined by my Rust abilities.
