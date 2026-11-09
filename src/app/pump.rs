@@ -224,7 +224,12 @@ impl Explorer {
             }
         }
 
-        while let Ok(IndexMsg::Size(path, size)) = self.idx_rx.try_recv() {
+        while let Ok(msg) = self.idx_rx.try_recv() {
+            // `Partial` is a running total of a scan that is still going; `Size` is the final value.
+            let (path, size, partial) = match msg {
+                IndexMsg::Size(p, s) => (p, s, false),
+                IndexMsg::Partial(p, s) => (p, s, true),
+            };
             let Some(parent) = path.parent() else {
                 continue;
             };
@@ -232,10 +237,15 @@ impl Explorer {
                 if t.dir == parent {
                     if let Some(&i) = t.lookup.get(&path) {
                         t.entries[i].dir_size = Some(size);
-                        if t.sort_col == SortColumn::Size {
+                        t.entries[i].dir_partial = partial;
+                        // no re-sort for running totals, or rows would jump around while scanning
+                        if !partial && t.sort_col == SortColumn::Size {
                             t.view_dirty = true;
                         }
                     }
+                }
+                if partial {
+                    continue; // search results only show final sizes
                 }
                 if let Some(i) = t.search_index(&path) {
                     if let Some(e) = t.search_results.get_mut(i) {

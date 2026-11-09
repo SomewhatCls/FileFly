@@ -6,7 +6,7 @@ use super::{
     live::{self, ChangeSink, LiveCtx},
     model::{entries_for_mb, is_fresh, ns, now_secs, IndexMsg, PRUNE_SECS, WORKERS},
     priority::lower_priority,
-    scan::scan,
+    scan::scan_with_progress,
     store::{self, Cache, Store},
 };
 use eframe::egui;
@@ -241,10 +241,18 @@ impl Indexer {
                     let fresh = cache.get(&folder).filter(|c| is_fresh(c, stamp, now));
                     let size = match fresh {
                         Some(c) => c.size,
-                        None => match scan(&folder, stamp, &cache, &generation, my_gen, &dirty, &hot) {
-                            Some(s) => s,
-                            None => return, // cancelled
-                        },
+                        None => {
+                            // live running total for the row while the walk is still going
+                            let (ptx, pctx, pf) = (tx.clone(), ctx.clone(), folder.clone());
+                            let report = move |n: u64| {
+                                let _ = ptx.send(IndexMsg::Partial(pf.clone(), n));
+                                pctx.request_repaint();
+                            };
+                            match scan_with_progress(&folder, stamp, &cache, &generation, my_gen, &dirty, &hot, &report) {
+                                Some(s) => s,
+                                None => return, // cancelled
+                            }
+                        }
                     };
                     if tx.send(IndexMsg::Size(folder, size)).is_err() {
                         return;

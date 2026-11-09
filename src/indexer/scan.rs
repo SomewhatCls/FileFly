@@ -56,7 +56,7 @@ fn dev_of(m: &fs::Metadata) -> u64 { use std::os::unix::fs::MetadataExt; m.dev()
 #[cfg(not(unix))]
 fn dev_of(_: &fs::Metadata) -> u64 { 0 }
 
-/// Iterative post-order walk. Returns None if cancelled. Every folder that is finished is stored.
+/// `scan_with_progress` without progress reports.
 pub fn scan(
     root: &Path,
     root_stamp: u64,
@@ -65,6 +65,21 @@ pub fn scan(
     my_gen: u64,
     dirty: &AtomicBool,
     hot: &HotFiles,
+) -> Option<u64> {
+    scan_with_progress(root, root_stamp, cache, generation, my_gen, dirty, hot, &|_| {})
+}
+
+/// Iterative post-order walk. Returns None if cancelled. Every folder that is finished is stored.
+/// `progress` receives the running total under `root` about ten times a second while walking.
+pub fn scan_with_progress(
+    root: &Path,
+    root_stamp: u64,
+    cache: &Cache,
+    generation: &AtomicU64,
+    my_gen: u64,
+    dirty: &AtomicBool,
+    hot: &HotFiles,
+    progress: &dyn Fn(u64),
 ) -> Option<u64> {
     let now = now_secs();
     let mut pending: Vec<(PathBuf, CachedFolder)> = Vec::new();
@@ -82,6 +97,9 @@ pub fn scan(
     let root_dev = fs::metadata(root).map(|m| dev_of(&m)).unwrap_or(0);
     // Time since last scan pause to limit system impact.
     let mut scan_slice = Instant::now();
+    // Everything counted so far under `root` (for the live display) and when it was last reported.
+    let mut running = 0u64;
+    let mut last_report = Instant::now();
 
     loop {
         if generation.load(Ordering::Relaxed) != my_gen {
@@ -93,6 +111,10 @@ pub fn scan(
         if counter % 4096 == 0 && scan_slice.elapsed() >= Duration::from_millis(8) {
             std::thread::sleep(Duration::from_millis(4));
             scan_slice = Instant::now();
+            if last_report.elapsed() >= Duration::from_millis(100) {
+                progress(running);
+                last_report = Instant::now();
+            }
             if pending.len() >= 4000 {
                 flush(&mut pending);
             }
@@ -126,6 +148,7 @@ pub fn scan(
         match step {
             Step::Skip => {}
             Step::Add(n) => {
+                running = running.saturating_add(n);
                 if let Some(top) = stack.last_mut() {
                     top.total = top.total.saturating_add(n);
                 }
@@ -133,6 +156,7 @@ pub fn scan(
             Step::Descend(path, stamp) => {
                 let hit = cache.get(&path).filter(|c| is_fresh(c, stamp, now));
                 if let Some(hit) = hit {
+                    running = running.saturating_add(hit.size);
                     if let Some(top) = stack.last_mut() {
                         top.total = top.total.saturating_add(hit.size);
                     }
