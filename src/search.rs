@@ -159,7 +159,7 @@ pub(crate) fn on_search_changed(tab: &mut Tab, show_hidden: bool, fmt: DateForma
     tab.view_dirty = true;
 }
 
-pub(crate) fn poll_search(tab: &mut Tab, indexer: &Indexer) {
+pub(crate) fn poll_search(tab: &mut Tab, indexer: Option<&Indexer>) {
     use mpsc::TryRecvError;
     let Some(job) = &mut tab.search_job else { return };
     let mut changed = false;
@@ -167,7 +167,7 @@ pub(crate) fn poll_search(tab: &mut Tab, indexer: &Indexer) {
         match job.rx.try_recv() {
             Ok(mut batch) => {
                 for e in batch.iter_mut().filter(|e| e.is_dir && !e.is_link) {
-                    e.dir_size = indexer.lookup(&e.path);
+                    e.dir_size = indexer.and_then(|ix| ix.lookup(&e.path));
                 }
                 let base = tab.search_results.len();
                 for (k, e) in batch.iter().enumerate() {

@@ -38,6 +38,8 @@ pub struct CachedFolder {
 
 pub enum IndexMsg {
     Size(PathBuf, u64),
+    /// Running total of a scan that is still in progress (a lower bound; `Size` follows when done).
+    Partial(PathBuf, u64),
 }
 
 pub fn now_secs() -> u64 {

@@ -1,12 +1,15 @@
 //! `Indexer`: the object the rest of the app talks to. It owns the store, the scan workers and the
 //! live updater, and keeps the public API of the old single-file indexer.
 
+//TODO: The Indexer gets stuck in rescan loops sometimes.
+//TODO: Explore faster alternatives for the comprehensive file traversal done right now.
+
 use super::{
     hot::HotFiles,
     live::{self, ChangeSink, LiveCtx},
     model::{entries_for_mb, is_fresh, ns, now_secs, IndexMsg, PRUNE_SECS, WORKERS},
     priority::lower_priority,
-    scan::scan,
+    scan::scan_with_progress,
     store::{self, Cache, Store},
 };
 use eframe::egui;
@@ -110,7 +113,7 @@ impl Indexer {
     }
 
     /// The collection point for file-system events. Create the watcher with
-    /// `DirWatcher::with_sink(ctx, indexer.change_sink())` to get live size updates.
+    /// `DirWatcher::new(ctx, indexer.change_sink())` to get live size updates.
     pub fn change_sink(&self) -> Arc<ChangeSink> {
         Arc::clone(&self.sink)
     }
@@ -241,10 +244,18 @@ impl Indexer {
                     let fresh = cache.get(&folder).filter(|c| is_fresh(c, stamp, now));
                     let size = match fresh {
                         Some(c) => c.size,
-                        None => match scan(&folder, stamp, &cache, &generation, my_gen, &dirty, &hot) {
-                            Some(s) => s,
-                            None => return, // cancelled
-                        },
+                        None => {
+                            // live running total for the row while the walk is still going
+                            let (ptx, pctx, pf) = (tx.clone(), ctx.clone(), folder.clone());
+                            let report = move |n: u64| {
+                                let _ = ptx.send(IndexMsg::Partial(pf.clone(), n));
+                                pctx.request_repaint();
+                            };
+                            match scan_with_progress(&folder, stamp, &cache, &generation, my_gen, &dirty, &hot, &report) {
+                                Some(s) => s,
+                                None => return, // cancelled
+                            }
+                        }
                     };
                     if tx.send(IndexMsg::Size(folder, size)).is_err() {
                         return;

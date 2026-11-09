@@ -9,7 +9,9 @@
 //!    (up to `MAX_CHILD_WATCHES`). Watching a whole drive recursively would drown in system churn,
 //!    but the listing only sizes the children, so those are what matter. `Windows`, the recycle
 //!    bin and similar noise are skipped (their sizes stay on the TTL fallback);
-//!  * a network share: the folder itself only; recursive watches over SMB/NFS are slow and unreliable.
+//!  * a network share: the folder itself only; recursive watches over SMB/NFS are slow and unreliable;
+//!  * without an indexer (`DirWatcher::ui_only`): only the listed folder, never recursive, and the
+//!    watches of earlier folders are dropped; nothing needs deep size changes then.
 //!
 //! When a watch is dropped (limit reached) the folder it covered can no longer be trusted blindly,
 //! so it is reported to the updater as "everything below here may have changed" and gets rescanned
@@ -69,6 +71,12 @@ impl DirWatcher {
     /// Refreshes the UI because of changes and reports folder/file size changes.
     pub fn new(ctx: egui::Context, sink: Arc<ChangeSink>) -> Option<Self> {
         Self::build(ctx, Some(sink))
+    }
+
+    /// Only refreshes the UI because of changes: no size reporting, no recursive watches.
+    /// Used while folder sizes are turned off.
+    pub fn ui_only(ctx: egui::Context) -> Option<Self> {
+        Self::build(ctx, None)
     }
 
     fn build(ctx: egui::Context, sink: Option<Arc<ChangeSink>>) -> Option<Self> {
@@ -153,7 +161,8 @@ impl Inner {
         if self.current.as_deref() == Some(dir) {
             return;
         }
-        let shallow = dir.parent().is_none() || crate::drives::is_network_path(dir);
+        // Without a sink nobody needs deep size changes, so every watch is shallow.
+        let shallow = self.sink.is_none() || dir.parent().is_none() || crate::drives::is_network_path(dir);
 
         if !shallow {
             // Already inside a recursive watch from an earlier visit? Then there is nothing to do.
@@ -185,6 +194,16 @@ impl Inner {
         self.groups.push(group);
         self.current = Some(dir.to_path_buf());
 
+        if self.sink.is_none() {
+            // Only the folder on screen needs a watch; the rest would just cause needless refreshes.
+            let (keep, old): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut self.groups).into_iter().partition(|g| g.anchor == dir);
+            self.groups = keep;
+            for g in &old {
+                self.drop_group(g, false);
+            }
+        }
+
         // Too many remembered folders: drop the least recently used one (never the newest).
         while self.groups.len() > MAX_GROUPS {
             let last = self.groups.len() - 1;
@@ -200,7 +219,8 @@ impl Inner {
             self.watcher.watch(dir, RecursiveMode::NonRecursive).ok()?;
             watches.push((dir.to_path_buf(), false));
             // The recursive file watcher causes crashing on Linux, so only use it on WIndows.
-            if dir.parent().is_none() && !crate::drives::is_network_path(dir) && cfg!(windows) {
+            // (Also only with an indexer: the children are watched for size changes.)
+            if dir.parent().is_none() && !crate::drives::is_network_path(dir) && cfg!(windows) && self.sink.is_some() {
                 for child in child_dirs(dir) {
                     if watches.len() > MAX_CHILD_WATCHES {
                         break;

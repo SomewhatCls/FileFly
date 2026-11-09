@@ -16,6 +16,7 @@ pub(crate) use std::{
     collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     fs,
     fs::File,
+    io,
     hash::{Hash, Hasher},
     path::{Component, Path, PathBuf},
     sync::{

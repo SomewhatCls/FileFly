@@ -150,7 +150,7 @@ impl eframe::App for Explorer {
             hide_window(frame);
             save_settings(&self.settings);
             self.peers.shutdown();
-            self.indexer.save_if_dirty(&self.index_dir, true);
+            if let Some(ix) = &self.indexer { ix.save_if_dirty(&self.index_dir, true); }
             remove_archive_cache(); // unpacked zips are temporary
             finish_journal(); // (keeps its entries if a copy was still running)
 

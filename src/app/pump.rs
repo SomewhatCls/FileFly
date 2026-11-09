@@ -19,7 +19,7 @@ impl Explorer {
                 t.current_search_scope = t.chosen_search_scope;
                 on_search_changed(t, show_hidden, fmt, ctx);
             }
-            poll_search(t, &self.indexer);
+            poll_search(t, self.indexer.as_ref());
         }
     }
 
@@ -41,7 +41,7 @@ impl Explorer {
                         match result {
                             Ok(mut entries) => {
                                 for e in entries.iter_mut().filter(|e| e.is_dir && !e.is_link) {
-                                    e.dir_size = self.indexer.lookup(&e.path);
+                                    e.dir_size = self.indexer.as_ref().and_then(|ix| ix.lookup(&e.path));
                                 }
                                 t.lookup = entries
                                     .iter()
@@ -196,6 +196,9 @@ impl Explorer {
                         self.new_tab(first.clone());
                     }
                 }
+                AppMsg::ExtractStaged { tab, plan, stagings, errors, open } => {
+                    self.extract_staged(tab, plan, stagings, errors, open);
+                }
                 AppMsg::AdminOffer { msg, retry } => self.admin_retry = Some((msg, retry)),
                 AppMsg::Stats(seq, stats) => {
                     if let Some(p) = &mut self.props {
@@ -224,7 +227,14 @@ impl Explorer {
             }
         }
 
-        while let Ok(IndexMsg::Size(path, size)) = self.idx_rx.try_recv() {
+        self.pump_staging();
+
+        while let Ok(msg) = self.idx_rx.try_recv() {
+            // `Partial` is a running total of a scan that is still going; `Size` is the final value.
+            let (path, size, partial) = match msg {
+                IndexMsg::Size(p, s) => (p, s, false),
+                IndexMsg::Partial(p, s) => (p, s, true),
+            };
             let Some(parent) = path.parent() else {
                 continue;
             };
@@ -232,10 +242,15 @@ impl Explorer {
                 if t.dir == parent {
                     if let Some(&i) = t.lookup.get(&path) {
                         t.entries[i].dir_size = Some(size);
-                        if t.sort_col == SortColumn::Size {
+                        t.entries[i].dir_partial = partial;
+                        // no re-sort for running totals, or rows would jump around while scanning
+                        if !partial && t.sort_col == SortColumn::Size {
                             t.view_dirty = true;
                         }
                     }
+                }
+                if partial {
+                    continue; // search results only show final sizes
                 }
                 if let Some(i) = t.search_index(&path) {
                     if let Some(e) = t.search_results.get_mut(i) {
@@ -256,7 +271,7 @@ impl Explorer {
                 if p.as_os_str().is_empty() {
                     // Too many changes to list: refresh everything, and forget the cached sizes
                     // of this folder tree (a forced rescan would otherwise just reuse them).
-                    self.indexer.invalidate_tree(&dir);
+                    if let Some(ix) = &self.indexer { ix.invalidate_tree(&dir); }
                     self.list_debounce.poke();
                     self.size_debounce.poke();
                     continue;
@@ -264,7 +279,7 @@ impl Explorer {
                 if p.starts_with(&self.index_dir) {
                     continue; // our own cache file
                 }
-                self.indexer.invalidate(&p);
+                if let Some(ix) = &self.indexer { ix.invalidate(&p); }
                 if p.parent() == Some(dir.as_path()) || p == dir {
                     self.list_debounce.poke();
                 } else if p.starts_with(&dir) {
@@ -291,7 +306,7 @@ impl Explorer {
             .size_debounce
             .ready(Duration::from_millis(1500), Duration::from_secs(10))
         {
-            if self.indexer.is_running() {
+            if self.indexer.as_ref().is_some_and(|ix| ix.is_running()) {
                 // Restarting now would cancel the running scan and, under constant file activity,
                 // none would ever finish. Look again once it has had some time.
                 self.size_debounce.poke();
@@ -306,9 +321,11 @@ impl Explorer {
         // The drive watcher thread polls on its own; it only needs to know whether the window is in use.
         let focused = self.ui.input(|i| i.focused);
         self.drive_ctl.set_focused(focused);
-        if self.indexer.is_dirty() {
+        if self.indexer.as_ref().is_some_and(|ix| ix.is_dirty()) {
             if self.last_save.elapsed() > Duration::from_secs(15) {
-                self.indexer.save_if_dirty(&self.index_dir, false);
+                if let Some(ix) = &self.indexer {
+                    ix.save_if_dirty(&self.index_dir, false);
+                }
                 self.last_save = Instant::now();
             } else {
                 self.ui.request_repaint_after(Duration::from_secs(16));
@@ -367,7 +384,7 @@ impl Explorer {
             hide_window(frame);
             save_settings(&self.settings);
             self.peers.shutdown();
-            self.indexer.save_if_dirty(&self.index_dir, true);
+            if let Some(ix) = &self.indexer { ix.save_if_dirty(&self.index_dir, true); }
             remove_archive_cache();
             finish_journal();
             terminate_now();
@@ -406,7 +423,9 @@ impl Explorer {
             if cache_unlimited_change {
                 self.unlimited_cache = self.settings.unlimited_cache;
             }
-            self.indexer.set_limit_mb(self.cache_size.expect("The cache size will always be set."), self.unlimited_cache);
+            if let Some(ix) = &self.indexer {
+                ix.set_limit_mb(self.cache_size.expect("The cache size will always be set for an existing indexer."), self.unlimited_cache);
+            }
         }
 
         let changed_backdrop = if self.backdrop_transparency != wanted_transparency {

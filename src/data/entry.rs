@@ -15,6 +15,8 @@ pub(crate) struct Entry {
     pub(crate) type_text: String,
     pub(crate) icon_key: String,
     pub(crate) dir_size: Option<u64>,
+    /// True while `dir_size` is a running total from a scan that hasn't finished yet.
+    pub(crate) dir_partial: bool,
 }
 
 impl Entry {
@@ -60,6 +62,7 @@ impl Entry {
             type_text,
             icon_key,
             dir_size: None,
+            dir_partial: false,
         }
     }
 }

@@ -21,14 +21,10 @@ static PICKER_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// What the chosen folder is for.
 pub(crate) enum PickFor {
-    /// "Extract to…": the zips are unpacked into the chosen folder. With `subfolder` every zip gets
-    /// a new folder of its own inside it (`name` is that folder's name, only asked for when there
-    /// is a single zip); without it the files go straight into the chosen folder.
+    /// "Extract to…": the zips are unpacked into the chosen folder.
     Extract {
         zips: Vec<PathBuf>,
-        name: String,
         show: bool,
-        subfolder: bool,
     },
     /// "Change folder icon…": pick an `.ico` file for `folder` (files are listed next to folders).
     Icon { folder: PathBuf },
@@ -249,13 +245,6 @@ impl FolderPicker {
     fn blocker(&self) -> Option<String> {
         if archive_of(self.target()).is_some() {
             return Some("An opened zip archive is read-only. Choose a folder outside of it.".to_owned());
-        }
-        if let PickFor::Extract { zips, name, subfolder, .. } = &self.purpose {
-            if *subfolder && zips.len() == 1 {
-                if let Some(why) = name_problem(name) {
-                    return Some(why.to_owned());
-                }
-            }
         }
         None
     }
@@ -809,7 +798,7 @@ fn picker_search(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, 
 /// The list of folders (and `.ico` files in icon mode, or search hits). It is the explorer's own
 /// file table (`table_ui`, picker mode): click selects, double click opens a folder, and a folder
 /// made with "New folder" is named in place.
-fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, input: &mut PickerInput) {
+fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, input: &mut PickerInput, has_scanner: bool) {
     p.sync_search_text();
     if p.list.view_dirty {
         rebuild_view(&mut p.list);
@@ -829,6 +818,7 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, in
         hit,
         TableMode::Picker { can_make },
         &mut actions,
+        has_scanner
     );
     // The table reports what happened as `Action`s; the picker only cares about a few of them.
     for a in actions {
@@ -870,14 +860,7 @@ impl Explorer {
         };
         // A zip inside an opened zip lives in the temporary cache: start next to the outer zip.
         let start = folder_outside(parent);
-        let name = match zips.as_slice() {
-            [one] => one
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            _ => String::new(),
-        };
-        let purpose = PickFor::Extract { zips, name, show: true, subfolder: false };
+        let purpose = PickFor::Extract { zips, show: true };
         self.picker = Some(FolderPicker::new(
             purpose,
             self.tabs[ti].id,
@@ -1159,7 +1142,7 @@ impl Explorer {
             egui::CentralPanel::default()
                 .frame(layer_frame(&pal, 0, m.pad, m.pad, m.pad * 0.4, m.pad * 0.4, false))
                 .show(ui, |ui| {
-                    folder_list(ui, &m, &pal, &mut p, &mut input);
+                    folder_list(ui, &m, &pal, &mut p, &mut input, self.indexer.is_some());
                 });
 
             // ---- keyboard: the explorer's shortcuts (see `shortcuts.rs`), for this window's own input
@@ -1320,20 +1303,9 @@ impl Explorer {
                     self.set_folder_icon(&folder, Some(icon));
                 }
             }
-            PickFor::Extract { zips, name, show, subfolder } => {
-                let jobs: Vec<(PathBuf, PathBuf)> = if !subfolder {
-                    // Straight into the chosen folder.
-                    zips.into_iter().map(|z| (z, target.clone())).collect()
-                } else if zips.len() == 1 {
-                    vec![(zips[0].clone(), unique_copy_name(&target.join(name.trim())))]
-                } else {
-                    zips.into_iter()
-                        .filter_map(|z| {
-                            let dest = unique_copy_name(&target.join(z.file_stem()?));
-                            Some((z, dest))
-                        })
-                        .collect()
-                };
+            PickFor::Extract { zips, show } => {
+                let jobs: Vec<(PathBuf, PathBuf)> =
+                    zips.into_iter().map(|z| (z, target.clone())).collect();
                 self.run_extract(ti, jobs, show);
             }
         }

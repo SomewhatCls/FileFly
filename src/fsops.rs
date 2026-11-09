@@ -952,6 +952,32 @@ pub fn extract_zip(zip: &Path, dest: &Path) -> io::Result<()> {
     result
 }
 
+/// Unpacks `zip` into a hidden staging folder inside `target` and returns its path.
+/// The caller moves the contents out (asking about clashes) and then calls `discard_staging`.
+/// Crash safety is the same as `extract_zip`: the folder is journaled as a `part` temp.
+pub fn extract_zip_staged(zip: &Path, target: &Path) -> io::Result<PathBuf> {
+    let stem = zip.file_stem().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the zip has no name"))?;
+    let dest = target.join(stem); // never created; only gives the temp its `.<name>.part-<pid>-<n>` shape
+    let tmp = free_sibling(&dest, "part");
+    journal_add("part", &tmp, &dest);
+    if let Err(e) = fs::create_dir(&tmp) {
+        journal_settle(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = run_first_available(extract_tools(zip, &tmp)) {
+        let _ = remove_existing(&tmp);
+        journal_settle(&tmp);
+        return Err(e);
+    }
+    Ok(tmp)
+}
+
+/// Removes a staging folder (whatever is left in it) and strikes it from the journal.
+pub fn discard_staging(tmp: &Path) {
+    let _ = remove_existing(tmp);
+    journal_settle(tmp);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Journal of temporary items, so that a crash or kill can be cleaned up on the next start (see the
 // table at the top of this file).

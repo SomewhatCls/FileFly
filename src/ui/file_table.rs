@@ -214,6 +214,7 @@ pub(crate) fn table_ui(
     hit: Rect,
     mode: TableMode,
     actions: &mut Vec<Action>,
+    has_scanner: bool,
 ) {
     let Tab {
         id: tab_id,
@@ -775,12 +776,15 @@ pub(crate) fn table_ui(
                     );
                 }
 
+                // A folder whose size is still being summed: show a spinner next to the running total.
+                let scanning = has_scanner && e.is_dir && !e.is_link && !searching_now
+                    && (e.dir_size.is_none() || e.dir_partial);
                 let size_text = if e.is_dir {
                     match (e.dir_size, e.is_link) {
                         (Some(s), _) => format_size(s),
-                        (None, true) => "—".to_owned(),
-                        (None, false) if searching_now => "—".to_owned(),
-                        (None, false) => "Calculating…".to_owned(),
+                        (None, true) => "-".to_owned(),
+                        (None, false) if searching_now => "-".to_owned(),
+                        (None, false) => "".to_owned(),
                     }
                 } else {
                     format_size(e.size)
@@ -805,7 +809,18 @@ pub(crate) fn table_ui(
                             },
                         ),
                     };
+                    // Drawing the spinner shown while the size is being calculated/updated
                     paint_text(ui, cell, text, FontId::proportional(m.font), color, ci == 2);
+                    if ci == 2 && scanning {
+                        let diameter = m.font * 0.85;
+                        let tw = ui
+                            .painter()
+                            .layout_no_wrap(text.to_owned(), FontId::proportional(m.font), color)
+                            .size()
+                            .x;
+                        let sx = (cell.right() - tw - diameter * 0.5 - m.pad * 0.5).max(cell.left() + diameter * 0.5);
+                        paint_spinner(ui, pos2(sx, cell.center().y), diameter, pal.accent);
+                    }
                     cx += cw;
                 }
 
