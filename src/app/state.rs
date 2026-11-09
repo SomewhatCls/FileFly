@@ -26,7 +26,11 @@ pub(crate) struct Explorer {
     pub(crate) msg_tx: Sender<AppMsg>,
     pub(crate) msg_rx: Receiver<AppMsg>,
     pub(crate) idx_rx: Receiver<IndexMsg>,
-    pub(crate) indexer: Indexer,
+    /// Kept so an `Indexer` can be created later, when "Calculate folder sizes" is turned on at runtime.
+    pub(crate) idx_tx: Sender<IndexMsg>,
+    /// None while "Calculate folder sizes" is off: no index file, no scan threads, no live updater.
+    pub(crate) indexer: Option<Indexer>,
+    /// Also runs without the indexer, then only for the live listing refresh (see `DirWatcher::ui_only`).
     pub(crate) watcher: Option<DirWatcher>,
     pub(crate) list_debounce: Debounce,
     pub(crate) size_debounce: Debounce,
@@ -117,6 +121,11 @@ pub(crate) struct Explorer {
     pub(crate) probed_icons: HashSet<PathBuf>,
 }
 
+/// The RAM cache limit handed to the `Indexer` (0 = unlimited).
+fn index_limit_mb(settings: &Settings) -> usize {
+    if settings.unlimited_cache { 0 } else { settings.index_ram }
+}
+
 impl Explorer {
     pub(crate) fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ui = cc.egui_ctx.clone();
@@ -154,8 +163,15 @@ impl Explorer {
             .clone()
             .filter(|p| p.is_dir())
             .unwrap_or_else(app_dir);
-        let indexer = Indexer::new(ui.clone(), idx_tx, &index_dir, settings.index_ram);
-        let watcher =    DirWatcher::new(ui.clone(), indexer.change_sink());
+
+        let indexer = settings
+            .calculate_folder_sizes
+            .then(|| Indexer::new(ui.clone(), idx_tx.clone(), &index_dir, index_limit_mb(&settings)));
+        // Without the indexer the watcher only refreshes the listing.
+        let watcher = match &indexer {
+            Some(ix) => DirWatcher::new(ui.clone(), ix.change_sink()),
+            None => DirWatcher::ui_only(ui.clone()),
+        };
         std::thread::spawn(|| {
             // Leftovers of a crashed run: unpacked zips, and half-finished copy/move/zip temp items.
             sweep_old_archive_caches();
@@ -198,6 +214,7 @@ impl Explorer {
             msg_tx,
             msg_rx,
             idx_rx,
+            idx_tx,
             indexer,
             git: (git_available() && git_activated).then(GitState::new),
             watcher,
@@ -273,6 +290,38 @@ impl Explorer {
         // doesn't read every folder and hold every listing in memory at once.
         app.on_active_changed();
         app
+    }
+
+    /// Starts or stops folder-size indexing while the app runs ("Calculate folder sizes" in Settings).
+    pub(crate) fn set_folder_sizes(&mut self, on: bool) {
+        if on == self.indexer.is_some() {
+            return;
+        }
+        if on {
+            let ix = Indexer::new(self.ui.clone(), self.idx_tx.clone(), &self.index_dir, index_limit_mb(&self.settings));
+            self.watcher = DirWatcher::new(self.ui.clone(), ix.change_sink());
+            self.indexer = Some(ix);
+        } else {
+            self.watcher = DirWatcher::ui_only(self.ui.clone());
+            if let Some(ix) = self.indexer.take() {
+                // Make the last writes permanent; dropping the indexer then cancels the scans
+                // and retires the live updater.
+                ix.save_if_dirty(&self.index_dir, true);
+            }
+            // Sizes that were still on their way no longer belong to anything.
+            while self.idx_rx.try_recv().is_ok() {}
+            for t in &mut self.tabs {
+                for e in t.entries.iter_mut().filter(|e| e.is_dir) {
+                    e.dir_size = None;
+                }
+            }
+        }
+        self.index_sig = None;
+        // The new watcher doesn't know any folder yet: this points it at the active one.
+        self.on_active_changed();
+        if on {
+            self.start_indexing(true);
+        }
     }
 
     pub(crate) fn is_maximized(ctx: &egui::Context) -> bool {

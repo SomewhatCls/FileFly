@@ -19,6 +19,7 @@ pub(crate) fn tab_body(
     has_peazip: bool,
     actions: &mut Vec<Action>,
     sp: Option<&mut SettingsPage>,
+    has_scanner: bool,
 ) {
     let tab_id = tab.id;
     if tab.settings {
@@ -71,7 +72,7 @@ pub(crate) fn tab_body(
             .max_rect(inner),
         |ui| {
             table_ui(
-                ui, m, pal, tab, cols, cut, can_paste, has_peazip, rect, TableMode::Explorer, actions,
+                ui, m, pal, tab, cols, cut, can_paste, has_peazip, rect, TableMode::Explorer, actions, has_scanner,
             );
         },
     );
@@ -165,7 +166,7 @@ impl Explorer {
                 &self.settings,
                 self.font_edit,
                 self.index_dir.display().to_string(),
-                self.indexer.len(),
+                self.indexer.as_ref().map_or(0, |ix| ix.len()),
                 self.default_on,
                 self.default_error.clone(),
                 self.update.clone(),
@@ -206,6 +207,7 @@ impl Explorer {
                         has_peazip,
                         actions,
                         sp.as_mut(),
+                        if self.indexer.is_some(){true}else {false},
                     );
                 });
             }
@@ -312,6 +314,7 @@ impl Explorer {
                                     has_peazip,
                                     actions,
                                     sp.as_mut(),
+                                    self.indexer.is_some(),
                                 );
                             },
                         );

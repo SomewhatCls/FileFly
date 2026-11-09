@@ -135,6 +135,12 @@ impl Explorer {
     /// Starts the folder-size scan for every visible tab. A scan for exactly the same set of
     /// folders is not restarted unless `force` is set (restarting throws away the work already done).
     pub(crate) fn start_indexing(&mut self, force: bool) {
+        // Prevent issues for compilation regarding the option state of the indexer.
+        let Some(indexer) = self.indexer.as_ref() else {
+            // Turning sizes back on always starts a fresh scan.
+            self.index_sig = None;
+            return;
+        };
         let mut paths = Vec::new();
         let mut acc = 0u64;
         let mut missing = false; // some visible folder still has no size
@@ -150,7 +156,7 @@ impl Explorer {
             }
             for e in tab.entries.iter_mut().filter(|e| e.is_dir && !e.is_link) {
                 if e.dir_size.is_none() {
-                    e.dir_size = self.indexer.lookup(&e.path);
+                    e.dir_size = indexer.lookup(&e.path);
                 }
                 if e.dir_size.is_none() {
                     missing = true;
@@ -165,11 +171,11 @@ impl Explorer {
         // The same set of folders is only skipped while a scan for it is still running, or when
         // every row already has a size. Otherwise (e.g. a folder was invalidated by the watcher and
         // its listing reloaded) rows would sit on "calculating" forever with no scan to fill them.
-        if !force && self.index_sig == Some(sig) && (self.indexer.is_running() || !missing) {
+        if !force && self.index_sig == Some(sig) && (indexer.is_running() || !missing) {
             return;
         }
         self.index_sig = Some(sig);
-        self.indexer.start(paths); // also cancels a scan that belonged to the previous folder
+        indexer.start(paths); // also cancels a scan that belonged to the previous folder
     }
 
     /// Rebuilds the Quick access list from the settings and tells the icon cache which folders

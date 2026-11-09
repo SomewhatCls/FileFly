@@ -55,7 +55,7 @@ impl Explorer {
         };
         let (m, pal) = (self.m, self.pal);
         let fmt = self.settings.date_format;
-        let cached = self.indexer.lookup(&p.path);
+        let cached = self.indexer.as_ref().and_then(|ix| ix.lookup(&p.path));
         let mut readonly = p.readonly;
         let (mut copy_path, mut show_in_folder) = (false, false);
         let closed = dialog_shell(

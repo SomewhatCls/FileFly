@@ -214,6 +214,7 @@ pub(crate) fn table_ui(
     hit: Rect,
     mode: TableMode,
     actions: &mut Vec<Action>,
+    has_scanner: bool,
 ) {
     let Tab {
         id: tab_id,
@@ -776,7 +777,7 @@ pub(crate) fn table_ui(
                 }
 
                 // A folder whose size is still being summed: show a spinner next to the running total.
-                let scanning = e.is_dir && !e.is_link && !searching_now
+                let scanning = has_scanner && e.is_dir && !e.is_link && !searching_now
                     && (e.dir_size.is_none() || e.dir_partial);
                 let size_text = if e.is_dir {
                     match (e.dir_size, e.is_link) {
@@ -818,10 +819,7 @@ pub(crate) fn table_ui(
                             .size()
                             .x;
                         let sx = (cell.right() - tw - d * 0.5 - m.pad * 0.5).max(cell.left() + d * 0.5);
-                        egui::Spinner::new()
-                            .size(d)
-                            .color(pal.accent)
-                            .paint_at(ui, Rect::from_center_size(pos2(sx, cell.center().y), vec2(d, d)));
+                        paint_busy(ui, pos2(sx, cell.center().y), d, pal.accent);
                     }
                     cx += cw;
                 }

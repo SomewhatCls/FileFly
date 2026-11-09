@@ -809,7 +809,7 @@ fn picker_search(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, 
 /// The list of folders (and `.ico` files in icon mode, or search hits). It is the explorer's own
 /// file table (`table_ui`, picker mode): click selects, double click opens a folder, and a folder
 /// made with "New folder" is named in place.
-fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, input: &mut PickerInput) {
+fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, input: &mut PickerInput, has_scanner: bool) {
     p.sync_search_text();
     if p.list.view_dirty {
         rebuild_view(&mut p.list);
@@ -829,6 +829,7 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, in
         hit,
         TableMode::Picker { can_make },
         &mut actions,
+        has_scanner
     );
     // The table reports what happened as `Action`s; the picker only cares about a few of them.
     for a in actions {
@@ -1159,7 +1160,7 @@ impl Explorer {
             egui::CentralPanel::default()
                 .frame(layer_frame(&pal, 0, m.pad, m.pad, m.pad * 0.4, m.pad * 0.4, false))
                 .show(ui, |ui| {
-                    folder_list(ui, &m, &pal, &mut p, &mut input);
+                    folder_list(ui, &m, &pal, &mut p, &mut input, self.indexer.is_some());
                 });
 
             // ---- keyboard: the explorer's shortcuts (see `shortcuts.rs`), for this window's own input

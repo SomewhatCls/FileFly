@@ -110,7 +110,7 @@ impl Indexer {
     }
 
     /// The collection point for file-system events. Create the watcher with
-    /// `DirWatcher::with_sink(ctx, indexer.change_sink())` to get live size updates.
+    /// `DirWatcher::new(ctx, indexer.change_sink())` to get live size updates.
     pub fn change_sink(&self) -> Arc<ChangeSink> {
         Arc::clone(&self.sink)
     }

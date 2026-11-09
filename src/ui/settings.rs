@@ -471,59 +471,72 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
     // ---------------------------------------------------------------- Folder sizes
     fl_section(ui, m, pal, "Folder sizes");
     fl_card(ui, m, pal, |ui| {
-        let loc = format!("Index location: {}", sp.index_dir);
-        fl_row(ui, m, pal, "Index location", Some(loc.as_str()), |ui| {
-            if secondary_button(ui, m, "Choose location…").clicked() {
-                sp.choose = true;
-            }
-        });
-        fl_divider(ui, m, pal);
-        let cached = format!(
-            "{} folders cached. Changes are picked up automatically while the app is open.",
-            sp.cache_len
-        );
-        fl_row(ui, m, pal, "Rescan all folders", Some(cached.as_str()), |ui| {
-            if secondary_button(ui, m, "Rescan all").clicked() {
-                sp.rescan = true;
-            }
-        });
-        fl_divider(ui, m, pal);
         fl_row(
             ui,
             m,
             pal,
-            "Delete index",
-            Some("Removes all saved folder sizes from memory and disk; the folders on screen are measured again."),
-            |ui| {
-                if danger_button(ui, m, "Delete index").clicked() {
-                    sp.delete_index = true;
-                }
-            },
+            "Calculate folder sizes",
+            Some("Shows folder sizes in the size row. Activating this setting will increase CPU load."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.calculate_folder_sizes),
         );
-        fl_divider(ui, m, pal);
-        fl_row(ui, m, pal, "Cache size (Experimental)",  Some("Sets the maximum ram allowed for caching folder sizes.\n Default: 64MB"), |ui| {
-            // The whole UI is sized from this value, so applying it mid-drag would move the slider
-            // under the cursor. Preview in the handle, apply on release.
-            ui.add_enabled_ui(!sp.s.unlimited_cache, |ui| {
-                ui.add(
-                    egui::Slider::new(&mut sp.s.index_ram, 1_usize..=10_000_usize)
-                        .logarithmic(true)
-                        .suffix("MB"),
-                );
-                if sp.s.index_ram != 64_usize && ui.button("⟲").on_hover_text("Reset to default").clicked() {
-                    sp.s.index_ram = 64_usize;
+        // The rows below only do something while the indexer is turned on.
+        let sizes_on = sp.s.calculate_folder_sizes;
+        ui.add_enabled_ui(sizes_on, |ui| {
+            fl_divider(ui, m, pal);
+            let loc = format!("Index location: {}", sp.index_dir);
+            fl_row(ui, m, pal, "Index location", Some(loc.as_str()), |ui| {
+                if secondary_button(ui, m, "Choose location…").clicked() {
+                    sp.choose = true;
                 }
             });
+            fl_divider(ui, m, pal);
+            let cached = format!(
+                "{} folders cached. Changes are picked up automatically while the app is open.",
+                sp.cache_len
+            );
+            fl_row(ui, m, pal, "Rescan all folders", Some(cached.as_str()), |ui| {
+                if secondary_button(ui, m, "Rescan all").clicked() {
+                    sp.rescan = true;
+                }
+            });
+            fl_divider(ui, m, pal);
+            fl_row(
+                ui,
+                m,
+                pal,
+                "Delete index",
+                Some("Removes all saved folder sizes from memory and disk; the folders on screen are measured again."),
+                |ui| {
+                    if danger_button(ui, m, "Delete index").clicked() {
+                        sp.delete_index = true;
+                    }
+                },
+            );
+            fl_divider(ui, m, pal);
+            fl_row(ui, m, pal, "Cache size (Experimental)",  Some("Sets the maximum ram allowed for caching folder sizes.\n Default: 64MB"), |ui| {
+                // The whole UI is sized from this value, so applying it mid-drag would move the slider
+                // under the cursor. Preview in the handle, apply on release.
+                ui.add_enabled_ui(!sp.s.unlimited_cache, |ui| {
+                    ui.add(
+                        egui::Slider::new(&mut sp.s.index_ram, 1_usize..=10_000_usize)
+                            .logarithmic(true)
+                            .suffix("MB"),
+                    );
+                    if sp.s.index_ram != 64_usize && ui.button("⟲").on_hover_text("Reset to default").clicked() {
+                        sp.s.index_ram = 64_usize;
+                    }
+                });
+            });
+            fl_divider(ui, m, pal);
+            fl_row(
+                ui,
+                m,
+                pal,
+                "Unlimited cache size",
+                Some("Removes the above RAM-limit for loading the cached folder sizes. It is recommended to keep this setting turned on."),
+                |ui| fl_switch(ui, m, pal, &mut sp.s.unlimited_cache),
+            );
         });
-        fl_divider(ui, m, pal);
-        fl_row(
-            ui,
-            m,
-            pal,
-            "Unlimited cache size",
-            Some("Removes the above RAM-limit for loading the cached folder sizes. It is recommended to keep this setting turned on."),
-            |ui| fl_switch(ui, m, pal, &mut sp.s.unlimited_cache),
-        );
     });
 
     // ---------------------------------------------------------------- Extras
@@ -648,6 +661,7 @@ impl Explorer {
             st.search_threads = s.search_threads;
             st.index_ram = s.index_ram;
             st.unlimited_cache = s.unlimited_cache;
+            st.calculate_folder_sizes = s.calculate_folder_sizes;
             st.git_activated = s.git_activated;
             st.compact = s.compact;
             self.settings_dirty = true;
@@ -672,6 +686,9 @@ impl Explorer {
             if s.network_drives != old.network_drives {
                 self.refresh_drives();
             }
+            if s.calculate_folder_sizes != old.calculate_folder_sizes {
+                self.set_folder_sizes(s.calculate_folder_sizes);
+            }
         }
         if self.settings_dirty && !ui.input(|i| i.pointer.any_down()) {
             save_settings(&self.settings);
@@ -689,11 +706,15 @@ impl Explorer {
             save_settings(&self.settings);
         }
         if rescan {
-            self.indexer.clear();
+            if let Some(ix) = &self.indexer {
+                ix.clear();
+            }
             self.start_indexing(true);
         }
         if delete_index {
-            self.indexer.delete_index(&self.index_dir);
+            if let Some(ix) = &self.indexer {
+                ix.delete_index(&self.index_dir);
+            }
             for t in &mut self.tabs {
                 for e in t.entries.iter_mut().filter(|e| e.is_dir) {
                     e.dir_size = None;
@@ -705,8 +726,11 @@ impl Explorer {
             if let Some(p) = rfd::FileDialog::new().set_directory(&self.index_dir).pick_folder() {
                 self.index_dir = p.clone();
                 self.settings.index_dir = Some(p.clone());
-                self.indexer.set_dir(&p);
-                self.start_indexing(true);
+                // Without the indexer only the location is remembered; it is used when it is turned on.
+                if let Some(ix) = self.indexer.as_mut() {
+                    ix.set_dir(&p);
+                    self.start_indexing(true);
+                }
                 save_settings(&self.settings);
             }
         }

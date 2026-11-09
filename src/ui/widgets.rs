@@ -488,3 +488,29 @@ pub(crate) fn danger_button(ui: &mut Ui, m: &Metrics, text: &str) -> egui::Respo
             .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
     )
 }
+
+/// Stepped busy indicator: 8 ticks with a fading tail, advancing 10x per second.
+/// Unlike `egui::Spinner` it only asks for a repaint when the next step is due.
+pub(crate) fn paint_busy(ui: &Ui, center: egui::Pos2, d: f32, color: Color32) {
+    use std::f32::consts::{FRAC_PI_2, TAU};
+    const TICKS: usize = 8;
+    const STEP_MS: u64 = 100;
+
+    let now_ms = (ui.input(|i| i.time) * 1000.0) as u64;
+    let head = (now_ms / STEP_MS) as usize % TICKS;
+    let (r_in, r_out) = (d * 0.25, d * 0.5);
+    let width = (d * 0.12).max(1.0);
+
+    for k in 0..TICKS {
+        let behind = (head + TICKS - k) % TICKS; // 0 = brightest tick
+        let a = 0.15 + 0.85 * (1.0 - behind as f32 / TICKS as f32);
+        let ang = k as f32 / TICKS as f32 * TAU - FRAC_PI_2;
+        let dir = vec2(ang.cos(), ang.sin());
+        ui.painter().line_segment(
+            [center + dir * r_in, center + dir * r_out],
+            Stroke::new(width, color.gamma_multiply(a)),
+        );
+    }
+    // Wake up exactly when the next step is due, not every frame.
+    ui.ctx().request_repaint_after(Duration::from_millis(STEP_MS - now_ms % STEP_MS));
+}

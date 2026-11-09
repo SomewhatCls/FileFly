@@ -208,7 +208,7 @@ impl Explorer {
                 }
                 match fs::rename(&p, &dest) {
                     Ok(()) => {
-                        self.indexer.invalidate(&p);
+                        if let Some(ix) = &self.indexer { ix.invalidate(&p); }
                         self.tabs[ti].select_only(dest);
                         self.load_tab(ti);
                         self.tabs[ti].search_query.clear(); // rerun an active search
@@ -218,7 +218,7 @@ impl Explorer {
                     // already elevated, "denied" is a real refusal and is reported as usual.
                     Err(e) if is_denied_io(&e) && !is_elevated() => {
                         let op = AdminOp::Rename { from: p.clone(), to: dest.clone() };
-                        self.indexer.invalidate(&p);
+                        if let Some(ix) = &self.indexer { ix.invalidate(&p); }
                         self.tabs[ti].select_only(dest);
                         self.run_job("Waiting for administrator approval…", move || run_elevated(&op));
                     }

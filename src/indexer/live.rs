@@ -102,7 +102,7 @@ impl SinkState {
 }
 
 /// Thread-safe collection point between the file watcher (producer) and the updater (consumer).
-/// Get it from `Indexer::change_sink()` and hand it to `DirWatcher::with_sink`.
+/// Get it from `Indexer::change_sink()` and hand it to `DirWatcher::new`.
 pub struct ChangeSink {
     state: Mutex<SinkState>,
     cv: Condvar,
