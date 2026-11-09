@@ -1,6 +1,8 @@
 //! `Indexer`: the object the rest of the app talks to. It owns the store, the scan workers and the
 //! live updater, and keeps the public API of the old single-file indexer.
 
+//TODO: The Indexer currently rescans the directory whenever it is finished. FIX THIS!
+
 use super::{
     hot::HotFiles,
     live::{self, ChangeSink, LiveCtx},
