@@ -196,6 +196,9 @@ impl Explorer {
                         self.new_tab(first.clone());
                     }
                 }
+                AppMsg::ExtractStaged { tab, plan, stagings, errors, open } => {
+                    self.extract_staged(tab, plan, stagings, errors, open);
+                }
                 AppMsg::AdminOffer { msg, retry } => self.admin_retry = Some((msg, retry)),
                 AppMsg::Stats(seq, stats) => {
                     if let Some(p) = &mut self.props {
@@ -223,6 +226,8 @@ impl Explorer {
                 }
             }
         }
+
+        self.pump_staging();
 
         while let Ok(msg) = self.idx_rx.try_recv() {
             // `Partial` is a running total of a scan that is still going; `Size` is the final value.

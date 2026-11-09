@@ -21,14 +21,10 @@ static PICKER_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// What the chosen folder is for.
 pub(crate) enum PickFor {
-    /// "Extract to…": the zips are unpacked into the chosen folder. With `subfolder` every zip gets
-    /// a new folder of its own inside it (`name` is that folder's name, only asked for when there
-    /// is a single zip); without it the files go straight into the chosen folder.
+    /// "Extract to…": the zips are unpacked into the chosen folder.
     Extract {
         zips: Vec<PathBuf>,
-        name: String,
         show: bool,
-        subfolder: bool,
     },
     /// "Change folder icon…": pick an `.ico` file for `folder` (files are listed next to folders).
     Icon { folder: PathBuf },
@@ -249,13 +245,6 @@ impl FolderPicker {
     fn blocker(&self) -> Option<String> {
         if archive_of(self.target()).is_some() {
             return Some("An opened zip archive is read-only. Choose a folder outside of it.".to_owned());
-        }
-        if let PickFor::Extract { zips, name, subfolder, .. } = &self.purpose {
-            if *subfolder && zips.len() == 1 {
-                if let Some(why) = name_problem(name) {
-                    return Some(why.to_owned());
-                }
-            }
         }
         None
     }
@@ -871,14 +860,7 @@ impl Explorer {
         };
         // A zip inside an opened zip lives in the temporary cache: start next to the outer zip.
         let start = folder_outside(parent);
-        let name = match zips.as_slice() {
-            [one] => one
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            _ => String::new(),
-        };
-        let purpose = PickFor::Extract { zips, name, show: true, subfolder: false };
+        let purpose = PickFor::Extract { zips, show: true };
         self.picker = Some(FolderPicker::new(
             purpose,
             self.tabs[ti].id,
@@ -1321,20 +1303,9 @@ impl Explorer {
                     self.set_folder_icon(&folder, Some(icon));
                 }
             }
-            PickFor::Extract { zips, name, show, subfolder } => {
-                let jobs: Vec<(PathBuf, PathBuf)> = if !subfolder {
-                    // Straight into the chosen folder.
-                    zips.into_iter().map(|z| (z, target.clone())).collect()
-                } else if zips.len() == 1 {
-                    vec![(zips[0].clone(), unique_copy_name(&target.join(name.trim())))]
-                } else {
-                    zips.into_iter()
-                        .filter_map(|z| {
-                            let dest = unique_copy_name(&target.join(z.file_stem()?));
-                            Some((z, dest))
-                        })
-                        .collect()
-                };
+            PickFor::Extract { zips, show } => {
+                let jobs: Vec<(PathBuf, PathBuf)> =
+                    zips.into_iter().map(|z| (z, target.clone())).collect();
                 self.run_extract(ti, jobs, show);
             }
         }

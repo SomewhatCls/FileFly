@@ -119,6 +119,10 @@ pub(crate) struct Explorer {
     /// This stores which entry icons are currently being probed, to prevent
     /// threads from probing the same ones.
     pub(crate) probed_icons: HashSet<PathBuf>,
+
+    /// Holds staged files for extract operations.
+    pub(crate) extract_staging: Vec<PathBuf>,
+    pub(crate) deferred_extracts: Vec<PastePlan>,
 }
 
 /// The RAM cache limit handed to the `Indexer` (0 = unlimited).
@@ -279,6 +283,8 @@ impl Explorer {
             sidebar_collapsed: false,
             sidebar_width: None,
             probed_icons: HashSet::new(),
+            extract_staging: Vec::new(),
+            deferred_extracts: Vec::new(),
         };
         // Independent of the tabs, so it also applies when FileFly is started on a given folder.
         app.sidebar_width = app.settings.session.sidebar_width;

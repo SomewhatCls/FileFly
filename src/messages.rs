@@ -37,6 +37,17 @@ pub(crate) enum AppMsg {
         rename: bool,
         open: bool,
     },
+    /// "Extract to…": the zips were unpacked into staging folders inside their target folders and
+    /// the move of their contents into the targets was planned (see `Explorer::run_extract`).
+    /// Name clashes are in `plan.todo` and get the same question dialog as a paste.
+    ExtractStaged {
+        tab: u64,
+        plan: PastePlan,
+        stagings: Vec<PathBuf>,
+        errors: Vec<String>,
+        /// Folder to show in a new tab ("Show extracted files when complete").
+        open: Option<PathBuf>,
+    },
     /// The "Check for updates" request finished (None = already up to date).
     UpdateChecked(Result<Option<UpdateInfo>, String>),
     /// A .lnk file was resolved (see `shortcut.rs`).
