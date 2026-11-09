@@ -122,6 +122,8 @@ pub(crate) struct Explorer {
 
     /// Holds staged files for extract operations.
     pub(crate) extract_staging: Vec<PathBuf>,
+    /// Holds staged files whose extraction was deferred because the target folder holds
+    /// files with the same name.
     pub(crate) deferred_extracts: Vec<PastePlan>,
 }
 
