@@ -491,15 +491,15 @@ pub(crate) fn danger_button(ui: &mut Ui, m: &Metrics, text: &str) -> egui::Respo
 
 /// Stepped busy indicator: 8 ticks with a fading tail, advancing 10x per second.
 /// Unlike `egui::Spinner` it only asks for a repaint when the next step is due.
-pub(crate) fn paint_busy(ui: &Ui, center: egui::Pos2, d: f32, color: Color32) {
+pub(crate) fn paint_spinner(ui: &Ui, center: egui::Pos2, diameter: f32, color: Color32) {
     use std::f32::consts::{FRAC_PI_2, TAU};
     const TICKS: usize = 8;
     const STEP_MS: u64 = 100;
 
     let now_ms = (ui.input(|i| i.time) * 1000.0) as u64;
     let head = (now_ms / STEP_MS) as usize % TICKS;
-    let (r_in, r_out) = (d * 0.25, d * 0.5);
-    let width = (d * 0.12).max(1.0);
+    let (r_in, r_out) = (diameter * 0.25, diameter * 0.5);
+    let width = (diameter * 0.12).max(1.0);
 
     for k in 0..TICKS {
         let behind = (head + TICKS - k) % TICKS; // 0 = brightest tick

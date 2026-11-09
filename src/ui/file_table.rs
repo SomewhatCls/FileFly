@@ -812,14 +812,14 @@ pub(crate) fn table_ui(
                     // Drawing the spinner shown while the size is being calculated/updated
                     paint_text(ui, cell, text, FontId::proportional(m.font), color, ci == 2);
                     if ci == 2 && scanning {
-                        let d = m.font * 0.85;
+                        let diameter = m.font * 0.85;
                         let tw = ui
                             .painter()
                             .layout_no_wrap(text.to_owned(), FontId::proportional(m.font), color)
                             .size()
                             .x;
-                        let sx = (cell.right() - tw - d * 0.5 - m.pad * 0.5).max(cell.left() + d * 0.5);
-                        paint_busy(ui, pos2(sx, cell.center().y), d, pal.accent);
+                        let sx = (cell.right() - tw - diameter * 0.5 - m.pad * 0.5).max(cell.left() + diameter * 0.5);
+                        paint_spinner(ui, pos2(sx, cell.center().y), diameter, pal.accent);
                     }
                     cx += cw;
                 }
