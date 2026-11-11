@@ -23,7 +23,7 @@ use std::{
     },
 };
 
-/// Files of the earlier index formats; removed at startup (including the oversized redb file).
+/// Files of the earlier index formats
 const OLD_FILES: [&str; 3] = ["folder_sizes.json", "folder_sizes.bin", "folder_sizes.redb"];
 
 /// Counts a live scan worker: incremented before the thread is spawned, decremented when the

@@ -82,7 +82,7 @@ impl Explorer {
                                 if fs::read_dir(&t.dir).is_err_and(|x| is_denied_io(&x)) {
                                     self.admin_retry = Some((e.clone(), AdminRetry::OpenFolder(t.dir.clone())));
                                 }
-                                t.error = Some(e);
+                                t.error(e);
                             }
                         }
                         if visible_ids.contains(&t.id) {
@@ -132,7 +132,7 @@ impl Explorer {
                     if let Err(e) = result {
                         match self.tabs[active].trash.as_mut() {
                             Some(tr) => tr.error = Some(e),
-                            None => self.tabs[active].error = Some(e),
+                            None => self.tabs[active].error(e),
                         }
                     }
                     // Refresh every pane on screen: a paste may have landed in a neighbouring pane.
@@ -152,7 +152,7 @@ impl Explorer {
                     if let Some(ti) = self.tabs.iter().position(|t| t.id == tab) {
                         match result {
                             Ok(()) => self.navigate(ti, target),
-                            Err(e) => self.tabs[ti].error = Some(e),
+                            Err(e) => self.tabs[ti].error(e),
                         }
                     }
                 }
@@ -168,7 +168,7 @@ impl Explorer {
                     if let (Some(ti), Some(first)) = (inside_zip, created.first()) {
                         self.navigate(ti, first.clone());
                         if !errors.is_empty() {
-                            self.tabs[ti].error = Some(errors.join("\n"));
+                            self.tabs[ti].error(errors.join("\n"));
                         }
                         continue;
                     }
@@ -189,7 +189,7 @@ impl Explorer {
                     // (after load_tab, which clears the tab's error)
                     if !errors.is_empty() {
                         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
-                            t.error = Some(errors.join("\n"));
+                            t.error(errors.join("\n"));
                         }
                     }
                     if let (true, Some(first)) = (open, created.first()) {
@@ -207,7 +207,7 @@ impl Explorer {
                         }
                     }
                 }
-                AppMsg::UpdateChecked(r) => self.update_checked(r),
+                AppMsg::UpdateChecked { announce, result } => self.update_checked(announce, result),
                 AppMsg::ShortcutTarget { tab, result } => self.shortcut_resolved(tab, result),
                 AppMsg::QuickKind { path, is_dir } => {
                     self.probed_icons.remove(&path);

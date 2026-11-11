@@ -9,6 +9,38 @@ pub(crate) struct RenameState {
     pub(crate) is_dir: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum NoticeKind {
+    Error,
+    Info,
+}
+
+#[derive(Clone)]
+pub(crate) struct NoticeButton {
+    pub(crate) label: String,
+    pub(crate) action: Action,
+}
+
+#[derive(Clone)]
+pub(crate) struct Notice {
+    pub(crate) kind: NoticeKind,
+    pub(crate) text: String,
+    pub(crate) button: Option<NoticeButton>,
+}
+
+impl Notice {
+    pub(crate) fn error(text: impl Into<String>) -> Self {
+        Self { kind: NoticeKind::Error, text: text.into(), button: None }
+    }
+    pub(crate) fn info(text: impl Into<String>) -> Self {
+        Self { kind: NoticeKind::Info, text: text.into(), button: None }
+    }
+    pub(crate) fn with_button(mut self, label: impl Into<String>, action: Action) -> Self {
+        self.button = Some(NoticeButton { label: label.into(), action });
+        self
+    }
+}
+
 pub(crate) struct Tab {
     pub(crate) id: u64,
     pub(crate) dir: PathBuf,
@@ -22,7 +54,7 @@ pub(crate) struct Tab {
     pub(crate) selected: HashSet<PathBuf>,
     /// Last clicked row; start of shift-ranges and origin of keyboard navigation.
     pub(crate) anchor: Option<PathBuf>,
-    pub(crate) error: Option<String>,
+    pub(crate) notice: Option<Notice>,
     pub(crate) git_error: Option<String>,
     pub(crate) loading: bool,
     pub(crate) load_gen: u64,
@@ -72,7 +104,7 @@ impl Tab {
             search: String::new(),
             selected: HashSet::new(),
             anchor: None,
-            error: None,
+            notice: None,
             git_error: None,
             loading: false,
             load_gen: 0,
@@ -92,6 +124,27 @@ impl Tab {
             chosen_search_scope: SearchScope::CurrentDir,
             current_search_scope: SearchScope::CurrentDir,
         }
+    }
+
+    /// Declares the notification this tab should show.
+    /// This function is only public for my update button call.
+    /// which necessarily needs to pass a Notice.with_button().
+    /// A more elegant way to handle this would be by rewriting info
+    /// and properly demanding Actions for all buttons in the notification bar.
+    pub(crate) fn notify(&mut self, n: Notice) {
+        let has_error = matches!(&self.notice, Some(c) if c.kind == NoticeKind::Error);
+        if has_error && n.kind == NoticeKind::Info {
+            return;
+        }
+        self.notice = Some(n);
+    }
+
+    /// Turns the given string into a notice.
+    pub(crate) fn error(&mut self, text: impl Into<String>) {
+        self.notify(Notice::error(text));
+    }
+    pub(crate) fn info(&mut self, text: impl Into<String>) {
+        self.notify(Notice::info(text));
     }
 
     /// The folder as the user should see it: inside an opened zip that is "<zip>\\inner\\path"

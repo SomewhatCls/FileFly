@@ -160,7 +160,7 @@ impl Explorer {
         self.extract_staging.extend(stagings);
         if !errors.is_empty() {
             if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
-                t.error = Some(errors.join("\n"));
+                t.error(errors.join("\n"));
             }
         }
         if let Some(dir) = open {

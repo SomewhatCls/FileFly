@@ -60,7 +60,7 @@ impl Explorer {
                 self.apply(Action::OpenContaining(target));
             }
             Err(e) => {
-                self.tabs[ti].error = Some(format!("Could not open the shortcut's location: {e}."));
+                self.tabs[ti].error(format!("Could not open the shortcut's location: {e}."));
             }
         }
     }

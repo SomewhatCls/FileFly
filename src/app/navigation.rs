@@ -8,7 +8,7 @@ impl Explorer {
         let tab = &mut self.tabs[ti];
         tab.load_gen += 1;
         tab.loading = true;
-        tab.error = None;
+        tab.notice = None;
         let (id, seq, dir) = (tab.id, tab.load_gen, tab.dir.clone());
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
@@ -41,7 +41,7 @@ impl Explorer {
         let path = match dunce::canonicalize(&path) {
             Ok(p) if p.is_dir() => clean_path(&p), // no \\?\ / \\?\UNC\ prefix (breaks cargo, cmd, ...)
             Ok(_) => {
-                self.tabs[ti].error = Some("That path is not a folder.".to_owned());
+                self.tabs[ti].error("That path is not a folder.".to_owned());
                 return;
             }
             Err(e) => {
@@ -49,7 +49,7 @@ impl Explorer {
                 if is_denied_io(&e) {
                     self.admin_retry = Some((msg.clone(), AdminRetry::OpenFolder(path.clone())));
                 }
-                self.tabs[ti].error = Some(msg);
+                self.tabs[ti].error(msg);
                 return;
             }
         };
@@ -268,10 +268,10 @@ impl Explorer {
                     if needs_elevation(&e) {
                         self.admin_retry = Some((msg.clone(), AdminRetry::RunFile(path.to_path_buf())));
                     }
-                    self.tabs[self.active].error = Some(msg);
+                    self.tabs[self.active].error(msg);
                 }
             }
-            Err(e) => self.tabs[self.active].error = Some(format!("Could not access item: {e}")),
+            Err(e) => self.tabs[self.active].error(format!("Could not access item: {e}")),
         }
     }
 

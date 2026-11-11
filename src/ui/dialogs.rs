@@ -1,4 +1,4 @@
-//! Confirmation and conflict dialogs.
+//! Popup dialogue Windows.
 
 use crate::prelude::*;
 

@@ -277,7 +277,7 @@ impl FolderPicker {
         l.view.clear();
         l.view_dirty = true;
         l.rename = None;
-        l.error = None;
+        l.notice = None;
         l.loading = true;
         l.clear_selection();
         let (tx, rx) = mpsc::channel();
@@ -333,7 +333,7 @@ impl FolderPicker {
                     self.loading = None;
                 }
                 Ok(Err(e)) => {
-                    self.list.error = Some(e.clone());
+                    self.list.error(e.clone());
                     self.list_error = Some(e);
                     self.list.loading = false;
                     self.loading = None;

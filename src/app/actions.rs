@@ -26,7 +26,7 @@ impl Explorer {
         };
         if touches_archive {
             self.tabs[ti].rename = None;
-            self.tabs[ti].error = Some(
+            self.tabs[ti].error(
                 "A zip archive is read-only here. Extract it (right-click → Extract all) to change its contents."
                     .to_owned(),
             );
@@ -75,7 +75,7 @@ impl Explorer {
             }
             Action::OpenTerminal(dir) => {
                 if let Err(e) = open_terminal(&dir) {
-                    self.tabs[ti].error = Some(format!("Could not open a terminal: {e}"));
+                    self.tabs[ti].error(format!("Could not open a terminal: {e}"));
                 }
             }
             Action::SwitchTab(i) => self.activate_tab(i),
@@ -190,8 +190,8 @@ impl Explorer {
                     return;
                 }
                 if new_name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
-                    self.tabs[ti].error = Some(
-                        "A name can't contain any of these characters: \\ / : * ? \" < > |".into(),
+                    self.tabs[ti].error(
+                        "A name can't contain any of these characters: \\ / : * ? \" < > |",
                     );
                     return;
                 }
@@ -202,8 +202,7 @@ impl Explorer {
                 if fs::symlink_metadata(&dest).is_ok()
                     && !p.as_os_str().eq_ignore_ascii_case(dest.as_os_str())
                 {
-                    self.tabs[ti].error =
-                        Some(format!("An item named “{new_name}” already exists here."));
+                    self.tabs[ti].error(format!("An item named “{new_name}” already exists here."));
                     return;
                 }
                 match fs::rename(&p, &dest) {
@@ -222,7 +221,7 @@ impl Explorer {
                         self.tabs[ti].select_only(dest);
                         self.run_job("Waiting for administrator approval…", move || run_elevated(&op));
                     }
-                    Err(e) => self.tabs[ti].error = Some(format!("Could not rename item: {e}")),
+                    Err(e) => self.tabs[ti].error(format!("Could not rename item: {e}")),
                 }
             }
             Action::Delete(p) => {
@@ -245,19 +244,19 @@ impl Explorer {
             }
             Action::RetryAsAdmin => {
                 let Some((_, retry)) = self.admin_retry.take() else { return };
-                self.tabs[ti].error = None;
+                self.tabs[ti].notice = None;
                 match retry {
                     AdminRetry::Op(op) => {
                         self.run_job("Waiting for administrator approval…", move || run_elevated(&op))
                     }
                     AdminRetry::OpenFolder(p) => {
                         if let Err(e) = open_folder_elevated(&p) {
-                            self.tabs[ti].error = Some(e);
+                            self.tabs[ti].error(e);
                         }
                     }
                     AdminRetry::RunFile(p) => {
                         if let Err(e) = run_file_elevated(&p) {
-                            self.tabs[ti].error = Some(e);
+                            self.tabs[ti].error(e);
                         }
                     }
                 }
@@ -266,12 +265,12 @@ impl Explorer {
             Action::ResetFolderIcon(p) => self.set_folder_icon(&p, None),
             Action::RunAsAdmin(p) => {
                 if let Err(e) = run_file_elevated(&p) {
-                    self.tabs[ti].error = Some(e);
+                    self.tabs[ti].error(e);
                 }
             }
             Action::OpenFolderAsAdmin(p) => {
                 if let Err(e) = open_folder_elevated(&p) {
-                    self.tabs[ti].error = Some(e);
+                    self.tabs[ti].error(e);
                 }
             }
             Action::NewFolder => {
@@ -287,7 +286,7 @@ impl Explorer {
                             let op = AdminOp::NewFolder { path: target.clone() };
                             self.admin_retry = Some((msg.clone(), AdminRetry::Op(op)));
                         }
-                        self.tabs[ti].error = Some(msg);
+                        self.tabs[ti].error(msg);
                     }
                 }
             }
@@ -308,7 +307,7 @@ impl Explorer {
                             self.admin_retry = Some((message.clone(), AdminRetry::Op(op)));
                         }
 
-                        self.tabs[ti].error = Some(message);
+                        self.tabs[ti].error(message);
                     }
                 }
             }
@@ -343,14 +342,14 @@ impl Explorer {
             Action::PeaOpen(p) => {
                 if let Some(exe) = &self.peazip {
                     if let Err(e) = open_with_peazip(exe, &p) {
-                        self.tabs[ti].error = Some(format!("Could not start PeaZip: {e}"));
+                        self.tabs[ti].error(format!("Could not start PeaZip: {e}"));
                     }
                 }
             }
             Action::PeaAdd(p) => {
                 if let Some(exe) = &self.peazip {
                     if let Err(e) = add_to_peazip(exe, &p) {
-                        self.tabs[ti].error = Some(format!("Could not start PeaZip: {e}"));
+                        self.tabs[ti].error(format!("Could not start PeaZip: {e}"));
                     }
                 }
             }
@@ -366,7 +365,7 @@ impl Explorer {
                 if trash_bin::SUPPORTED {
                     self.open_trash(ti);
                 } else if let Err(e) = open_recycle_bin() {
-                    self.tabs[ti].error = Some(format!("Could not open the Recycle Bin: {e}"));
+                    self.tabs[ti].error(format!("Could not open the Recycle Bin: {e}"));
                 }
             }
             Action::TrashRestoreSelected => {
@@ -452,7 +451,7 @@ impl Explorer {
                 tab.select_only(path);
                 tab.scroll_to = Some(i);
             }
-            Action::CheckForUpdate => self.check_for_update(),
+            Action::CheckForUpdate => self.check_for_update(false),
             Action::DownloadUpdate => self.open_update_download(),
         }
     }

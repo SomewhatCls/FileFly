@@ -121,6 +121,7 @@ pub(crate) struct Settings {
     pub(crate) folder_icons: HashMap<String, String>,
     /// Open tabs and split layout from the last session.
     pub(crate) session: Session,
+    pub(crate) startup_update_check: bool,
 }
 
 impl Default for Settings {
@@ -153,6 +154,7 @@ impl Default for Settings {
             maximized: false,
             folder_icons: HashMap::new(),
             transparency_effect: TransparencyEffect::Mica,
+            startup_update_check: false,
         }
     }
 }

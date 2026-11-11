@@ -187,7 +187,7 @@ impl Explorer {
                 continue; // moving an item onto itself is a no-op
             }
             if source.is_dir() && dir.starts_with(&source) {
-                self.tabs[self.active].error = Some(format!(
+                self.tabs[self.active].error(format!(
                     "Can't {} “{}” into itself or one of its subfolders.",
                     if cut { "move" } else { "copy" },
                     name.to_string_lossy()
@@ -206,7 +206,7 @@ impl Explorer {
                     plan.merged_dirs.extend(sub.merged_dirs);
                 }
                 Err(e) => {
-                    self.tabs[self.active].error = Some(format!("Can't read “{label}”: {e}"));
+                    self.tabs[self.active].error(format!("Can't read “{label}”: {e}"));
                 }
             }
         }

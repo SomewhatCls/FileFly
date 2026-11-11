@@ -78,19 +78,29 @@ fn fetch_latest() -> Result<Option<UpdateInfo>, String> {
 }
 
 impl Explorer {
-    pub(crate) fn check_for_update(&mut self) {
+    pub(crate) fn check_for_update(&mut self, announce: bool) {
         if self.update == UpdateState::Checking {
             return;
         }
         self.update = UpdateState::Checking;
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(AppMsg::UpdateChecked(fetch_latest()));
+            let _ = tx.send(AppMsg::UpdateChecked { announce, result: fetch_latest() });
             ui.request_repaint();
         });
     }
 
-    pub(crate) fn update_checked(&mut self, result: Result<Option<UpdateInfo>, String>) {
+    pub(crate) fn update_checked(
+        &mut self,
+        announce: bool,
+        result: Result<Option<UpdateInfo>, String>,
+    ) {
+        if let (true, Ok(Some(info))) = (announce, &result) {
+            self.tabs[self.active].notify(
+                Notice::info(format!("Version {} is available!", info.version))
+                    .with_button("Download", Action::DownloadUpdate),
+            );
+        }
         self.update = match result {
             Ok(None) => UpdateState::UpToDate,
             Ok(Some(info)) => UpdateState::Available(info),
@@ -99,11 +109,14 @@ impl Explorer {
     }
 
     pub(crate) fn open_update_download(&mut self) {
-        if let UpdateState::Available(info) = &self.update {
-            // Only hand GitHub links to the browser
-            if info.url.starts_with("https://github.com/") {
-                self.ui.open_url(egui::OpenUrl::new_tab(&info.url));
-            }
+        let UpdateState::Available(info) = &self.update else {
+            return;
+        };
+        // Only hand GitHub links to the browser
+        if info.url.starts_with("https://github.com/") {
+            self.ui.open_url(egui::OpenUrl::new_tab(&info.url));
+        } else {
+            self.tabs[self.active].error("Refusing to open a download link that isn't on github.com.");
         }
     }
 }

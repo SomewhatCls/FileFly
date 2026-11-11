@@ -230,7 +230,7 @@ pub(crate) fn table_ui(
         sort_col,
         sort_asc,
         view_dirty,
-        error,
+        notice,
         git_error,
         loading,
         search,
@@ -247,53 +247,67 @@ pub(crate) fn table_ui(
     };
     let avail = (ui.available_width() - m.pad * 0.5).max(100.0);
 
-    // ---- error bar (Fluent InfoBar)
-    if let Some(msg) = error.clone().or_else(|| git_error.clone()) {
-        let offer = ui.data(|d| d.get_temp::<u64>(Id::unique("admin_retry_tab"))) == Some(tab_id);
-        let btn_w = if offer { m.accessibility_scale * 150.0 } else { 0.0 };
+    // ---- Notification bar (errors in red, everything else in green)
+    let shown = notice
+        .clone()
+        .or_else(|| git_error.clone().map(Notice::error));
+    if let Some(n) = shown {
+        let is_err = n.kind == NoticeKind::Error;
+        let (fg, bg) = if is_err {
+            (pal.danger, pal.danger_bg)
+        } else {
+            (pal.success, pal.success_bg)
+        };
+        // "Try as administrator" only makes sense for errors.
+        let admin_offer = is_err
+            && ui.data(|d| d.get_temp::<u64>(Id::unique("admin_retry_tab"))) == Some(tab_id);
+        let button: Option<(String, Action)> = if admin_offer {
+            Some(("Try as administrator".to_owned(), Action::RetryAsAdmin))
+        } else {
+            n.button.as_ref().map(|b| (b.label.clone(), b.action.clone()))
+        };
+        let btn_w = button
+            .as_ref()
+            .map_or(0.0, |(label, _)| text_width(ui, label, m.font * 0.95) + m.pad * 2.0);
+
         let (r, _) = ui.allocate_exact_size(vec2(avail, m.row_h * 1.1), Sense::hover());
-        ui.painter()
-            .rect_filled(r, CornerRadius::same(m.radius), pal.danger_bg);
+        ui.painter().rect_filled(r, CornerRadius::same(m.radius), bg);
         let tr = Rect::from_min_max(
             r.min + vec2(m.pad, 0.0),
             r.max - vec2(m.pad * 3.0 + m.small_icon + btn_w, 0.0),
         );
-        paint_text(
-            ui,
-            tr,
-            &msg,
-            FontId::proportional(m.font),
-            pal.danger,
-            false,
-        );
+        paint_text(ui, tr, &n.text, FontId::proportional(m.font), fg, false);
         let cr = Rect::from_center_size(
             pos2(r.right() - m.pad - m.small_icon / 2.0, r.center().y),
             vec2(m.ctl_h * 0.8, m.ctl_h * 0.8),
         );
-        if offer {
+        if let Some((label, act)) = button {
             let right = r.right() - m.pad * 3.0 - m.small_icon;
             let br = Rect::from_min_max(
                 pos2(right - btn_w + m.pad, r.top() + m.row_h * 0.15),
                 pos2(right, r.bottom() - m.row_h * 0.15),
             );
-            let resp = ui.interact(br, Id::unique(("err_admin", tab_id)), Sense::click());
+            let resp = ui.interact(br, Id::unique(("notice_btn", tab_id)), Sense::click());
             hover_fill(ui, br, &resp, pal, m);
             ui.painter().text(
                 br.center(),
                 Align2::CENTER_CENTER,
-                "Try as administrator",
+                &label,
                 FontId::proportional(m.font * 0.95),
-                pal.danger,
+                fg,
             );
             if resp.clicked() {
-                actions.push(Action::RetryAsAdmin);
+                actions.push(act);
+                if !admin_offer {
+                    *notice = None; // e.g. clicking Download dismisses the update notice
+                }
             }
         }
-        let resp = ui.interact(cr, Id::unique(("err_close", tab_id)), Sense::click());
+        let resp = ui.interact(cr, Id::unique(("notice_close", tab_id)), Sense::click());
         hover_fill(ui, cr, &resp, pal, m);
-        draw_icon(ui, cr.center(), m.small_icon * 0.8, "close", pal.danger);
+        draw_icon(ui, cr.center(), m.small_icon * 0.8, "close", fg);
         if resp.clicked() {
-            *error = None;
+            *notice = None;
             *git_error = None;
         }
         ui.add_space(m.pad * 0.5);

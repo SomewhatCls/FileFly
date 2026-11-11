@@ -389,7 +389,7 @@ impl Explorer {
         if let Some(msg) = msg {
             let ti = self.active.min(self.tabs.len().saturating_sub(1));
             if let Some(t) = self.tabs.get_mut(ti) {
-                t.error = Some(msg);
+                t.error(msg);
             }
         }
         self.ui.request_repaint();

@@ -98,7 +98,6 @@ pub fn scan_with_progress(
 
     let Ok(rd) = fs::read_dir(root) else { return Some(0) };
     let mut stack = vec![Frame { path: root.to_path_buf(), rd, total: 0, stamp: root_stamp, exact: hot.pinned_name_in(root) }];
-    let mut counter = 0u32;
     let root_dev = fs::metadata(root).map(|m| dev_of(&m)).unwrap_or(0);
     // Time since last scan pause to limit system impact.
     let mut scan_slice = Instant::now();
@@ -113,7 +112,7 @@ pub fn scan_with_progress(
         }
 
         // Limiting the system load with intermittent sleeps.
-        if counter % 4096 == 0 && scan_slice.elapsed() >= Duration::from_millis(8) {
+        if scan_slice.elapsed() >= Duration::from_millis(8) {
             std::thread::sleep(Duration::from_millis(4));
             scan_slice = Instant::now();
             if last_report.elapsed() >= Duration::from_millis(100) {

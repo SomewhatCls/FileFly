@@ -49,12 +49,13 @@ pub(crate) enum AppMsg {
         open: Option<PathBuf>,
     },
     /// The "Check for updates" request finished (None = already up to date).
-    UpdateChecked(Result<Option<UpdateInfo>, String>),
+    UpdateChecked { announce: bool, result: Result<Option<UpdateInfo>, String> },
     /// A .lnk file was resolved (see `shortcut.rs`).
     ShortcutTarget { tab: u64, result: Result<PathBuf, String> },
     QuickKind { path: PathBuf, is_dir: Option<bool> },
 }
 
+#[derive(Clone)]
 pub(crate) enum Action {
     Navigate(PathBuf),
     NewTabAt(PathBuf),
