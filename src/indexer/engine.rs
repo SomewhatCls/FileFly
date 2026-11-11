@@ -8,13 +8,12 @@ use super::{
     hot::HotFiles,
     live::{self, ChangeSink, LiveCtx},
     model::{entries_for_mb, is_fresh, ns, now_secs, IndexMsg, PRUNE_SECS, WORKERS},
-    priority::lower_priority,
-    scan::scan_with_progress,
+    scan::scan_many,
     store::{self, Cache, Store},
 };
 use eframe::egui;
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -217,53 +216,47 @@ impl Indexer {
         if folders.is_empty() {
             return;
         }
-        // A small worker pool takes folders from a shared queue, so one huge folder (Windows,
-        // AppData, ...) no longer holds up every row behind it.
-        let workers = WORKERS.min(folders.len());
-        let queue = Arc::new(Mutex::new(folders.into_iter().collect::<VecDeque<_>>()));
-        for _ in 0..workers {
-            let queue = Arc::clone(&queue);
-            let cache = Arc::clone(&self.cache);
-            let generation = Arc::clone(&self.generation);
-            let dirty = Arc::clone(&self.cache_dirty);
-            let hot = Arc::clone(&self.hot);
-            let tx = self.tx.clone();
-            let ctx = self.ctx.clone();
-            self.live.fetch_add(1, Ordering::SeqCst);
-            let guard = Live(Arc::clone(&self.live));
-            std::thread::spawn(move || {
-                let _guard = guard;
-                lower_priority();
-                loop {
-                    if generation.load(Ordering::Relaxed) != my_gen {
-                        return;
-                    }
-                    let Some(folder) = queue.lock().ok().and_then(|mut q| q.pop_front()) else { return };
-                    let stamp = fs::metadata(&folder).and_then(|m| m.modified()).map(ns).unwrap_or(0);
-                    let now = now_secs();
-                    let fresh = cache.get(&folder).filter(|c| is_fresh(c, stamp, now));
-                    let size = match fresh {
-                        Some(c) => c.size,
-                        None => {
-                            // live running total for the row while the walk is still going
-                            let (ptx, pctx, pf) = (tx.clone(), ctx.clone(), folder.clone());
-                            let report = move |n: u64| {
-                                let _ = ptx.send(IndexMsg::Partial(pf.clone(), n));
-                                pctx.request_repaint();
-                            };
-                            match scan_with_progress(&folder, stamp, &cache, &generation, my_gen, &dirty, &hot, &report) {
-                                Some(s) => s,
-                                None => return, // cancelled
-                            }
-                        }
-                    };
-                    if tx.send(IndexMsg::Size(folder, size)).is_err() {
-                        return;
-                    }
-                    ctx.request_repaint();
+        // One shared walk: all threads work on all listed folders at once, and on the sub-folders
+        // of each, so a single huge folder (Windows, AppData, ...) is spread over them too.
+        let cache = Arc::clone(&self.cache);
+        let generation = Arc::clone(&self.generation);
+        let dirty = Arc::clone(&self.cache_dirty);
+        let hot = Arc::clone(&self.hot);
+        let tx = self.tx.clone();
+        let ctx = self.ctx.clone();
+        self.live.fetch_add(1, Ordering::SeqCst);
+        let guard = Live(Arc::clone(&self.live));
+        std::thread::spawn(move || {
+            let _guard = guard;
+            let now = now_secs();
+            // Up-to-date folders are answered right away, the rest goes into the walk.
+            let mut todo = Vec::new();
+            for folder in folders {
+                if generation.load(Ordering::Relaxed) != my_gen {
+                    return;
                 }
-            });
-        }
+                let stamp = fs::metadata(&folder).and_then(|m| m.modified()).map(ns).unwrap_or(0);
+                match cache.get(&folder).filter(|c| is_fresh(c, stamp, now)) {
+                    Some(c) => {
+                        if tx.send(IndexMsg::Size(folder, c.size)).is_err() {
+                            return;
+                        }
+                        ctx.request_repaint();
+                    }
+                    None => todo.push((folder, stamp)),
+                }
+            }
+            // live running totals for the rows while the walk is still going
+            let progress = |p: &Path, n: u64| {
+                let _ = tx.send(IndexMsg::Partial(p.to_path_buf(), n));
+                ctx.request_repaint();
+            };
+            let done = |p: &Path, n: u64| {
+                let _ = tx.send(IndexMsg::Size(p.to_path_buf(), n));
+                ctx.request_repaint();
+            };
+            scan_many(todo, &cache, &generation, my_gen, &dirty, &hot, WORKERS, &progress, &done);
+        });
     }
 
     // ---------------------------------------------------------------- persistence

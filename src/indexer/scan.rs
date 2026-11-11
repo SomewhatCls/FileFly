@@ -3,13 +3,18 @@
 use super::{
     hot::{same_name, HotFiles},
     model::{is_fresh, ns, now_secs, CachedFolder},
+    priority::lower_priority,
     store::Cache,
 };
 use std::{
+    collections::VecDeque,
     ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Arc, Condvar, Mutex,
+    },
     time::Duration,
 };
 use std::time::Instant;
@@ -177,5 +182,280 @@ pub fn scan_with_progress(
                 }
             }
         }
+    }
+}
+
+// ----------------------------------------------------------------------------------------------
+// Parallel walk: many threads, one shared queue of folders, several trees at once
+
+/// One tree that is being summed.
+struct Root {
+    path: PathBuf,
+    dev: u64,
+    /// Everything counted so far under this root (for the live display).
+    running: AtomicU64,
+    /// Milliseconds after the start of the walk at which `running` was last reported.
+    last_report: AtomicU64,
+}
+
+/// One folder of the walk. A folder is finished when its own listing is done *and* all its
+/// sub-folders are finished; whoever finishes it last adds its total to the parent.
+struct Node {
+    path: PathBuf,
+    stamp: u64,
+    parent: Option<Arc<Node>>,
+    root: Arc<Root>,
+    /// 1 for the folder's own listing + 1 per sub-folder that is not finished yet.
+    pending: AtomicUsize,
+    total: AtomicU64,
+    /// The folder could not be listed: its total is passed up but not stored in the index.
+    failed: AtomicBool,
+}
+
+struct Walk<'a> {
+    queue: Mutex<VecDeque<Arc<Node>>>,
+    wake: Condvar,
+    /// Folders that are queued or being listed right now. 0 = nothing left to do.
+    open: AtomicUsize,
+    stop: AtomicBool,
+    cache: &'a Cache,
+    generation: &'a AtomicU64,
+    my_gen: u64,
+    dirty: &'a AtomicBool,
+    hot: &'a HotFiles,
+    now: u64,
+    began: Instant,
+    progress: &'a (dyn Fn(&Path, u64) + Sync),
+    done: &'a (dyn Fn(&Path, u64) + Sync),
+}
+
+type Finished = Vec<(PathBuf, CachedFolder)>;
+
+impl Walk<'_> {
+    fn cancelled(&self) -> bool {
+        self.stop.load(Ordering::Relaxed) || self.generation.load(Ordering::Relaxed) != self.my_gen
+    }
+
+    fn push(&self, n: Arc<Node>) {
+        self.open.fetch_add(1, Ordering::SeqCst);
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(n);
+        self.wake.notify_one();
+    }
+
+    /// The listing of one folder is over (its sub-folders were queued before this is called).
+    fn close(&self) {
+        if self.open.fetch_sub(1, Ordering::SeqCst) == 1 {
+            // Last one: wake the idle workers so they can leave.
+            let _g = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            self.wake.notify_all();
+        }
+    }
+
+    /// Next folder to list. None = everything is done or the walk was cancelled.
+    /// (Breadth first, so every listed root makes progress and small ones finish early.)
+    fn next(&self) -> Option<Arc<Node>> {
+        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if self.cancelled() {
+                self.stop.store(true, Ordering::Relaxed);
+                self.wake.notify_all();
+                return None;
+            }
+            if let Some(n) = q.pop_front() {
+                return Some(n);
+            }
+            if self.open.load(Ordering::SeqCst) == 0 {
+                return None;
+            }
+            q = match self.wake.wait_timeout(q, Duration::from_millis(50)) {
+                Ok((g, _)) => g,
+                Err(e) => e.into_inner().0,
+            };
+        }
+    }
+
+    /// Adds to the running total of a root and reports it now and then (about ten times a second).
+    fn bump(&self, root: &Root, delta: u64) {
+        if delta != 0 {
+            root.running.fetch_add(delta, Ordering::Relaxed);
+        }
+        let ms = self.began.elapsed().as_millis() as u64;
+        let last = root.last_report.load(Ordering::Relaxed);
+        if ms >= last + 100
+            && root.last_report.compare_exchange(last, ms, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+        {
+            (self.progress)(&root.path, root.running.load(Ordering::Relaxed));
+        }
+    }
+
+    fn store(&self, finished: &mut Finished) {
+        if finished.is_empty() {
+            return;
+        }
+        self.cache.put_many(std::mem::take(finished));
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Marks the listing of `node` as done and walks up the tree while that finishes folders.
+    fn finish(&self, mut node: Arc<Node>, finished: &mut Finished) {
+        loop {
+            if node.pending.fetch_sub(1, Ordering::SeqCst) != 1 {
+                return;
+            }
+            let total = node.total.load(Ordering::SeqCst);
+            if !node.failed.load(Ordering::Relaxed) {
+                finished.push((node.path.clone(), CachedFolder { size: total, modified_ns: node.stamp, scanned_at: self.now }));
+            }
+            match node.parent.clone() {
+                Some(p) => {
+                    p.total.fetch_add(total, Ordering::SeqCst);
+                    node = p;
+                }
+                None => {
+                    self.store(finished); // the root is in the index before it is announced
+                    (self.done)(&node.path, total);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Lists one folder: sums its files, takes fresh sub-folders from the index and queues the
+    /// others. False = cancelled half-way (this folder is then not stored).
+    fn list(&self, node: &Arc<Node>, finished: &mut Finished) -> bool {
+        let Ok(rd) = fs::read_dir(&node.path) else {
+            node.failed.store(true, Ordering::Relaxed);
+            self.finish(Arc::clone(node), finished);
+            return true;
+        };
+        let exact = self.hot.pinned_name_in(&node.path);
+        let mut sum = 0u64; // files and fresh cached sub-folders of this folder
+        let mut unreported = 0u64;
+        let mut seen = 0u32;
+        for entry in rd {
+            seen = seen.wrapping_add(1);
+            if seen % 1024 == 0 {
+                if self.cancelled() {
+                    return false;
+                }
+                if seen % 4096 == 0 {
+                    self.bump(&node.root, std::mem::take(&mut unreported));
+                }
+            }
+            let Ok(de) = entry else { continue };
+            let Ok(ft) = de.file_type() else { continue };
+            if ft.is_symlink() {
+                continue; // symlinks & junctions: avoid loops/double counting
+            }
+            if ft.is_file() {
+                let n = file_len(&de, self.hot, exact.as_deref());
+                sum = sum.saturating_add(n);
+                unreported = unreported.saturating_add(n);
+            } else if ft.is_dir() {
+                let md = de.metadata().ok();
+                let path = de.path();
+                if super::live::is_pseudo(&path) || md.as_ref().is_some_and(|m| dev_of(m) != node.root.dev) {
+                    continue;
+                }
+                let stamp = md.and_then(|m| m.modified().ok()).map(ns).unwrap_or(0);
+                match self.cache.get(&path).filter(|c| is_fresh(c, stamp, self.now)) {
+                    Some(hit) => {
+                        sum = sum.saturating_add(hit.size);
+                        unreported = unreported.saturating_add(hit.size);
+                    }
+                    None => {
+                        node.pending.fetch_add(1, Ordering::SeqCst);
+                        self.push(Arc::new(Node {
+                            path,
+                            stamp,
+                            parent: Some(Arc::clone(node)),
+                            root: Arc::clone(&node.root),
+                            pending: AtomicUsize::new(1),
+                            total: AtomicU64::new(0),
+                            failed: AtomicBool::new(false),
+                        }));
+                    }
+                }
+            }
+        }
+        node.total.fetch_add(sum, Ordering::SeqCst);
+        self.bump(&node.root, unreported);
+        self.finish(Arc::clone(node), finished);
+        true
+    }
+}
+
+fn worker(w: &Walk<'_>) {
+    lower_priority();
+    let mut finished: Finished = Vec::new();
+    while let Some(node) = w.next() {
+        if !w.list(&node, &mut finished) {
+            w.stop.store(true, Ordering::Relaxed); // cancelled
+            w.wake.notify_all();
+            break;
+        }
+        w.close();
+        if finished.len() >= 4000 {
+            w.store(&mut finished);
+        }
+    }
+    w.store(&mut finished); // keep the completed folders, also after a cancel
+}
+
+/// Walks all `roots` ((folder, mtime fingerprint) pairs) at once with `threads` threads that
+/// share one queue of folders, so even a single huge tree is spread over all of them. Every
+/// finished folder is stored in the index. `progress(root, bytes_so_far)` is called about ten
+/// times a second per root while it is being walked; `done(root, size)` once when it is complete.
+/// Returns when everything is done or the walk was cancelled (`generation` changed).
+pub fn scan_many(
+    roots: Vec<(PathBuf, u64)>,
+    cache: &Cache,
+    generation: &AtomicU64,
+    my_gen: u64,
+    dirty: &AtomicBool,
+    hot: &HotFiles,
+    threads: usize,
+    progress: &(dyn Fn(&Path, u64) + Sync),
+    done: &(dyn Fn(&Path, u64) + Sync),
+) {
+    if roots.is_empty() {
+        return;
+    }
+    let count = roots.len();
+    let walk = Walk {
+        queue: Mutex::new(VecDeque::new()),
+        wake: Condvar::new(),
+        open: AtomicUsize::new(0),
+        stop: AtomicBool::new(false),
+        cache,
+        generation,
+        my_gen,
+        dirty,
+        hot,
+        now: now_secs(),
+        began: Instant::now(),
+        progress,
+        done,
+    };
+    for (path, stamp) in roots {
+        let dev = fs::metadata(&path).map(|m| dev_of(&m)).unwrap_or(0);
+        let root = Arc::new(Root { path: path.clone(), dev, running: AtomicU64::new(0), last_report: AtomicU64::new(0) });
+        walk.push(Arc::new(Node {
+            path,
+            stamp,
+            parent: None,
+            root,
+            pending: AtomicUsize::new(1),
+            total: AtomicU64::new(0),
+            failed: AtomicBool::new(false),
+        }));
+    }
+    std::thread::scope(|s| {
+        for _ in 0..threads.max(1) {
+            s.spawn(|| worker(&walk));
+        }
+    });
+    if cfg!(debug_assertions) {
+        eprintln!("scan_many: {count} folder(s), {} thread(s), {:?}", threads.max(1), walk.began.elapsed());
     }
 }
