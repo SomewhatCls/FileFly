@@ -202,6 +202,10 @@ type Rel = ();
 /// Folders a thread keeps for itself; beyond this the oldest ones go to the shared queue.
 const LOCAL_MAX: usize = 256;
 
+/// Scan threads run at below-normal priority so that the UI stays responsive. With false they
+/// compete with other programs on equal terms.
+const BACKGROUND_PRIORITY: bool = true;
+
 /// A folder handed to a queue shorter than this keeps its parent's handle, so that it can still be
 /// opened relative to it. In a longer queue the handles would pile up, so they are released.
 const QUEUE_KEEP_HANDLES: usize = 4096;
@@ -647,7 +651,9 @@ fn file_len_in(de: &fs::DirEntry, pinned: Option<&OsStr>, hot_here: &[OsString])
 }
 
 fn worker(w: &Walk<'_>) {
-    lower_priority();
+    if BACKGROUND_PRIORITY {
+        lower_priority();
+    }
     let mut finished: Finished = Vec::new();
     let mut lc = Local {
         stack: Vec::new(),
