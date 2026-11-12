@@ -116,7 +116,7 @@ impl Explorer {
                         if is_elevated() {
                             status_pill(ui, &m, pal.selected_hover, pal.text_secondary,"Administrator");
                         }
-                        if is_archive_path(&*self.tabs[self.active].dir)  {
+                        if is_archive_path(&*self.tabs[self.active].dir) && self.tabs[self.active].trash.is_none() {
                             status_pill(ui, &m, pal.control_hover, pal.text_secondary,"Read-only");
                         }
                     });
