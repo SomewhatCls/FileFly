@@ -116,7 +116,11 @@ impl Explorer {
                         if is_elevated() {
                             status_pill(ui, &m, pal.selected_hover, pal.text_secondary,"Administrator");
                         }
-                        if is_archive_path(&*self.tabs[self.active].dir)  {
+                        // Avoid special tabs from displaying old status because dir change doesn't fire here.
+                        // Consider a more elegant solution.
+                        if is_archive_path(&*self.tabs[self.active].dir) &&
+                            self.tabs[self.active].trash.is_none() &&
+                            !self.tabs[self.active].settings {
                             status_pill(ui, &m, pal.control_hover, pal.text_secondary,"Read-only");
                         }
                     });
