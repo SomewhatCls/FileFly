@@ -12,6 +12,8 @@ pub(crate) enum TrashSort {
 
 pub(crate) struct TrashState {
     pub(crate) rows: Vec<trash_bin::TrashRow>,
+    /// Which row shows which trashed folder (the indexer reports sizes by path).
+    pub(crate) dir_rows: HashMap<PathBuf, usize>,
     pub(crate) view: Vec<usize>,
     pub(crate) selected: HashSet<usize>,
     pub(crate) anchor: Option<usize>,
@@ -28,6 +30,7 @@ impl TrashState {
     pub(crate) fn new() -> Self {
         Self {
             rows: Vec::new(),
+            dir_rows: HashMap::new(),
             view: Vec::new(),
             selected: HashSet::new(),
             anchor: None,
@@ -99,4 +102,9 @@ pub(crate) fn rebuild_trash_view(tr: &mut TrashState, search: &str) {
         }
     });
     tr.needs_sort = false;
+}
+
+/// Rebuilds `dir_rows` after the rows were replaced.
+pub(crate) fn index_trash_dirs(tr: &mut TrashState) {
+    tr.dir_rows = tr.rows.iter().enumerate().filter_map(|(i, r)| r.dir_path.clone().map(|p| (p, i))).collect();
 }

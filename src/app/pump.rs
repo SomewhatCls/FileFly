@@ -100,6 +100,20 @@ impl Explorer {
                                 match result {
                                     Ok(rows) => {
                                         tr.rows = rows;
+                                        index_trash_dirs(tr);
+                                        // Folder sizes: the old value from the index at once, with a
+                                        // spinner; the scan (see `start_indexing`) refreshes it.
+                                        if let Some(ix) = self.indexer.as_ref() {
+                                            for r in tr.rows.iter_mut().filter(|r| r.dir_path.is_some()) {
+                                                match r.dir_path.as_deref().and_then(|p| ix.lookup(p)) {
+                                                    Some(old) => r.set_dir_size(old, true),
+                                                    None => r.size_pending = true,
+                                                }
+                                            }
+                                            if visible_ids.contains(&t.id) {
+                                                reindex = true;
+                                            }
+                                        }
                                         rebuild_trash_view(tr, &t.search);
                                         t.view_dirty = false;
                                     }
@@ -239,9 +253,37 @@ impl Explorer {
                 continue;
             };
             for t in &mut self.tabs {
+                // A trashed folder in the Recycle Bin view.
+                let mut in_trash = false;
+                if let Some(tr) = t.trash.as_mut() {
+                    if let Some(&i) = tr.dir_rows.get(&path) {
+                        if let Some(r) = tr.rows.get_mut(i) {
+                            // as in a normal listing: a running total never replaces a larger old value
+                            let bytes = match r.size {
+                                Some(old) if partial => old.max(size),
+                                _ => size,
+                            };
+                            r.set_dir_size(bytes, partial);
+                            if !partial && tr.sort_col == TrashSort::Size {
+                                tr.needs_sort = true;
+                            }
+                            in_trash = true;
+                        }
+                    }
+                }
+                if in_trash {
+                    continue;
+                }
                 if t.dir == parent {
                     if let Some(&i) = t.lookup.get(&path) {
-                        t.entries[i].dir_size = Some(size);
+                        // A running total never replaces a larger value that is already shown (the old
+                        // size from the index): the row keeps it, with a spinner, until the final size
+                        // arrives.
+                        let shown = t.entries[i].dir_size;
+                        t.entries[i].dir_size = Some(match shown {
+                            Some(old) if partial => old.max(size),
+                            _ => size,
+                        });
                         t.entries[i].dir_partial = partial;
                         // no re-sort for running totals, or rows would jump around while scanning
                         if !partial && t.sort_col == SortColumn::Size {

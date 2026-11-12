@@ -149,7 +149,30 @@ impl Explorer {
             let mut h = DefaultHasher::new();
             tab.id.hash(&mut h);
             tab.dir.hash(&mut h);
+            tab.trash.is_some().hash(&mut h);
             acc ^= h.finish();
+            // Recycle Bin view: the sizes of the trashed folders, which are ordinary folders where
+            // the system keeps them. These are its own rows, not the listing hidden underneath.
+            if let Some(tr) = tab.trash.as_mut() {
+                for r in tr.rows.iter_mut() {
+                    let Some(p) = r.dir_path.clone() else { continue };
+                    if is_network_path(&p) {
+                        r.size_pending = false;
+                        continue;
+                    }
+                    if r.size.is_none() {
+                        match indexer.lookup(&p) {
+                            Some(old) => r.set_dir_size(old, true),
+                            None => missing = true,
+                        }
+                    }
+                    let mut h = DefaultHasher::new();
+                    p.hash(&mut h);
+                    acc ^= h.finish().rotate_left(13);
+                    paths.push(p);
+                }
+                continue;
+            }
             // Measuring folders over a network share would mean reading the whole share.
             if tab.settings || is_network_path(&tab.dir) {
                 continue;

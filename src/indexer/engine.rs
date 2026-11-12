@@ -243,14 +243,25 @@ impl Indexer {
                     return;
                 }
                 let stamp = fs::metadata(&folder).and_then(|m| m.modified()).map(ns).unwrap_or(0);
-                match cache.get(&folder).filter(|c| is_fresh(c, stamp, now)) {
+                let cached = cache.get(&folder);
+                match cached.as_ref().filter(|c| is_fresh(c, stamp, now)) {
                     Some(c) => {
                         if tx.send(IndexMsg::Size(folder, c.size)).is_err() {
                             return;
                         }
                         ctx.request_repaint();
                     }
-                    None => todo.push((folder, stamp)),
+                    None => {
+                        // Not up to date: the row keeps the old size, with a spinner, until the walk
+                        // has the new one.
+                        if let Some(old) = &cached {
+                            if tx.send(IndexMsg::Partial(folder.clone(), old.size)).is_err() {
+                                return;
+                            }
+                            ctx.request_repaint();
+                        }
+                        todo.push((folder, stamp));
+                    }
                 }
             }
             // live running totals for the rows while the walk is still going
