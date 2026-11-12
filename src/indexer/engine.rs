@@ -23,7 +23,7 @@ use std::{
     },
 };
 
-/// Files of the earlier index formats
+/// Files of the earlier index formats; removed at startup (including the oversized redb file).
 const OLD_FILES: [&str; 3] = ["folder_sizes.json", "folder_sizes.bin", "folder_sizes.redb"];
 
 /// Counts a live scan worker: incremented before the thread is spawned, decremented when the
@@ -48,6 +48,13 @@ fn open_store(dir: &Path, max_entries: usize, sink: &Arc<ChangeSink>, hot: &HotF
     hot.pin(&file);
     let s = Arc::clone(sink);
     store.set_on_resize(move || s.push([file.clone()]));
+    // Read the index file once, sequentially: that fills the system's file cache and the store's
+    // lookup filter, after which a folder that was never stored costs no disk read in a scan.
+    let warmer = Arc::clone(&store);
+    std::thread::spawn(move || {
+        super::priority::lower_priority();
+        warmer.warm();
+    });
     let pruner = Arc::clone(&store);
     std::thread::spawn(move || pruner.prune(now_secs().saturating_sub(PRUNE_SECS)));
     store
