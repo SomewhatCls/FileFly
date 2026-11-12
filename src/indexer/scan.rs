@@ -202,6 +202,10 @@ type Rel = ();
 /// Folders a thread keeps for itself; beyond this the oldest ones go to the shared queue.
 const LOCAL_MAX: usize = 256;
 
+/// A folder handed to a queue shorter than this keeps its parent's handle, so that it can still be
+/// opened relative to it. In a longer queue the handles would pile up, so they are released.
+const QUEUE_KEEP_HANDLES: usize = 4096;
+
 /// One tree that is being summed.
 struct Root {
     path: PathBuf,
@@ -298,6 +302,11 @@ struct Walk<'a> {
     /// Threads that wait for the shared queue to get work.
     waiting: AtomicUsize,
     stop: AtomicBool,
+    /// Wakes the thread controller (see `scan_many`) as soon as the walk is over.
+    ctl: Condvar,
+    ctl_lock: Mutex<()>,
+    /// Worker threads started so far (the controller adds more while threads mostly wait).
+    threads: AtomicUsize,
     cache: &'a Cache,
     generation: &'a AtomicU64,
     my_gen: u64,
@@ -331,6 +340,9 @@ impl Walk<'_> {
             // Last one: wake the idle workers so they can leave.
             let _g = self.queue.lock().unwrap_or_else(|e| e.into_inner());
             self.wake.notify_all();
+            drop(_g);
+            let _c = self.ctl_lock.lock().unwrap_or_else(|e| e.into_inner());
+            self.ctl.notify_all();
         }
     }
 
@@ -459,8 +471,10 @@ impl Walk<'_> {
         }
         let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         for n in lc.stack.drain(..give) {
-            // A folder in the queue may wait a long time: it must not hold its parent's handle.
-            drop(std::mem::take(&mut *n.rel.lock().unwrap_or_else(|e| e.into_inner())));
+            // In a long queue a folder may wait a long time: it must not hold its parent's handle.
+            if q.len() >= QUEUE_KEEP_HANDLES {
+                drop(std::mem::take(&mut *n.rel.lock().unwrap_or_else(|e| e.into_inner())));
+            }
             q.push_back(n);
         }
         self.stats.peak_queue.fetch_max(q.len(), Ordering::Relaxed);
@@ -703,6 +717,9 @@ pub fn scan_many(
         open: AtomicUsize::new(0),
         waiting: AtomicUsize::new(0),
         stop: AtomicBool::new(false),
+        ctl: Condvar::new(),
+        ctl_lock: Mutex::new(()),
+        threads: AtomicUsize::new(0),
         cache,
         generation,
         my_gen,
@@ -719,17 +736,58 @@ pub fn scan_many(
         let root = Arc::new(Root { path: path.clone(), dev, running: AtomicU64::new(0), last_report: AtomicU64::new(0) });
         walk.push(Arc::new(Node::new(path, stamp, None, root)));
     }
+    let base = threads.max(1);
+    walk.threads.store(base, Ordering::Relaxed);
     std::thread::scope(|s| {
-        for _ in 0..threads.max(1) {
-            s.spawn(|| worker(&walk));
+        let w = &walk;
+        for _ in 0..base {
+            s.spawn(move || worker(w));
         }
+        // Windows: while the threads spend most of their time waiting instead of computing (a cold
+        // disk), start more of them, a few at a time, up to four times the base number (at most 32).
+        // A warm, CPU-bound scan is not affected: there the threads keep the cores busy.
+        #[cfg(windows)]
+        s.spawn(move || {
+            let max = (base * 4).min(32).max(base);
+            let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+            let mut started = base;
+            let mut last = Instant::now();
+            let mut last_cpu = win::process_cpu();
+            let mut g = w.ctl_lock.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                if w.cancelled() || w.open.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+                g = match w.ctl.wait_timeout(g, Duration::from_millis(200)) {
+                    Ok((g, _)) => g,
+                    Err(e) => e.into_inner().0,
+                };
+                let wall = last.elapsed();
+                if wall < Duration::from_millis(200) {
+                    continue;
+                }
+                let cpu = win::process_cpu();
+                let busy = cpu.saturating_sub(last_cpu) as f64 / wall.as_nanos() as f64; // cores' worth of CPU
+                last = Instant::now();
+                last_cpu = cpu;
+                if started < max && busy < 0.6 * started.min(cores) as f64 {
+                    let to = (started + 4).min(max);
+                    for _ in started..to {
+                        s.spawn(move || worker(w));
+                    }
+                    started = to;
+                    w.threads.store(started, Ordering::Relaxed);
+                }
+            }
+        });
     });
     if cfg!(debug_assertions) {
         let wall = walk.began.elapsed();
         let st = &walk.stats;
         let ms = |a: &AtomicU64| a.load(Ordering::Relaxed) / 1_000_000;
         let n = |a: &AtomicU64| a.load(Ordering::Relaxed);
-        eprintln!("scan_many: {count} root(s), {} thread(s), {wall:?}", threads.max(1));
+        let started = walk.threads.load(Ordering::Relaxed);
+        eprintln!("scan_many: {count} root(s), {base} thread(s) to start with, {started} at the end, {wall:?}");
         eprintln!(
             "  {} folders and {} files listed, queue peaked at {}, {} folders handed between threads",
             n(&st.folders),
@@ -749,7 +807,7 @@ pub fn scan_many(
             ms(&st.get_ns),
             ms(&st.store_ns),
             ms(&st.idle_ns),
-            wall.as_millis() * threads.max(1) as u128
+            wall.as_millis() * started as u128
         );
         eprintln!("  cpu time in ms (all threads): kernel {}, user {}", ms(&st.kernel_ns), ms(&st.user_ns));
         eprintln!(
@@ -835,6 +893,14 @@ mod win {
         fn FindNextFileW(handle: isize, find_data: *mut FindData) -> i32;
         fn FindClose(handle: isize) -> i32;
         fn GetCurrentThread() -> isize;
+        fn GetCurrentProcess() -> isize;
+        fn GetProcessTimes(
+            process: isize,
+            creation: *mut FileTime,
+            exit: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
         fn GetThreadTimes(
             thread: isize,
             creation: *mut FileTime,
@@ -920,6 +986,19 @@ mod win {
         }
         let ticks = |lo: u32, hi: u32| (((hi as u64) << 32) | lo as u64).saturating_mul(100);
         (ticks(t[4], t[5]), ticks(t[6], t[7]))
+    }
+
+    /// CPU time of the whole process so far in nanoseconds (kernel and user mode together).
+    pub fn process_cpu() -> u64 {
+        let mut t = [0u32; 8]; // four FILETIMEs: creation, exit, kernel, user
+        let p = t.as_mut_ptr() as *mut FileTime;
+        // SAFETY: plain FFI; `t` holds room for the four FILETIME structures.
+        let ok = unsafe { GetProcessTimes(GetCurrentProcess(), p, p.add(1), p.add(2), p.add(3)) };
+        if ok == 0 {
+            return 0;
+        }
+        let ticks = |lo: u32, hi: u32| ((hi as u64) << 32) | lo as u64;
+        ticks(t[4], t[5]).saturating_add(ticks(t[6], t[7])).saturating_mul(100)
     }
 
     /// Time spent inside the system calls of one listing, in nanoseconds.
