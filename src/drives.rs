@@ -327,7 +327,7 @@ mod imp {
                 h,
                 0x002D_1400, // IOCTL_STORAGE_QUERY_PROPERTY
                 &q as *const Query as *const c_void,
-                std::mem::size_of::<Query>() as u32,
+                size_of::<Query>() as u32,
                 buf.as_mut_ptr() as *mut c_void,
                 buf.len() as u32,
                 &mut returned,

@@ -14,7 +14,7 @@ pub(crate) fn progress_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, frac: Option
         Some(f) => {
             let w = (rect.width() * f.clamp(0.0, 1.0)).max(if f > 0.0 { h } else { 0.0 });
             if w > 0.0 {
-                p.rect_filled(egui::Rect::from_min_size(rect.min, vec2(w, h)), r, fill);
+                p.rect_filled(Rect::from_min_size(rect.min, vec2(w, h)), r, fill);
             }
         }
         None => {
@@ -23,7 +23,7 @@ pub(crate) fn progress_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, frac: Option
             let x = rect.left() + (t * 0.7 % 1.0) * (rect.width() + seg) - seg;
             let (a, b) = (x.max(rect.left()), (x + seg).min(rect.right()));
             if b > a {
-                p.rect_filled(egui::Rect::from_min_max(pos2(a, rect.top()), pos2(b, rect.bottom())), r, fill);
+                p.rect_filled(Rect::from_min_max(pos2(a, rect.top()), pos2(b, rect.bottom())), r, fill);
             }
         }
     }
@@ -45,7 +45,7 @@ pub(crate) fn speed_graph(ui: &mut Ui, m: &Metrics, pal: &Palette, history: &[f3
         let x1 = rect.right() - (shown.len() - i - 1) as f32 * col;
         let top = rect.bottom() - (v / max) * (h - 4.0);
         p.rect_filled(
-            egui::Rect::from_min_max(pos2((x1 - col).max(rect.left()), top), pos2(x1, rect.bottom())),
+            Rect::from_min_max(pos2((x1 - col).max(rect.left()), top), pos2(x1, rect.bottom())),
             CornerRadius::ZERO,
             pal.accent.gamma_multiply(0.28),
         );

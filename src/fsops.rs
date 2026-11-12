@@ -147,7 +147,7 @@ pub fn is_hidden_entry(name: &str, md: &fs::Metadata) -> bool {
     attributes(md) & (0x2 | 0x4) != 0 || name.starts_with('.')
 }
 
-pub fn remove_existing(path: &Path) -> std::io::Result<()> {
+pub fn remove_existing(path: &Path) -> io::Result<()> {
     if fs::symlink_metadata(path)?.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
 }
 
@@ -213,7 +213,7 @@ pub fn unique_copy_name(destination: &Path) -> PathBuf {
 fn free_sibling(path: &Path, tag: &str) -> PathBuf {
     let name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
     for n in 0u32.. {
-        let mut file = std::ffi::OsString::from(".");
+        let mut file = OsString::from(".");
         file.push(&name);
         file.push(format!(".{tag}-{}-{n}", std::process::id()));
         let candidate = path.with_file_name(file);
@@ -603,10 +603,10 @@ pub fn move_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> i
     }
 }
 
-pub fn open_recycle_bin() -> std::io::Result<()> {
+pub fn open_recycle_bin() -> io::Result<()> {
     #[cfg(windows)]
     {
-        return std::process::Command::new("explorer.exe").arg("shell:RecycleBinFolder").spawn().map(|_| ());
+        return Command::new("explorer.exe").arg("shell:RecycleBinFolder").spawn().map(|_| ());
     }
     #[cfg(target_os = "macos")]
     {
@@ -620,27 +620,23 @@ pub fn open_recycle_bin() -> std::io::Result<()> {
         return open::that("trash:///").map_err(std::io::Error::other);
     }
     #[allow(unreachable_code)]
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Recycle Bin is not available here"))
+    Err(io::Error::new(io::ErrorKind::Unsupported, "Recycle Bin is not available here"))
 }
 
 /// Opens a terminal window in `dir` (Windows Terminal if installed, else the classic console).
-pub fn open_terminal(dir: &Path) -> std::io::Result<()> {
+pub fn open_terminal(dir: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        if std::process::Command::new("wt.exe").arg("-d").arg(dir).spawn().is_ok() {
+        if Command::new("wt.exe").arg("-d").arg(dir).spawn().is_ok() {
             return Ok(());
         }
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        return std::process::Command::new("cmd.exe")
+        return Command::new("cmd.exe")
             .current_dir(dir)
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map(|_| ());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        return std::process::Command::new("open").args(["-a", "Terminal"]).arg(dir).spawn().map(|_| ());
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -652,7 +648,7 @@ pub fn open_terminal(dir: &Path) -> std::io::Result<()> {
         return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no terminal emulator found"));
     }
     #[allow(unreachable_code)]
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "not supported here"))
+    Err(io::Error::new(io::ErrorKind::Unsupported, "not supported here"))
 }
 
 pub fn find_peazip() -> Option<PathBuf> {
@@ -675,14 +671,14 @@ pub fn find_peazip() -> Option<PathBuf> {
     }
 }
 
-pub fn open_with_peazip(exe: &Path, path: &Path) -> std::io::Result<()> {
-    let mut c = std::process::Command::new(exe);
+pub fn open_with_peazip(exe: &Path, path: &Path) -> io::Result<()> {
+    let mut c = Command::new(exe);
     c.arg(if path.is_dir() { "-ext2browsepath" } else { "-ext2browse" });
     c.arg(path).spawn().map(|_| ())
 }
 
-pub fn add_to_peazip(exe: &Path, path: &Path) -> std::io::Result<()> {
-    std::process::Command::new(exe).arg("-add2archive").arg(path).spawn().map(|_| ())
+pub fn add_to_peazip(exe: &Path, path: &Path) -> io::Result<()> {
+    Command::new(exe).arg("-add2archive").arg(path).spawn().map(|_| ())
 }
 
 #[derive(Default, Clone)]
@@ -1146,7 +1142,7 @@ struct Mount {
 }
 
 static MOUNTS: std::sync::Mutex<Vec<Mount>> = std::sync::Mutex::new(Vec::new());
-static MOUNT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MOUNT_SEQ: AtomicU64 = AtomicU64::new(0);
 const CACHE_PREFIX: &str = "FileFly-archives-";
 
 fn mounts() -> std::sync::MutexGuard<'static, Vec<Mount>> {

@@ -86,6 +86,12 @@ pub(crate) fn rebuild_trash_view(tr: &mut TrashState, search: &str) {
     let (col, asc) = (tr.sort_col, tr.sort_asc);
     tr.view.sort_by(|&a, &b| {
         let (ra, rb) = (&rows[a], &rows[b]);
+        if col == TrashSort::Size {
+            match rb.is_dir.cmp(&ra.is_dir) {
+                Ordering::Equal => {}
+                o => return o,
+            }
+        }
         let o = match col {
             TrashSort::Name => natural_cmp(&ra.name_lc, &rb.name_lc),
             TrashSort::Location => ra
@@ -93,7 +99,10 @@ pub(crate) fn rebuild_trash_view(tr: &mut TrashState, search: &str) {
                 .cmp(&rb.location_lc)
                 .then_with(|| natural_cmp(&ra.name_lc, &rb.name_lc)),
             TrashSort::Deleted => ra.deleted.cmp(&rb.deleted),
-            TrashSort::Size => ra.size.cmp(&rb.size),
+            TrashSort::Size => ra
+                .size
+                .cmp(&rb.size)
+                .then_with(|| natural_cmp(&ra.name_lc, &rb.name_lc)),
         };
         if asc {
             o

@@ -1033,7 +1033,7 @@ mod win {
         }
         let mut us = UnicodeString { length: len, maximum_length: len, buffer: name.as_ptr() as *mut u16 };
         let mut oa = ObjectAttributes {
-            length: std::mem::size_of::<ObjectAttributes>() as u32,
+            length: size_of::<ObjectAttributes>() as u32,
             root_directory: root.map_or(0, |d| d.0),
             object_name: &mut us,
             attributes: OBJ_CASE_INSENSITIVE,

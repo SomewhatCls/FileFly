@@ -62,7 +62,7 @@ pub(crate) fn plan_item(
     dst: PathBuf,
     claimed: &mut HashSet<PathBuf>,
     plan: &mut PastePlan,
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     if claimed.contains(&dst) {
         plan.todo.push_back((src, dst));
         return Ok(());

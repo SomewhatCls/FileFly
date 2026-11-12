@@ -139,12 +139,9 @@ impl Tab {
         self.notice = Some(n);
     }
 
-    /// Turns the given string into a notice.
+    /// Turns the given string into an error notification.
     pub(crate) fn error(&mut self, text: impl Into<String>) {
         self.notify(Notice::error(text));
-    }
-    pub(crate) fn info(&mut self, text: impl Into<String>) {
-        self.notify(Notice::info(text));
     }
 
     /// The folder as the user should see it: inside an opened zip that is "<zip>\\inner\\path"

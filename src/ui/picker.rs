@@ -118,11 +118,11 @@ fn search_walk(
     with_ico: bool,
     fmt: DateFormat,
     cancel: Arc<AtomicBool>,
-    tx: mpsc::Sender<SearchMsg>,
+    tx: Sender<SearchMsg>,
     ctx: egui::Context,
 ) {
     const MAX_HITS: usize = 5000;
-    let mut queue = std::collections::VecDeque::from([root]);
+    let mut queue = VecDeque::from([root]);
     let mut batch: Vec<Entry> = Vec::new();
     let mut found = 0usize;
     while let Some(dir) = queue.pop_front() {
@@ -626,7 +626,7 @@ fn picker_address(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker,
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(inner)
-                .layout(egui::Layout::left_to_right(Align::Center)),
+                .layout(Layout::left_to_right(Align::Center)),
         );
         let resp = child.add(te);
         if p.addr_focus {

@@ -38,16 +38,6 @@ impl Explorer {
         });
     }
 
-    /// The real locations of the trashed folders in tab `ti` (empty if it is not showing the
-    /// Recycle Bin). The indexer sums their sizes like those of any other folder.
-    pub(crate) fn trash_dirs(&self, ti: usize) -> Vec<PathBuf> {
-        self.tabs[ti]
-            .trash
-            .as_ref()
-            .map(|tr| tr.rows.iter().filter_map(|r| r.dir_path.clone()).collect())
-            .unwrap_or_default()
-    }
-
     pub(crate) fn trash_items(&self, ti: usize, all: bool) -> Vec<trash_bin::Item> {
         self.tabs[ti]
             .trash

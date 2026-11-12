@@ -2,7 +2,6 @@
 //! live updater, and keeps the public API of the old single-file indexer.
 
 //TODO: The Indexer gets stuck in rescan loops sometimes.
-//TODO: Explore faster alternatives for the comprehensive file traversal done right now.
 
 use super::{
     hot::HotFiles,

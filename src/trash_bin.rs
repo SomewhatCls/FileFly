@@ -20,14 +20,28 @@ mod imp {
         for item in items {
             // A file has a size; for a folder the system only reports how many entries it holds.
             // Its size is summed later by the indexer, from where the folder really is on disk.
-            let (size, entries, is_dir) = match trash::os_limited::metadata(&item) {
+            let (mut size, entries, mut is_dir) = match trash::os_limited::metadata(&item) {
                 Ok(md) => match md.size {
                     trash::TrashItemSize::Bytes(b) => (Some(b), None, false),
                     trash::TrashItemSize::Entries(n) => (None, Some(n as u64), true),
                 },
                 Err(_) => (None, None, false),
             };
-            let dir_path = if is_dir { real_dir(&item) } else { None };
+            let mut dir_path = None;
+            if is_dir {
+                if let Some(p) = real_path(&item) {
+                    match std::fs::metadata(&p) {
+                        // Check for folder-likes which work like files, e.g. .zip.
+                        Ok(md) if md.is_file() => {
+                            size = Some(md.len());
+                            is_dir = false;
+                        }
+                        // A genuine folder: the indexer sums it later
+                        Ok(md) if md.is_dir() => dir_path = Some(p),
+                        _ => {}
+                    }
+                }
+            }
             if cfg!(debug_assertions) && is_dir && shown < 3 {
                 eprintln!("trash folder: id {:?} -> {:?}", item.id, dir_path);
                 shown += 1;
@@ -41,20 +55,18 @@ mod imp {
         Ok(out)
     }
 
-    /// Where a trashed folder really is on disk. It is an ordinary folder there, so its size can be
-    /// summed like any other. None if the system's id does not lead to it in a form we understand.
-    fn real_dir(item: &Item) -> Option<PathBuf> {
-        // Windows: the id is the parsing name of the Recycle Bin item, `C:\$Recycle.Bin\<SID>\$R...`.
+
+    /// Where the trashed item really is on disk (file or folder). None if the id doesn't lead there.
+    fn real_path(item: &Item) -> Option<PathBuf> {
         #[cfg(windows)]
         let p = PathBuf::from(&item.id);
-        // Linux: the id is the `.trashinfo` file; the data is in `../files/<name>` next to `info/`.
         #[cfg(not(windows))]
         let p = {
             let info = std::path::Path::new(&item.id);
             let name = info.file_name()?.to_str()?.strip_suffix(".trashinfo")?;
             info.parent()?.parent()?.join("files").join(name)
         };
-        (p.is_absolute() && p.is_dir()).then_some(p)
+        p.is_absolute().then_some(p)
     }
 
     pub fn restore(items: Vec<Item>) -> Result<(), String> {
@@ -93,14 +105,13 @@ pub struct TrashRow {
     pub name_lc: String,
     pub location: String,
     pub location_lc: String,
+    pub is_dir: bool,
     pub deleted: Option<SystemTime>,
     pub date_text: String,
     /// Bytes: a file's size, or a folder's once the indexer has summed it.
     pub size: Option<u64>,
     pub size_text: String,
     pub icon: &'static str,
-    /// Number of entries the system reports for a folder (shown until its size is known).
-    pub entries: Option<u64>,
     /// Where a trashed folder really is on disk (see `real_dir`).
     pub dir_path: Option<PathBuf>,
     /// The folder's size is still being summed, or is an old value that is being refreshed.
@@ -139,12 +150,12 @@ fn make_row(
             (None, Some(n)) => format!("{n} item{}", if n == 1 { "" } else { "s" }),
             (None, None) => "—".to_owned(),
         },
+        is_dir,
         icon: if is_dir { "folder" } else { icon_for_extension(&ext) },
         name,
         location,
         deleted,
         size,
-        entries,
         dir_path,
         size_pending: false,
     }

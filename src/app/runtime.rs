@@ -5,7 +5,7 @@ use crate::prelude::*;
 impl Explorer{
 
     /// Function to draw the Apps entire interface.
-     fn draw_interface(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>){
+     fn draw_interface(&mut self, ui: &mut Ui, actions: &mut Vec<Action>){
          // Background painting.
          let rect = ui.content_rect();
 

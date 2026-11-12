@@ -54,7 +54,7 @@ pub(crate) fn address_bar(
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(inner)
-                .layout(egui::Layout::left_to_right(Align::Center)),
+                .layout(Layout::left_to_right(Align::Center)),
         );
         let resp = child.add(te);
         if tab.addr_focus {
