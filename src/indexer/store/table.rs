@@ -188,6 +188,20 @@ fn double(t: &mut Table, tombs: &[(PathBuf, u64)]) -> io::Result<()> {
 
 /// Merges a batch of updates into the slots it touches.
 pub(super) fn apply(table: &RwLock<Table>, batch: &KeyMap<Option<Rec>>, tombs: &[(PathBuf, u64)]) -> io::Result<()> {
+    // Make room first: a batch merged into a table that is too small overflows its slots, and every
+    // overflowing slot loses its oldest entries (the first scan of a big drive lost most of its
+    // early results that way).
+    let incoming = batch.values().filter(|v| v.is_some()).count() as u64;
+    let (bits, count) = {
+        let t = table.read().unwrap_or_else(|e| e.into_inner());
+        (t.bits, t.count.load(Ordering::Relaxed))
+    };
+    if bits < MAX_BITS && count + incoming > (1u64 << bits) * GROW_AVG {
+        let mut t = table.write().unwrap_or_else(|e| e.into_inner());
+        while t.bits < MAX_BITS && t.count.load(Ordering::Relaxed) + incoming > (1u64 << t.bits) * GROW_AVG {
+            double(&mut t, tombs)?;
+        }
+    }
     let mut items: Vec<(u64, Option<Rec>)> = batch.iter().map(|(k, v)| (*k, *v)).collect();
     items.sort_unstable_by_key(|x| x.0);
     let mut overflow = false;

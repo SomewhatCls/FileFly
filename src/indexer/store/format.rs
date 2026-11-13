@@ -135,7 +135,9 @@ pub(super) fn fit(entries: &mut Vec<(u64, Rec)>, bits: u32) -> (Vec<u8>, bool) {
             return (enc, dropped);
         }
         dropped = true;
-        let k = ((enc.len() - SLOT_CAP) / 8 + 1).min(entries.len());
+        // As many entries as the excess is worth at this slot's average entry size.
+        let per_entry = (enc.len() / entries.len()).max(1);
+        let k = ((enc.len() - SLOT_CAP) / per_entry + 1).min(entries.len());
         let mut order: Vec<usize> = (0..entries.len()).collect();
         order.sort_by_key(|&i| entries[i].1.scanned);
         let mut dead = vec![false; entries.len()];

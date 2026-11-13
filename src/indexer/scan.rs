@@ -61,7 +61,7 @@ fn dev_of(m: &fs::Metadata) -> u64 { use std::os::unix::fs::MetadataExt; m.dev()
 #[cfg(not(unix))]
 fn dev_of(_: &fs::Metadata) -> u64 { 0 }
 
-/// `scan_with_progress` without progress reports.
+/// Iterative post-order walk. Returns None if cancelled. Every folder that is finished is stored.
 pub fn scan(
     root: &Path,
     root_stamp: u64,
@@ -70,21 +70,6 @@ pub fn scan(
     my_gen: u64,
     dirty: &AtomicBool,
     hot: &HotFiles,
-) -> Option<u64> {
-    scan_with_progress(root, root_stamp, cache, generation, my_gen, dirty, hot, &|_| {})
-}
-
-/// Iterative post-order walk. Returns None if cancelled. Every folder that is finished is stored.
-/// `progress` receives the running total under `root` about ten times a second while walking.
-pub fn scan_with_progress(
-    root: &Path,
-    root_stamp: u64,
-    cache: &Cache,
-    generation: &AtomicU64,
-    my_gen: u64,
-    dirty: &AtomicBool,
-    hot: &HotFiles,
-    progress: &dyn Fn(u64),
 ) -> Option<u64> {
     let now = now_secs();
     let mut pending: Vec<(PathBuf, CachedFolder)> = Vec::new();
@@ -101,9 +86,6 @@ pub fn scan_with_progress(
     let root_dev = fs::metadata(root).map(|m| dev_of(&m)).unwrap_or(0);
     // Time since last scan pause to limit system impact.
     let mut scan_slice = Instant::now();
-    // Everything counted so far under `root` (for the live display) and when it was last reported.
-    let mut running = 0u64;
-    let mut last_report = Instant::now();
 
     loop {
         if generation.load(Ordering::Relaxed) != my_gen {
@@ -115,10 +97,6 @@ pub fn scan_with_progress(
         if scan_slice.elapsed() >= Duration::from_millis(8) {
             std::thread::sleep(Duration::from_millis(4));
             scan_slice = Instant::now();
-            if last_report.elapsed() >= Duration::from_millis(100) {
-                progress(running);
-                last_report = Instant::now();
-            }
             if pending.len() >= 4000 {
                 flush(&mut pending);
             }
@@ -152,7 +130,6 @@ pub fn scan_with_progress(
         match step {
             Step::Skip => {}
             Step::Add(n) => {
-                running = running.saturating_add(n);
                 if let Some(top) = stack.last_mut() {
                     top.total = top.total.saturating_add(n);
                 }
@@ -160,7 +137,6 @@ pub fn scan_with_progress(
             Step::Descend(path, stamp) => {
                 let hit = cache.get(&path).filter(|c| is_fresh(c, stamp, now));
                 if let Some(hit) = hit {
-                    running = running.saturating_add(hit.size);
                     if let Some(top) = stack.last_mut() {
                         top.total = top.total.saturating_add(hit.size);
                     }
@@ -202,10 +178,6 @@ type Rel = ();
 /// Folders a thread keeps for itself; beyond this the oldest ones go to the shared queue.
 const LOCAL_MAX: usize = 256;
 
-/// Scan threads run at below-normal priority so that the UI stays responsive. With false they
-/// compete with other programs on equal terms.
-const BACKGROUND_PRIORITY: bool = true;
-
 /// A folder handed to a queue shorter than this keeps its parent's handle, so that it can still be
 /// opened relative to it. In a longer queue the handles would pile up, so they are released.
 const QUEUE_KEEP_HANDLES: usize = 4096;
@@ -234,7 +206,7 @@ struct Node {
     /// The folder could not be listed: its total is passed up but not stored in the index.
     failed: AtomicBool,
     /// Parent handle and own name. Taken (and so released) when the folder is opened or when it
-    /// is handed to the shared queue, so handles never pile up in the queue.
+    /// is handed to a long shared queue, so handles never pile up.
     rel: Mutex<Rel>,
 }
 
@@ -264,39 +236,6 @@ struct Local {
 
 type Finished = Vec<(PathBuf, CachedFolder)>;
 
-/// Counters behind the timing lines that `scan_many` prints in debug builds.
-#[derive(Default)]
-struct Stats {
-    folders: AtomicU64,
-    files: AtomicU64,
-    /// Thread time in nanoseconds: listing folders in total, of which index lookups and index
-    /// stores, and waiting for work.
-    list_ns: AtomicU64,
-    get_ns: AtomicU64,
-    store_ns: AtomicU64,
-    idle_ns: AtomicU64,
-    peak_queue: AtomicUsize,
-    /// Folders handed from a thread's own stack to the shared queue.
-    donated: AtomicU64,
-    /// How folders were opened (Windows): relative to the parent, by path, or with the fallback.
-    rel_opens: AtomicU64,
-    path_opens: AtomicU64,
-    fallbacks: AtomicU64,
-    /// CPU time of the worker threads (Windows only), split into kernel and user mode.
-    kernel_ns: AtomicU64,
-    user_ns: AtomicU64,
-    /// Time inside the Windows listing calls: open + first read, further reads, close, and the
-    /// per-entry callback (which contains the index lookups).
-    win_first_ns: AtomicU64,
-    win_next_ns: AtomicU64,
-    win_close_ns: AtomicU64,
-    win_cb_ns: AtomicU64,
-}
-
-fn since(t: Instant) -> u64 {
-    t.elapsed().as_nanos() as u64
-}
-
 struct Walk<'a> {
     queue: Mutex<VecDeque<Arc<Node>>>,
     wake: Condvar,
@@ -309,8 +248,6 @@ struct Walk<'a> {
     /// Wakes the thread controller (see `scan_many`) as soon as the walk is over.
     ctl: Condvar,
     ctl_lock: Mutex<()>,
-    /// Worker threads started so far (the controller adds more while threads mostly wait).
-    threads: AtomicUsize,
     cache: &'a Cache,
     generation: &'a AtomicU64,
     my_gen: u64,
@@ -318,7 +255,6 @@ struct Walk<'a> {
     hot: &'a HotFiles,
     now: u64,
     began: Instant,
-    stats: Stats,
     progress: &'a (dyn Fn(&Path, u64) + Sync),
     done: &'a (dyn Fn(&Path, u64) + Sync),
 }
@@ -331,17 +267,14 @@ impl Walk<'_> {
     /// Puts a root into the shared queue.
     fn push(&self, n: Arc<Node>) {
         self.open.fetch_add(1, Ordering::SeqCst);
-        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        q.push_back(n);
-        self.stats.peak_queue.fetch_max(q.len(), Ordering::Relaxed);
-        drop(q);
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(n);
         self.wake.notify_one();
     }
 
     /// The listing of one folder is over (its sub-folders already exist when this is called).
     fn close(&self) {
         if self.open.fetch_sub(1, Ordering::SeqCst) == 1 {
-            // Last one: wake the idle workers so they can leave.
+            // Last one: wake the idle workers and the controller so they can leave.
             let _g = self.queue.lock().unwrap_or_else(|e| e.into_inner());
             self.wake.notify_all();
             drop(_g);
@@ -366,12 +299,10 @@ impl Walk<'_> {
                 return None;
             }
             self.waiting.fetch_add(1, Ordering::Relaxed);
-            let idle = Instant::now();
             q = match self.wake.wait_timeout(q, Duration::from_millis(50)) {
                 Ok((g, _)) => g,
                 Err(e) => e.into_inner().0,
             };
-            self.stats.idle_ns.fetch_add(since(idle), Ordering::Relaxed);
             self.waiting.fetch_sub(1, Ordering::Relaxed);
         }
     }
@@ -394,9 +325,7 @@ impl Walk<'_> {
         if finished.is_empty() {
             return;
         }
-        let t = Instant::now();
         self.cache.put_many(std::mem::take(finished));
-        self.stats.store_ns.fetch_add(since(t), Ordering::Relaxed);
         self.dirty.store(true, Ordering::Relaxed);
     }
 
@@ -436,10 +365,7 @@ impl Walk<'_> {
         unreported: &mut u64,
         spawned: &mut Vec<Arc<Node>>,
     ) {
-        let t = Instant::now();
-        let hit = self.cache.get(&path).filter(|c| is_fresh(c, stamp, self.now));
-        self.stats.get_ns.fetch_add(since(t), Ordering::Relaxed);
-        match hit {
+        match self.cache.get(&path).filter(|c| is_fresh(c, stamp, self.now)) {
             Some(hit) => {
                 *sum = sum.saturating_add(hit.size);
                 *unreported = unreported.saturating_add(hit.size);
@@ -462,8 +388,7 @@ impl Walk<'_> {
         }
         lc.stack.extend(spawned);
         let len = lc.stack.len();
-        let idle = self.waiting.load(Ordering::Relaxed);
-        let give = if idle > 0 {
+        let give = if self.waiting.load(Ordering::Relaxed) > 0 {
             len / 2
         } else if len > LOCAL_MAX {
             len - LOCAL_MAX / 2
@@ -481,9 +406,7 @@ impl Walk<'_> {
             }
             q.push_back(n);
         }
-        self.stats.peak_queue.fetch_max(q.len(), Ordering::Relaxed);
         drop(q);
-        self.stats.donated.fetch_add(give as u64, Ordering::Relaxed);
         self.wake.notify_all();
     }
 
@@ -523,7 +446,6 @@ impl Walk<'_> {
         let exact = self.hot.pinned_name_in(&node.path);
         let hot_here = if self.hot.is_active() { self.hot.names_in(&node.path) } else { Vec::new() };
         let mut seen = 0u32;
-        let mut files = 0u64;
         for entry in rd {
             seen = seen.wrapping_add(1);
             if seen % 1024 == 0 {
@@ -541,7 +463,6 @@ impl Walk<'_> {
             }
             if ft.is_file() {
                 let n = file_len_in(&de, exact.as_deref(), &hot_here);
-                files += 1;
                 *sum = sum.saturating_add(n);
                 *unreported = unreported.saturating_add(n);
             } else if ft.is_dir() {
@@ -554,15 +475,13 @@ impl Walk<'_> {
                 self.sub_folder(node, path, stamp, (), sum, unreported, spawned);
             }
         }
-        self.stats.files.fetch_add(files, Ordering::Relaxed);
         Some(true)
     }
 
-    /// Windows: the folder is opened relative to its parent's handle (or by path), and read with
-    /// `NtQueryDirectoryFile` into the thread's reusable buffer. If it cannot be opened that way,
-    /// `FindFirstFileExW` is tried before giving up. Same rules as everywhere: links and junctions
-    /// are skipped, sizes come from the listing, except for the pinned file and hot files, which
-    /// are asked directly.
+    /// Windows: the folder is opened relative to its parent's handle (or by path) and read with
+    /// `NtQueryDirectoryFile` into the thread's reusable buffer. Same rules as everywhere: links and
+    /// junctions are skipped, sizes come from the listing, except for the pinned file and hot
+    /// files, which are asked directly.
     #[cfg(windows)]
     fn read_folder(
         &self,
@@ -574,26 +493,16 @@ impl Walk<'_> {
     ) -> Option<bool> {
         let exact = self.hot.pinned_name_in(&node.path);
         let hot_here = if self.hot.is_active() { self.hot.names_in(&node.path) } else { Vec::new() };
-        let st = &self.stats;
 
-        let t_open = Instant::now();
         let rel = std::mem::take(&mut *node.rel.lock().unwrap_or_else(|e| e.into_inner()));
-        let was_rel = rel.is_some();
         let opened = match &rel {
             Some((parent, name)) => win::open_in(parent, name),
             None => win::open_path(&node.path),
         };
         drop(rel); // the parent's handle closes once all its sub-folders have been opened
-        let dir = opened.map(Arc::new);
-        let open_ns = since(t_open);
-        match (&dir, was_rel) {
-            (Some(_), true) => st.rel_opens.fetch_add(1, Ordering::Relaxed),
-            (Some(_), false) => st.path_opens.fetch_add(1, Ordering::Relaxed),
-            (None, _) => st.fallbacks.fetch_add(1, Ordering::Relaxed),
-        };
+        let dir = Arc::new(opened?);
 
         let mut seen = 0u32;
-        let mut files = 0u64;
         let mut cancelled = false;
         let mut visit = |e: win::Ent<'_>| -> bool {
             seen = seen.wrapping_add(1);
@@ -608,11 +517,10 @@ impl Walk<'_> {
             }
             if e.is_dir {
                 let stamp = win::systime(e.written).map(ns).unwrap_or(0);
-                let rel: Rel = dir.as_ref().map(|d| (Arc::clone(d), Box::from(e.name)));
+                let rel: Rel = Some((Arc::clone(&dir), Box::from(e.name)));
                 self.sub_folder(node, node.path.join(win::name(&e)), stamp, rel, sum, unreported, spawned);
             } else {
                 let mut n = e.len;
-                files += 1;
                 if exact.is_some() || !hot_here.is_empty() {
                     let name = win::name(&e);
                     if exact.as_deref().is_some_and(|x| same_name(&name, x)) || hot_here.iter().any(|h| same_name(&name, h)) {
@@ -624,15 +532,7 @@ impl Walk<'_> {
             }
             true
         };
-        let times = match &dir {
-            Some(d) => win::each_in(d, &mut lc.buf, &mut visit),
-            None => win::each(&node.path, &mut visit)?,
-        };
-        st.win_first_ns.fetch_add(times.first + open_ns, Ordering::Relaxed);
-        st.win_next_ns.fetch_add(times.next, Ordering::Relaxed);
-        st.win_close_ns.fetch_add(times.close, Ordering::Relaxed);
-        st.win_cb_ns.fetch_add(times.callback, Ordering::Relaxed);
-        st.files.fetch_add(files, Ordering::Relaxed);
+        win::each_in(&dir, &mut lc.buf, &mut visit);
         Some(!cancelled)
     }
 }
@@ -651,9 +551,7 @@ fn file_len_in(de: &fs::DirEntry, pinned: Option<&OsStr>, hot_here: &[OsString])
 }
 
 fn worker(w: &Walk<'_>) {
-    if BACKGROUND_PRIORITY {
-        lower_priority();
-    }
+    lower_priority();
     let mut finished: Finished = Vec::new();
     let mut lc = Local {
         stack: Vec::new(),
@@ -674,11 +572,7 @@ fn worker(w: &Walk<'_>) {
                 None => break,
             },
         };
-        let t = Instant::now();
-        let ok = w.list(&node, &mut finished, &mut lc);
-        w.stats.list_ns.fetch_add(since(t), Ordering::Relaxed);
-        w.stats.folders.fetch_add(1, Ordering::Relaxed);
-        if !ok {
+        if !w.list(&node, &mut finished, &mut lc) {
             w.stop.store(true, Ordering::Relaxed); // cancelled
             w.wake.notify_all();
             break;
@@ -689,12 +583,6 @@ fn worker(w: &Walk<'_>) {
         }
     }
     w.store(&mut finished); // keep the completed folders, also after a cancel
-    #[cfg(windows)]
-    {
-        let (kernel, user) = win::thread_cpu();
-        w.stats.kernel_ns.fetch_add(kernel, Ordering::Relaxed);
-        w.stats.user_ns.fetch_add(user, Ordering::Relaxed);
-    }
 }
 
 /// Walks all `roots` ((folder, mtime fingerprint) pairs) at once with `threads` threads, so even
@@ -725,7 +613,6 @@ pub fn scan_many(
         stop: AtomicBool::new(false),
         ctl: Condvar::new(),
         ctl_lock: Mutex::new(()),
-        threads: AtomicUsize::new(0),
         cache,
         generation,
         my_gen,
@@ -733,7 +620,6 @@ pub fn scan_many(
         hot,
         now: now_secs(),
         began: Instant::now(),
-        stats: Stats::default(),
         progress,
         done,
     };
@@ -743,7 +629,6 @@ pub fn scan_many(
         walk.push(Arc::new(Node::new(path, stamp, None, root)));
     }
     let base = threads.max(1);
-    walk.threads.store(base, Ordering::Relaxed);
     std::thread::scope(|s| {
         let w = &walk;
         for _ in 0..base {
@@ -782,85 +667,32 @@ pub fn scan_many(
                         s.spawn(move || worker(w));
                     }
                     started = to;
-                    w.threads.store(started, Ordering::Relaxed);
                 }
             }
         });
     });
     if cfg!(debug_assertions) {
-        let wall = walk.began.elapsed();
-        let st = &walk.stats;
-        let ms = |a: &AtomicU64| a.load(Ordering::Relaxed) / 1_000_000;
-        let n = |a: &AtomicU64| a.load(Ordering::Relaxed);
-        let started = walk.threads.load(Ordering::Relaxed);
-        eprintln!("scan_many: {count} root(s), {base} thread(s) to start with, {started} at the end, {wall:?}");
-        eprintln!(
-            "  {} folders and {} files listed, queue peaked at {}, {} folders handed between threads",
-            n(&st.folders),
-            n(&st.files),
-            st.peak_queue.load(Ordering::Relaxed),
-            n(&st.donated)
-        );
-        eprintln!(
-            "  opened relative to parent {}, by path {}, fallback {}",
-            n(&st.rel_opens),
-            n(&st.path_opens),
-            n(&st.fallbacks)
-        );
-        eprintln!(
-            "  thread time in ms: listing {} (index lookups {}, index stores {}), idle {}, available {}",
-            ms(&st.list_ns),
-            ms(&st.get_ns),
-            ms(&st.store_ns),
-            ms(&st.idle_ns),
-            wall.as_millis() * started as u128
-        );
-        eprintln!("  cpu time in ms (all threads): kernel {}, user {}", ms(&st.kernel_ns), ms(&st.user_ns));
-        eprintln!(
-            "  windows calls in ms: open+first read {}, next reads {}, close {}, per-entry callback {}",
-            ms(&st.win_first_ns),
-            ms(&st.win_next_ns),
-            ms(&st.win_close_ns),
-            ms(&st.win_cb_ns)
-        );
+        eprintln!("scan_many: {count} root(s), {:?}", walk.began.elapsed());
     }
 }
 
-/// Windows directory listing. `each_in` reads an open directory handle with `NtQueryDirectoryFile`
-/// into a caller-supplied buffer; folders are opened with `NtOpenFile`, optionally relative to
-/// their parent's handle. `each` is the fallback through `FindFirstFileExW`. `std::fs::read_dir`
-/// uses the same API as the fallback but with the default buffer, with 8.3 short names looked up
-/// for every entry and with a `DirEntry` (name and path allocations) per file; none of that is
-/// needed to sum sizes.
+/// Windows directory listing: folders are opened with `NtOpenFile`, optionally relative to their
+/// parent's handle, and read with `NtQueryDirectoryFile` into a caller-supplied buffer. Compared
+/// with `fs::read_dir` this skips the 8.3 short names, the per-file name and path allocations and
+/// the full path resolution for every folder; none of that is needed to sum sizes.
 #[cfg(windows)]
 mod win {
     use std::{
         ffi::{c_void, OsString},
         os::windows::ffi::{OsStrExt, OsStringExt},
         path::Path,
-        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     #[repr(C)]
     struct FileTime {
         low: u32,
         high: u32,
-    }
-
-    /// WIN32_FIND_DATAW
-    #[repr(C)]
-    struct FindData {
-        attributes: u32,
-        _created: FileTime,
-        _accessed: FileTime,
-        written: FileTime,
-        size_high: u32,
-        size_low: u32,
-        /// The reparse tag if the entry is a reparse point.
-        reparse_tag: u32,
-        _reserved1: u32,
-        name: [u16; 260],
-        _short_name: [u16; 14],
     }
 
     #[repr(C)]
@@ -888,27 +720,9 @@ mod win {
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn FindFirstFileExW(
-            file_name: *const u16,
-            info_level: i32,
-            find_data: *mut FindData,
-            search_op: i32,
-            search_filter: *const c_void,
-            additional_flags: u32,
-        ) -> isize;
-        fn FindNextFileW(handle: isize, find_data: *mut FindData) -> i32;
-        fn FindClose(handle: isize) -> i32;
-        fn GetCurrentThread() -> isize;
         fn GetCurrentProcess() -> isize;
         fn GetProcessTimes(
             process: isize,
-            creation: *mut FileTime,
-            exit: *mut FileTime,
-            kernel: *mut FileTime,
-            user: *mut FileTime,
-        ) -> i32;
-        fn GetThreadTimes(
-            thread: isize,
             creation: *mut FileTime,
             exit: *mut FileTime,
             kernel: *mut FileTime,
@@ -942,13 +756,11 @@ mod win {
         fn NtClose(handle: isize) -> i32;
     }
 
-    const FIND_EX_INFO_BASIC: i32 = 1; // no short (8.3) names
-    const FIND_EX_SEARCH_NAME_MATCH: i32 = 0;
-    const FIND_FIRST_EX_LARGE_FETCH: u32 = 2; // bigger buffer, fewer system calls
     const ATTR_DIRECTORY: u32 = 0x10;
     const ATTR_REPARSE_POINT: u32 = 0x400;
-    const TAG_SYMLINK: u32 = 0xA000_000C;
-    const TAG_MOUNT_POINT: u32 = 0xA000_0003; // junctions
+    /// `std` treats every reparse tag with this bit as a link (symbolic links, junctions, WSL links,
+    /// ...): `fs::read_dir` + `file_type().is_symlink()` skipped all of them, so this must too.
+    const TAG_NAME_SURROGATE: u32 = 0x2000_0000;
 
     const FILE_LIST_DIRECTORY: u32 = 0x1;
     const SYNCHRONIZE: u32 = 0x0010_0000;
@@ -981,19 +793,6 @@ mod win {
         written.checked_sub(TO_UNIX_EPOCH).map(|t| UNIX_EPOCH + Duration::from_nanos(t.saturating_mul(100)))
     }
 
-    /// CPU time of the calling thread so far in nanoseconds: (kernel mode, user mode).
-    pub fn thread_cpu() -> (u64, u64) {
-        let mut t = [0u32; 8]; // four FILETIMEs: creation, exit, kernel, user
-        let p = t.as_mut_ptr() as *mut FileTime;
-        // SAFETY: plain FFI; `t` holds room for the four FILETIME structures.
-        let ok = unsafe { GetThreadTimes(GetCurrentThread(), p, p.add(1), p.add(2), p.add(3)) };
-        if ok == 0 {
-            return (0, 0);
-        }
-        let ticks = |lo: u32, hi: u32| (((hi as u64) << 32) | lo as u64).saturating_mul(100);
-        (ticks(t[4], t[5]), ticks(t[6], t[7]))
-    }
-
     /// CPU time of the whole process so far in nanoseconds (kernel and user mode together).
     pub fn process_cpu() -> u64 {
         let mut t = [0u32; 8]; // four FILETIMEs: creation, exit, kernel, user
@@ -1005,15 +804,6 @@ mod win {
         }
         let ticks = |lo: u32, hi: u32| ((hi as u64) << 32) | lo as u64;
         ticks(t[4], t[5]).saturating_add(ticks(t[6], t[7])).saturating_mul(100)
-    }
-
-    /// Time spent inside the system calls of one listing, in nanoseconds.
-    #[derive(Default)]
-    pub struct Times {
-        pub first: u64,
-        pub next: u64,
-        pub close: u64,
-        pub callback: u64,
     }
 
     /// An open directory handle, closed when dropped.
@@ -1033,7 +823,7 @@ mod win {
         }
         let mut us = UnicodeString { length: len, maximum_length: len, buffer: name.as_ptr() as *mut u16 };
         let mut oa = ObjectAttributes {
-            length: size_of::<ObjectAttributes>() as u32,
+            length: std::mem::size_of::<ObjectAttributes>() as u32,
             root_directory: root.map_or(0, |d| d.0),
             object_name: &mut us,
             attributes: OBJ_CASE_INSENSITIVE,
@@ -1066,8 +856,8 @@ mod win {
         w.starts_with(&p)
     }
 
-    /// The path in the form `NtOpenFile` wants (`\??\C:\dir`). None for paths that are not
-    /// absolute or have no drive; the caller then falls back to `FindFirstFileExW`.
+    /// The path in the form `NtOpenFile` wants (`\??\C:\dir`). None for a path that is not absolute
+    /// (the folder then counts as one that cannot be listed).
     fn nt_path(p: &Path) -> Option<Vec<u16>> {
         let w: Vec<u16> =
             p.as_os_str().encode_wide().map(|c| if c == b'/' as u16 { b'\\' as u16 } else { c }).collect();
@@ -1107,14 +897,12 @@ mod win {
     /// Calls `f` for every file and folder in the open folder `dir`, except `.`, `..`, symbolic
     /// links and junctions. `f` returns false to stop early. `buf` is the (8-byte aligned) read
     /// buffer.
-    pub fn each_in(dir: &Dir, buf: &mut [u64], mut f: impl FnMut(Ent<'_>) -> bool) -> Times {
-        let mut tm = Times::default();
+    pub fn each_in(dir: &Dir, buf: &mut [u64], mut f: impl FnMut(Ent<'_>) -> bool) {
         let cap = (buf.len() * 8).min(u32::MAX as usize);
         let base = buf.as_mut_ptr() as *mut u8;
         let mut restart = 1u8;
-        'read: loop {
+        loop {
             let mut iosb = IoStatusBlock { status: 0, information: 0 };
-            let t = Instant::now();
             // SAFETY: plain FFI; `base` points to `cap` writable bytes, `iosb` is a live local.
             let status = unsafe {
                 NtQueryDirectoryFile(
@@ -1131,19 +919,13 @@ mod win {
                     restart,
                 )
             };
-            let spent = t.elapsed().as_nanos() as u64;
-            if restart == 1 {
-                tm.first += spent;
-            } else {
-                tm.next += spent;
-            }
             if status < 0 {
-                break; // STATUS_NO_MORE_FILES at the end, or an error
+                return; // STATUS_NO_MORE_FILES at the end, or an error
             }
             restart = 0;
             let used = iosb.information.min(cap);
             if used == 0 {
-                break;
+                return;
             }
             // SAFETY: the system just filled `used` bytes at `base`.
             let data = unsafe { std::slice::from_raw_parts(base as *const u8, used) };
@@ -1164,7 +946,7 @@ mod win {
                 if !matches!(name, [46] | [46, 46]) {
                     let attrs = u32_at(data, off + 56);
                     let tag = u32_at(data, off + 64); // EaSize holds the reparse tag of links
-                    let link = attrs & ATTR_REPARSE_POINT != 0 && (tag == TAG_SYMLINK || tag == TAG_MOUNT_POINT);
+                    let link = attrs & ATTR_REPARSE_POINT != 0 && tag & TAG_NAME_SURROGATE != 0;
                     if !link {
                         let ent = Ent {
                             name,
@@ -1172,11 +954,8 @@ mod win {
                             len: u64_at(data, off + 40),
                             written: u64_at(data, off + 24),
                         };
-                        let tc = Instant::now();
-                        let go = f(ent);
-                        tm.callback += tc.elapsed().as_nanos() as u64;
-                        if !go {
-                            break 'read;
+                        if !f(ent) {
+                            return;
                         }
                     }
                 }
@@ -1186,86 +965,5 @@ mod win {
                 off += next;
             }
         }
-        tm
-    }
-
-    fn wide_path(p: &Path) -> Vec<u16> {
-        let mut w: Vec<u16> = p.as_os_str().encode_wide().collect();
-        // Long paths only work in the \\?\ form (`std` does the same for its own calls).
-        let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
-        if w.len() >= 240 && !w.starts_with(&verbatim) {
-            if w.starts_with(&[b'\\' as u16, b'\\' as u16]) {
-                let mut v: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
-                v.extend_from_slice(&w[2..]);
-                w = v;
-            } else if w.get(1) == Some(&(b':' as u16)) {
-                let mut v = verbatim;
-                v.extend_from_slice(&w);
-                w = v;
-            }
-        }
-        w
-    }
-
-    /// Fallback listing through `FindFirstFileExW`, by path. Calls `f` for the same entries as
-    /// `each_in`. None = the folder could not be opened.
-    pub fn each(dir: &Path, mut f: impl FnMut(Ent<'_>) -> bool) -> Option<Times> {
-        let mut pattern = wide_path(dir);
-        if pattern.last() != Some(&(b'\\' as u16)) {
-            pattern.push(b'\\' as u16);
-        }
-        pattern.push(b'*' as u16);
-        pattern.push(0);
-        // SAFETY: plain FFI; `data` is a valid WIN32_FIND_DATAW and `pattern` is NUL-terminated.
-        let mut data: FindData = unsafe { std::mem::zeroed() };
-        let mut tm = Times::default();
-        let t0 = Instant::now();
-        let h = unsafe {
-            FindFirstFileExW(
-                pattern.as_ptr(),
-                FIND_EX_INFO_BASIC,
-                &mut data,
-                FIND_EX_SEARCH_NAME_MATCH,
-                std::ptr::null(),
-                FIND_FIRST_EX_LARGE_FETCH,
-            )
-        };
-        tm.first = t0.elapsed().as_nanos() as u64;
-        if h == -1 {
-            return None;
-        }
-        loop {
-            let n = data.name.iter().position(|&c| c == 0).unwrap_or(data.name.len());
-            let name = &data.name[..n];
-            if !matches!(name, [46] | [46, 46]) {
-                let attrs = data.attributes;
-                let link = attrs & ATTR_REPARSE_POINT != 0
-                    && (data.reparse_tag == TAG_SYMLINK || data.reparse_tag == TAG_MOUNT_POINT);
-                if !link {
-                    let ent = Ent {
-                        name,
-                        is_dir: attrs & ATTR_DIRECTORY != 0,
-                        len: ((data.size_high as u64) << 32) | data.size_low as u64,
-                        written: ((data.written.high as u64) << 32) | data.written.low as u64,
-                    };
-                    let tc = Instant::now();
-                    let go = f(ent);
-                    tm.callback += tc.elapsed().as_nanos() as u64;
-                    if !go {
-                        break;
-                    }
-                }
-            }
-            let tn = Instant::now();
-            let more = unsafe { FindNextFileW(h, &mut data) } != 0;
-            tm.next += tn.elapsed().as_nanos() as u64;
-            if !more {
-                break;
-            }
-        }
-        let tcl = Instant::now();
-        unsafe { FindClose(h) };
-        tm.close = tcl.elapsed().as_nanos() as u64;
-        Some(tm)
     }
 }
