@@ -19,6 +19,14 @@ use std::{
 };
 use std::time::Instant;
 
+/// A folder with no sub-folders, less than this much data and fewer than `SMALL_LEAF_FILES` files is
+/// not stored in the index: listing it again costs about as much as looking it up, and such folders
+/// are roughly half of all folders. The results stay exact either way. A folder with many files is
+/// stored however small it is, because listing it again is not cheap. The folders of the current
+/// listing (the roots of a scan) are always stored, so that their old sizes can be shown at once.
+const SMALL_LEAF_BYTES: u64 = 1 << 20;
+const SMALL_LEAF_FILES: usize = 64;
+
 struct Frame {
     path: PathBuf,
     rd: fs::ReadDir,
@@ -26,6 +34,9 @@ struct Frame {
     stamp: u64,
     /// Name of a file in this folder that must be read exactly (the index file), if any.
     exact: Option<OsString>,
+    /// Whether the folder has sub-folders, and how many files it has (see `SMALL_LEAF_BYTES`).
+    has_dirs: bool,
+    files: usize,
 }
 
 enum Step {
@@ -82,7 +93,7 @@ pub fn scan(
     };
 
     let Ok(rd) = fs::read_dir(root) else { return Some(0) };
-    let mut stack = vec![Frame { path: root.to_path_buf(), rd, total: 0, stamp: root_stamp, exact: hot.pinned_name_in(root) }];
+    let mut stack = vec![Frame { path: root.to_path_buf(), rd, total: 0, stamp: root_stamp, exact: hot.pinned_name_in(root), has_dirs: false, files: 0 }];
     let root_dev = fs::metadata(root).map(|m| dev_of(&m)).unwrap_or(0);
     // Time since last scan pause to limit system impact.
     let mut scan_slice = Instant::now();
@@ -132,9 +143,13 @@ pub fn scan(
             Step::Add(n) => {
                 if let Some(top) = stack.last_mut() {
                     top.total = top.total.saturating_add(n);
+                    top.files += 1;
                 }
             }
             Step::Descend(path, stamp) => {
+                if let Some(top) = stack.last_mut() {
+                    top.has_dirs = true;
+                }
                 let hit = cache.get(&path).filter(|c| is_fresh(c, stamp, now));
                 if let Some(hit) = hit {
                     if let Some(top) = stack.last_mut() {
@@ -142,12 +157,14 @@ pub fn scan(
                     }
                 } else if let Ok(rd) = fs::read_dir(&path) {
                     let exact = hot.pinned_name_in(&path);
-                    stack.push(Frame { path, rd, total: 0, stamp, exact });
+                    stack.push(Frame { path, rd, total: 0, stamp, exact, has_dirs: false, files: 0 });
                 }
             }
             Step::End => {
                 let done = stack.pop()?;
-                pending.push((done.path, CachedFolder { size: done.total, modified_ns: done.stamp, scanned_at: now }));
+                if stack.is_empty() || done.has_dirs || done.total >= SMALL_LEAF_BYTES || done.files >= SMALL_LEAF_FILES {
+                    pending.push((done.path, CachedFolder { size: done.total, modified_ns: done.stamp, scanned_at: now }));
+                }
                 match stack.last_mut() {
                     Some(parent) => parent.total = parent.total.saturating_add(done.total),
                     None => {
@@ -205,6 +222,9 @@ struct Node {
     total: AtomicU64,
     /// The folder could not be listed: its total is passed up but not stored in the index.
     failed: AtomicBool,
+    /// The folder has sub-folders, and this many files (see `SMALL_LEAF_BYTES`).
+    has_dirs: AtomicBool,
+    files: AtomicUsize,
     /// Parent handle and own name. Taken (and so released) when the folder is opened or when it
     /// is handed to a long shared queue, so handles never pile up.
     rel: Mutex<Rel>,
@@ -220,6 +240,8 @@ impl Node {
             pending: AtomicUsize::new(1),
             total: AtomicU64::new(0),
             failed: AtomicBool::new(false),
+            has_dirs: AtomicBool::new(false),
+            files: AtomicUsize::new(0),
             rel: Mutex::new(Rel::default()),
         }
     }
@@ -336,7 +358,11 @@ impl Walk<'_> {
                 return;
             }
             let total = node.total.load(Ordering::SeqCst);
-            if !node.failed.load(Ordering::Relaxed) {
+            let keep = node.parent.is_none()
+                || node.has_dirs.load(Ordering::Relaxed)
+                || total >= SMALL_LEAF_BYTES
+                || node.files.load(Ordering::Relaxed) >= SMALL_LEAF_FILES;
+            if keep && !node.failed.load(Ordering::Relaxed) {
                 finished.push((node.path.clone(), CachedFolder { size: total, modified_ns: node.stamp, scanned_at: self.now }));
             }
             match node.parent.clone() {
@@ -365,6 +391,7 @@ impl Walk<'_> {
         unreported: &mut u64,
         spawned: &mut Vec<Arc<Node>>,
     ) {
+        node.has_dirs.store(true, Ordering::Relaxed);
         match self.cache.get(&path).filter(|c| is_fresh(c, stamp, self.now)) {
             Some(hit) => {
                 *sum = sum.saturating_add(hit.size);
@@ -446,6 +473,7 @@ impl Walk<'_> {
         let exact = self.hot.pinned_name_in(&node.path);
         let hot_here = if self.hot.is_active() { self.hot.names_in(&node.path) } else { Vec::new() };
         let mut seen = 0u32;
+        let mut files = 0usize;
         for entry in rd {
             seen = seen.wrapping_add(1);
             if seen % 1024 == 0 {
@@ -463,6 +491,7 @@ impl Walk<'_> {
             }
             if ft.is_file() {
                 let n = file_len_in(&de, exact.as_deref(), &hot_here);
+                files += 1;
                 *sum = sum.saturating_add(n);
                 *unreported = unreported.saturating_add(n);
             } else if ft.is_dir() {
@@ -475,6 +504,7 @@ impl Walk<'_> {
                 self.sub_folder(node, path, stamp, (), sum, unreported, spawned);
             }
         }
+        node.files.store(files, Ordering::Relaxed);
         Some(true)
     }
 
@@ -503,6 +533,7 @@ impl Walk<'_> {
         let dir = Arc::new(opened?);
 
         let mut seen = 0u32;
+        let mut files = 0usize;
         let mut cancelled = false;
         let mut visit = |e: win::Ent<'_>| -> bool {
             seen = seen.wrapping_add(1);
@@ -521,6 +552,7 @@ impl Walk<'_> {
                 self.sub_folder(node, node.path.join(win::name(&e)), stamp, rel, sum, unreported, spawned);
             } else {
                 let mut n = e.len;
+                files += 1;
                 if exact.is_some() || !hot_here.is_empty() {
                     let name = win::name(&e);
                     if exact.as_deref().is_some_and(|x| same_name(&name, x)) || hot_here.iter().any(|h| same_name(&name, h)) {
@@ -533,6 +565,7 @@ impl Walk<'_> {
             true
         };
         win::each_in(&dir, &mut lc.buf, &mut visit);
+        node.files.store(files, Ordering::Relaxed);
         Some(!cancelled)
     }
 }

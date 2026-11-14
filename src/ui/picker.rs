@@ -11,7 +11,7 @@
 
 use crate::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrd};
-use crate::ui::toolbar::crumbs;
+use crate::ui::toolbar::{breadcrumb_bar, nav_buttons, nav_widths, search_pill, AddrEvent, AddrState, NavCmd};
 
 /// Numbers the picker windows, so every opening gets a fresh viewport and a fresh backdrop state.
 static PICKER_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -604,197 +604,6 @@ fn message_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str) {
         });
 }
 
-/// Breadcrumb address bar; click empty space (or "…") to type a path.
-fn picker_address(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, width: f32, input: &mut PickerInput) {
-    let (pill, pill_resp) = ui.allocate_exact_size(vec2(width, m.ctl_h), Sense::click());
-    let r = CornerRadius::same(m.radius);
-    ui.painter().rect_filled(pill, r, pal.control);
-    ui.painter()
-        .rect_stroke(pill, r, Stroke::new(1.0_f32, pal.control_stroke), StrokeKind::Inside);
-    let inner = pill.shrink2(vec2(m.pad * 0.4, 0.0));
-
-    if p.editing_addr {
-        let id = Id::unique("pk_addr_edit");
-        let te = egui::TextEdit::singleline(&mut p.address)
-            .id(id)
-            .frame(egui::Frame::NONE)
-            .margin(Margin::symmetric(4, 0))
-            .desired_width(inner.width())
-            .align(Align2::LEFT_CENTER)
-            .hint_text("Type a folder path and press Enter");
-        // A child ui (not `put`) keeps the margins of the field stable.
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(inner)
-                .layout(Layout::left_to_right(Align::Center)),
-        );
-        let resp = child.add(te);
-        if p.addr_focus {
-            resp.request_focus();
-            select_range(ui, id, 0, p.address.chars().count());
-            p.addr_focus = false;
-        }
-        ui.painter().line_segment(
-            [
-                pill.left_bottom() + vec2(m.accessibility_scale * 3.0, -1.0),
-                pill.right_bottom() + vec2(-m.accessibility_scale * 3.0, -1.0),
-            ],
-            Stroke::new(2.0 * m.accessibility_scale, pal.accent),
-        );
-        if resp.lost_focus() {
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                input.go = Some(PathBuf::from(expand_env(p.address.trim())));
-            } else {
-                eat_escape(ui);
-            }
-            p.editing_addr = false;
-            p.address = p.dir.display().to_string();
-        }
-        return;
-    }
-
-    if pill_resp.clicked() {
-        p.editing_addr = true;
-        p.addr_focus = true;
-        p.address = p.dir.display().to_string();
-    }
-
-    let segs = crumbs(&p.dir);
-    let seg_pad = m.pad * 0.7;
-    let chev = m.small_icon * 0.7;
-    let sep_w = chev + m.accessibility_scale * 4.0;
-    let more_w = m.ctl_h * 0.7;
-    let widths: Vec<f32> = segs
-        .iter()
-        .map(|(l, _)| text_width(ui, l, m.font) + seg_pad * 2.0)
-        .collect();
-
-    // Always show the current folder; add parents from the right while they fit.
-    let mut used = 0.0;
-    let mut first = segs.len();
-    for i in (0..segs.len()).rev() {
-        let need = widths[i] + if i + 1 < segs.len() { sep_w } else { 0.0 };
-        let reserve = if i > 0 { more_w + sep_w } else { 0.0 };
-        if first < segs.len() && used + need + reserve > inner.width() {
-            break;
-        }
-        used += need;
-        first = i;
-    }
-
-    let top = inner.top() + m.accessibility_scale * 3.0;
-    let h = inner.height() - m.accessibility_scale * 6.0;
-    let mut x = inner.left();
-    if first > 0 {
-        let rect = Rect::from_min_size(pos2(x, top), vec2(more_w, h));
-        let resp = ui.interact(rect, Id::unique("pk_crumb_more"), Sense::click());
-        hover_fill(ui, rect, &resp, pal, m);
-        paint_text(ui, rect, "…", FontId::proportional(m.font), pal.text, false);
-        if resp.clicked() {
-            p.editing_addr = true;
-            p.addr_focus = true;
-            p.address = p.dir.display().to_string();
-        }
-        x += more_w;
-        draw_icon(ui, pos2(x + sep_w / 2.0, inner.center().y), chev, "chevron_right", pal.text_secondary);
-        x += sep_w;
-    }
-    for i in first..segs.len() {
-        if i > first {
-            draw_icon(ui, pos2(x + sep_w / 2.0, inner.center().y), chev, "chevron_right", pal.text_secondary);
-            x += sep_w;
-        }
-        let rect = Rect::from_min_size(pos2(x, top), vec2(widths[i].min((inner.right() - x).max(0.0)), h));
-        let resp = ui.interact(rect, Id::unique(("pk_crumb", i)), Sense::click());
-        hover_fill(ui, rect, &resp, pal, m);
-        paint_text(
-            ui,
-            rect.shrink2(vec2(seg_pad, 0.0)),
-            &segs[i].0,
-            FontId::proportional(m.font),
-            pal.text,
-            false,
-        );
-        if resp.clicked() {
-            input.go = Some(segs[i].1.clone());
-        }
-        x += rect.width();
-    }
-}
-
-/// Search box (searches the open folder and everything below it). Returns true when the text changed.
-fn picker_search(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, width: f32) -> bool {
-    let (pill, _) = ui.allocate_exact_size(vec2(width, m.ctl_h), Sense::hover());
-    let r = CornerRadius::same(m.radius);
-    ui.painter().rect_filled(pill, r, pal.control);
-    ui.painter()
-        .rect_stroke(pill, r, Stroke::new(1.0_f32, pal.control_stroke), StrokeKind::Inside);
-
-    // Magnifier at the right end, clear button to its left. Both slots are always reserved so
-    // the layout never shifts while typing.
-    let icon_w = m.small_icon + m.pad * 2.0;
-    let icon_rect = Rect::from_min_max(pos2(pill.right() - icon_w, pill.top()), pill.right_bottom());
-    let clear_w = m.ctl_h * 0.8;
-    let clear_rect = Rect::from_center_size(
-        pos2(icon_rect.left() - clear_w / 2.0, pill.center().y),
-        vec2(clear_w, clear_w),
-    );
-    let te_rect = Rect::from_min_max(
-        pill.min + vec2(m.pad * 0.4, 0.0),
-        pill.max - vec2(icon_w + clear_w, 0.0),
-    );
-    let folder = p
-        .dir
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| p.dir.display().to_string());
-    let te = egui::TextEdit::singleline(&mut p.search)
-        .id(Id::unique("pk_search"))
-        .frame(egui::Frame::NONE)
-        .margin(Margin::symmetric(4, 0))
-        .desired_width(te_rect.width())
-        .align(Align2::LEFT_CENTER)
-        .hint_text(format!("Search {}", truncate(&folder, 18)));
-    let resp = ui
-        .put(te_rect, te)
-        .on_hover_text("Search this folder (Ctrl+F)");
-    let mut changed = resp.changed();
-    if resp.has_focus() {
-        ui.painter().line_segment(
-            [
-                pill.left_bottom() + vec2(m.accessibility_scale * 3.0, -1.0),
-                pill.right_bottom() + vec2(-m.accessibility_scale * 3.0, -1.0),
-            ],
-            Stroke::new(2.0 * m.accessibility_scale, pal.accent),
-        );
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            eat_escape(ui);
-            if !p.search.is_empty() {
-                p.search.clear();
-                changed = true;
-            }
-            resp.surrender_focus();
-        }
-    }
-    if !p.search.is_empty() {
-        let cr = ui.interact(clear_rect, Id::unique("pk_search_clear"), Sense::click());
-        hover_fill(ui, clear_rect, &cr, pal, m);
-        draw_icon(ui, clear_rect.center(), m.small_icon * 0.8, "close", pal.text);
-        if cr.clicked() {
-            p.search.clear();
-            changed = true;
-        }
-    }
-    draw_icon(
-        ui,
-        pos2(icon_rect.center().x, pill.center().y),
-        m.small_icon,
-        "search",
-        pal.text_secondary,
-    );
-    changed
-}
-
 /// The list of folders (and `.ico` files in icon mode, or search hits). It is the explorer's own
 /// file table (`table_ui`, picker mode): click selects, double click opens a folder, and a folder
 /// made with "New folder" is named in place.
@@ -1051,26 +860,33 @@ impl Explorer {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
-                        if icon_button(ui, &m, &pal, "back", "Back (Alt+←)", !p.back.is_empty(), false).clicked() {
-                            input.back = true;
-                        }
-                        if icon_button(ui, &m, &pal, "forward", "Forward (Alt+→)", !p.fwd.is_empty(), false).clicked() {
-                            input.forward = true;
-                        }
-                        let up = p.dir.parent().map(Path::to_path_buf);
-                        if icon_button(ui, &m, &pal, "up", "Up (Alt+↑)", up.is_some(), false).clicked() {
-                            input.go = up;
-                        }
-                        if icon_button(ui, &m, &pal, "refresh", "Refresh (F5)", true, false).clicked() {
-                            input.refresh = true;
+                        match nav_buttons(ui, &m, &pal, !p.back.is_empty(), !p.fwd.is_empty(), p.dir.parent().is_some()) {
+                            Some(NavCmd::Back) => input.back = true,
+                            Some(NavCmd::Forward) => input.forward = true,
+                            Some(NavCmd::Up) => input.go = p.dir.parent().map(Path::to_path_buf),
+                            Some(NavCmd::Refresh) => input.refresh = true,
+                            None => {}
                         }
                         ui.add_space(m.pad * 0.5);
-                        let gap = ui.spacing().item_spacing.x + m.pad * 0.5;
-                        let search_w = (m.accessibility_scale * 240.0).min(ui.available_width() * 0.38);
-                        let addr_w = (ui.available_width() - search_w - gap).max(m.accessibility_scale * 120.0);
-                        picker_address(ui, &m, &pal, &mut p, addr_w, &mut input);
+                        let (addr_w, search_w) = nav_widths(ui, &m, 240.0);
+                        let state = AddrState { text: &mut p.address, editing: &mut p.editing_addr, focus: &mut p.addr_focus };
+                        match breadcrumb_bar(ui, &m, &pal, Id::unique("pk_addr_edit"), &p.dir, state, addr_w) {
+                            Some(AddrEvent::Go(path)) => input.go = Some(path),
+                            Some(AddrEvent::Submit(text)) => input.go = Some(PathBuf::from(expand_env(text.trim()))),
+                            Some(AddrEvent::Cancelled) => {
+                                eat_escape(ui); // Esc in the field must not close the dialog
+                            }
+                            None => {}
+                        }
                         ui.add_space(m.pad * 0.5);
-                        if picker_search(ui, &m, &pal, &mut p, search_w) {
+                        let folder = p
+                            .dir
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| p.dir.display().to_string());
+                        let hint = format!("Search {}", truncate(&folder, 18));
+                        let tip = Some("Search this folder (Ctrl+F)");
+                        if search_pill(ui, &m, &pal, Id::unique("pk_search"), &mut p.search, hint, tip, None, true, search_w) {
                             p.start_search(ui.ctx());
                         }
                     });

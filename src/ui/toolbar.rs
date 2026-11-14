@@ -19,6 +19,66 @@ pub(crate) fn crumbs(path: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
+/// The state a breadcrumb address bar edits: the text while typing, whether it is being edited, and
+/// whether the text is to be selected on the next frame. A tab and the folder picker each own one.
+pub(crate) struct AddrState<'a> {
+    pub(crate) text: &'a mut String,
+    pub(crate) editing: &'a mut bool,
+    pub(crate) focus: &'a mut bool,
+}
+
+/// What a breadcrumb address bar reports.
+pub(crate) enum AddrEvent {
+    /// A folder was picked: a breadcrumb, or an entry of the "…" list.
+    Go(PathBuf),
+    /// Enter was pressed in the edit field.
+    Submit(String),
+    /// The edit field was left without Enter (Esc, or a click elsewhere).
+    Cancelled,
+}
+
+/// The buttons at the left of a navigation row.
+pub(crate) enum NavCmd {
+    Back,
+    Forward,
+    Up,
+    Refresh,
+}
+
+/// Back / Forward / Up / Refresh. Used by the explorer's navigation row and the folder picker's.
+pub(crate) fn nav_buttons(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    can_back: bool,
+    can_fwd: bool,
+    can_up: bool,
+) -> Option<NavCmd> {
+    let mut cmd = None;
+    if icon_button(ui, m, pal, "back", "Back (Alt+←)", can_back, false).clicked() {
+        cmd = Some(NavCmd::Back);
+    }
+    if icon_button(ui, m, pal, "forward", "Forward (Alt+→)", can_fwd, false).clicked() {
+        cmd = Some(NavCmd::Forward);
+    }
+    if icon_button(ui, m, pal, "up", "Up (Alt+↑)", can_up, false).clicked() {
+        cmd = Some(NavCmd::Up);
+    }
+    if icon_button(ui, m, pal, "refresh", "Refresh (F5)", true, false).clicked() {
+        cmd = Some(NavCmd::Refresh);
+    }
+    cmd
+}
+
+/// (address bar width, search box width) for what is left of a navigation row after its buttons.
+/// `search_base` is the search box's width at normal scale.
+pub(crate) fn nav_widths(ui: &Ui, m: &Metrics, search_base: f32) -> (f32, f32) {
+    let gap = ui.spacing().item_spacing.x + m.pad * 0.5;
+    let search_w = (m.accessibility_scale * search_base).min(ui.available_width() * 0.38);
+    let addr_w = (ui.available_width() - search_w - gap).max(m.accessibility_scale * 120.0);
+    (addr_w, search_w)
+}
+
 pub(crate) fn address_bar(
     ui: &mut Ui,
     m: &Metrics,
@@ -27,6 +87,27 @@ pub(crate) fn address_bar(
     width: f32,
     actions: &mut Vec<Action>,
 ) {
+    let dir = tab.shown_dir().to_path_buf();
+    let state = AddrState { text: &mut tab.address, editing: &mut tab.editing_addr, focus: &mut tab.addr_focus };
+    match breadcrumb_bar(ui, m, pal, Id::unique(("addr_edit", tab.id)), &dir, state, width) {
+        Some(AddrEvent::Go(path)) => actions.push(Action::Navigate(path)),
+        Some(AddrEvent::Submit(text)) => actions.push(Action::GoToAddress(text)),
+        Some(AddrEvent::Cancelled) | None => {}
+    }
+}
+
+/// Breadcrumb address bar showing `dir`: click a folder to go there, the "…" for the folders that
+/// do not fit, the empty part to type a path. `id` is the id of the edit field (other code may want
+/// to focus it); the other widgets of the bar derive their ids from it.
+pub(crate) fn breadcrumb_bar(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    id: Id,
+    dir: &Path,
+    st: AddrState<'_>,
+    width: f32,
+) -> Option<AddrEvent> {
     let (pill, pill_resp) = ui.allocate_exact_size(vec2(width, m.ctl_h), Sense::click());
     let r = CornerRadius::same(m.radius);
     ui.painter().rect_filled(pill, r, pal.control);
@@ -36,11 +117,13 @@ pub(crate) fn address_bar(
         Stroke::new(1.0_f32, pal.control_stroke),
         StrokeKind::Inside,
     );
+    // The empty parts of the bar behave like a text field (click to type a path), so they show the
+    // text cursor. The breadcrumbs and the "…" button sit on top of the bar and keep the arrow.
+    let pill_resp = pill_resp.on_hover_cursor(egui::CursorIcon::Text);
     let inner = pill.shrink2(vec2(m.pad * 0.4, 0.0));
 
-    if tab.editing_addr {
-        let id = Id::unique(("addr_edit", tab.id));
-        let te = egui::TextEdit::singleline(&mut tab.address)
+    if *st.editing {
+        let te = egui::TextEdit::singleline(&mut *st.text)
             .id(id)
             .frame(egui::Frame::NONE)
             .margin(Margin::symmetric(4, 0))
@@ -57,10 +140,10 @@ pub(crate) fn address_bar(
                 .layout(Layout::left_to_right(Align::Center)),
         );
         let resp = child.add(te);
-        if tab.addr_focus {
+        if *st.focus {
             resp.request_focus();
-            select_range(ui, id, 0, tab.address.chars().count());
-            tab.addr_focus = false;
+            select_range(ui, id, 0, st.text.chars().count());
+            *st.focus = false;
         }
         ui.painter().line_segment(
             [
@@ -70,22 +153,23 @@ pub(crate) fn address_bar(
             Stroke::new(2.0 * m.accessibility_scale, pal.accent),
         );
         if resp.lost_focus() {
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                actions.push(Action::GoToAddress(tab.address.clone()));
-            }
-            tab.editing_addr = false;
-            tab.address = tab.shown_dir().display().to_string();
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let event = if enter { AddrEvent::Submit(st.text.clone()) } else { AddrEvent::Cancelled };
+            *st.editing = false;
+            *st.text = dir.display().to_string();
+            return Some(event);
         }
-        return;
+        return None;
     }
 
     if pill_resp.clicked() {
-        tab.editing_addr = true;
-        tab.addr_focus = true;
-        tab.address = tab.shown_dir().display().to_string();
+        *st.editing = true;
+        *st.focus = true;
+        *st.text = dir.display().to_string();
     }
 
-    let segs = crumbs(&tab.shown_dir());
+    let mut out = None;
+    let segs = crumbs(dir);
     let seg_pad = m.pad * 0.7;
     let chev = m.small_icon * 0.7;
     let sep_w = chev + m.accessibility_scale * 4.0;
@@ -113,14 +197,37 @@ pub(crate) fn address_bar(
     let mut x = inner.left();
     if first > 0 {
         let rect = Rect::from_min_size(pos2(x, top), vec2(more_w, h));
-        let resp = ui.interact(rect, Id::unique(("crumb_more", tab.id)), Sense::click());
+        let resp = ui.interact(rect, id.with("crumb_more"), Sense::click());
         hover_fill(ui, rect, &resp, pal, m);
-        paint_text(ui, rect, "…", FontId::proportional(m.font), pal.text, false);
-        if resp.clicked() {
-            tab.editing_addr = true;
-            tab.addr_focus = true;
-            tab.address = tab.shown_dir().display().to_string();
+        // Three dots drawn by hand, centred in the button both ways (the "…" character sits on the
+        // text baseline and is not centred in its box).
+        let (dot, step) = ((m.font * 0.085).max(1.0), (m.font * 0.085).max(1.0) * 3.6);
+        for dx in [-step, 0.0, step] {
+            ui.painter().circle_filled(pos2(rect.center().x + dx, rect.center().y), dot, pal.text);
         }
+        // The folders that do not fit, closest first (like the overflow list of Windows Explorer).
+        // The rest of the bar still edits the address when clicked.
+        egui::Popup::menu(&resp.on_hover_text("Earlier folders"))
+            .align(egui::RectAlign::BOTTOM_START)
+            .show(|ui| {
+                // As wide as the widest entry, with the same padding left of the icon and right of
+                // the text (and not wider than a sensible maximum).
+                let (icon, gap) = (m.icon, m.pad * 0.6);
+                let widest = segs[..first].iter().map(|(l, _)| text_width(ui, l, m.font)).fold(0.0_f32, f32::max);
+                let w = (m.pad + icon + gap + widest + m.pad).min(m.accessibility_scale * 520.0);
+                ui.set_width(w);
+                for i in (0..first).rev() {
+                    let (row, resp) = ui.allocate_exact_size(vec2(w, m.row_h), Sense::click());
+                    hover_fill(ui, row, &resp, pal, m);
+                    draw_icon(ui, pos2(row.left() + m.pad + icon / 2.0, row.center().y), icon, "folder", Color32::WHITE);
+                    let text = Rect::from_min_max(pos2(row.left() + m.pad + icon + gap, row.top()), pos2(row.right() - m.pad, row.bottom()));
+                    paint_text(ui, text, &segs[i].0, FontId::proportional(m.font), pal.text, false);
+                    if resp.clicked() {
+                        out = Some(AddrEvent::Go(segs[i].1.clone()));
+                        ui.close();
+                    }
+                }
+            });
         x += more_w;
         draw_icon(
             ui,
@@ -146,7 +253,7 @@ pub(crate) fn address_bar(
             pos2(x, top),
             vec2(widths[i].min((inner.right() - x).max(0.0)), h),
         );
-        let resp = ui.interact(rect, Id::unique(("crumb", tab.id, i)), Sense::click());
+        let resp = ui.interact(rect, id.with(("crumb", i)), Sense::click());
         hover_fill(ui, rect, &resp, pal, m);
         paint_text(
             ui,
@@ -157,13 +264,40 @@ pub(crate) fn address_bar(
             false,
         );
         if resp.clicked() {
-            actions.push(Action::Navigate(segs[i].1.clone()));
+            out = Some(AddrEvent::Go(segs[i].1.clone()));
         }
         x += rect.width();
     }
+    out
 }
 
 pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab, width: f32) {
+    let hint = match tab.chosen_search_scope {
+        SearchScope::CurrentDir => format!("Search {}", tab.title()),
+        SearchScope::System => "Search entire system".to_owned(),
+    };
+    if search_pill(ui, m, pal, Id::unique("search_box"), &mut tab.search, hint, None, Some(&mut tab.chosen_search_scope), false, width) {
+        tab.view_dirty = true; // text or scope changed: run the search again
+    }
+}
+
+/// Search box: text field, clear button and, at the right end, either a plain magnifier or (with
+/// `scope`) the magnifier as a menu button that picks where to search. Returns true when the search
+/// has to run again (text cleared or edited, scope switched). `eat_escape` makes Esc inside the
+/// field not reach anything else (a dialog would otherwise close). `id` is the id of the text field
+/// (other code may want to focus it); the buttons derive their ids from it.
+pub(crate) fn search_pill(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    id: Id,
+    text: &mut String,
+    hint: String,
+    tooltip: Option<&str>,
+    scope: Option<&mut SearchScope>,
+    eat_escape: bool,
+    width: f32,
+) -> bool {
     let (pill, _) = ui.allocate_exact_size(vec2(width, m.ctl_h), Sense::hover());
     let r = CornerRadius::same(m.radius);
     ui.painter().rect_filled(pill, r, pal.control);
@@ -174,7 +308,7 @@ pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab,
         StrokeKind::Inside,
     );
 
-    // Right-most slot: scope dropdown (icon + chevron)
+    // Right-most slot: the magnifier (a menu button with a chevron when there is a scope to pick)
     let menu_w = m.small_icon + m.pad * 2.0;
     let menu_rect = Rect::from_min_max(
         pos2(pill.right() - menu_w, pill.top()),
@@ -192,21 +326,18 @@ pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab,
         pill.min + vec2(m.pad * 0.4, 0.0),
         pill.max - vec2(right_reserved, 0.0),
     );
-    let hint = match tab.chosen_search_scope {
-        SearchScope::CurrentDir => format!("Search {}", tab.title()),
-        SearchScope::System => "Search entire system".to_owned(),
-    };
-    let te = egui::TextEdit::singleline(&mut tab.search)
-        .id(Id::unique("search_box"))
+    let te = egui::TextEdit::singleline(&mut *text)
+        .id(id)
         .frame(egui::Frame::NONE)
         .margin(Margin::symmetric(4, 0))
         .desired_width(te_rect.width())
         .align(Align2::LEFT_CENTER)
         .hint_text(hint);
-    let resp = ui.put(te_rect, te);
-    if resp.changed() {
-        tab.view_dirty = true;
+    let mut resp = ui.put(te_rect, te);
+    if let Some(tip) = tooltip {
+        resp = resp.on_hover_text(tip);
     }
+    let mut changed = resp.changed();
 
     // Fluent-style underline on focus.
     if resp.has_focus() {
@@ -218,25 +349,35 @@ pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab,
             Stroke::new(2.0 * m.accessibility_scale, pal.accent),
         );
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            tab.search.clear();
-            tab.view_dirty = true;
+            if eat_escape {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            }
+            if !text.is_empty() {
+                text.clear();
+                changed = true;
+            }
             resp.surrender_focus();
         }
     }
 
     // Clear button
-    if !tab.search.is_empty() {
-        let cr = ui.interact(clear_rect, Id::unique("search_clear"), Sense::click());
+    if !text.is_empty() {
+        let cr = ui.interact(clear_rect, id.with("clear"), Sense::click());
         hover_fill(ui, clear_rect, &cr, pal, m);
         draw_icon(ui, clear_rect.center(), m.small_icon * 0.8, "close", pal.text);
         if cr.clicked() {
-            tab.search.clear();
-            tab.view_dirty = true;
+            text.clear();
+            changed = true;
         }
     }
 
-    // SearchScope dropdown menu
-    let mr = ui.interact(menu_rect, Id::unique("search_scope_btn"), Sense::click());
+    let Some(scope) = scope else {
+        draw_icon(ui, pos2(menu_rect.center().x, pill.center().y), m.small_icon, "search", pal.text_secondary);
+        return changed;
+    };
+
+    // Scope dropdown menu
+    let mr = ui.interact(menu_rect, id.with("scope"), Sense::click());
     hover_fill(ui, menu_rect, &mr, pal, m);
     let icon_c = pos2(
         menu_rect.left() + m.pad * 0.5 + m.small_icon / 2.0,
@@ -257,21 +398,19 @@ pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab,
         Stroke::new(1.2_f32, pal.text_secondary),
     ));
 
-    let mr = mr.on_hover_text(format!("Search scope: {}", tab.chosen_search_scope.label()));
+    let mr = mr.on_hover_text(format!("Search scope: {}", scope.label()));
     egui::Popup::menu(&mr)
         .align(egui::RectAlign::BOTTOM_END)
         .show(|ui| {
             ui.set_min_width(140.0);
-            for scope in [SearchScope::CurrentDir, SearchScope::System] {
-                if ui
-                    .selectable_value(&mut tab.chosen_search_scope, scope, scope.label())
-                    .clicked()
-                {
-                    tab.view_dirty = true; // re-run search with the new scope
+            for choice in [SearchScope::CurrentDir, SearchScope::System] {
+                if ui.selectable_value(&mut *scope, choice, choice.label()).clicked() {
+                    changed = true; // re-run the search with the new scope
                     ui.close();
                 }
             }
         });
+    changed
 }
 
 ///static_address determines the look of the static, immutable address bar for the settings tab.
@@ -328,20 +467,12 @@ impl Explorer {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
-                    if icon_button(ui, &m, &pal, "back", "Back (Alt+←)", can_back, false).clicked()
-                    {
-                        actions.push(Action::Back);
-                    }
-                    if icon_button(ui, &m, &pal, "forward", "Forward (Alt+→)", can_fwd, false)
-                        .clicked()
-                    {
-                        actions.push(Action::Forward);
-                    }
-                    if icon_button(ui, &m, &pal, "up", "Up (Alt+↑)", can_up, false).clicked() {
-                        actions.push(Action::Up);
-                    }
-                    if icon_button(ui, &m, &pal, "refresh", "Refresh (F5)", true, false).clicked() {
-                        actions.push(Action::Refresh);
+                    match nav_buttons(ui, &m, &pal, can_back, can_fwd, can_up) {
+                        Some(NavCmd::Back) => actions.push(Action::Back),
+                        Some(NavCmd::Forward) => actions.push(Action::Forward),
+                        Some(NavCmd::Up) => actions.push(Action::Up),
+                        Some(NavCmd::Refresh) => actions.push(Action::Refresh),
+                        None => {}
                     }
                     if tab.settings {
                         ui.add_space(m.pad * 0.5);
@@ -350,9 +481,7 @@ impl Explorer {
                         return;
                     }
                     ui.add_space(m.pad * 0.5);
-                    let gap = ui.spacing().item_spacing.x + m.pad * 0.5;
-                    let search_w = (m.accessibility_scale * 260.0).min(ui.available_width() * 0.38);
-                    let addr_w = (ui.available_width() - search_w - gap).max(m.accessibility_scale * 120.0);
+                    let (addr_w, search_w) = nav_widths(ui, &m, 260.0);
                     if tab.trash.is_some() {
                         static_address(ui, &m, &pal, addr_w, "recycle_bin", "Recycle Bin");
                     } else {
