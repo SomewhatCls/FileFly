@@ -222,25 +222,37 @@ impl Explorer {
                         }
                     }
 
+                    let (tb, db) = (
+                        op.progress.total_bytes.load(AO::Relaxed),
+                        op.progress.done_bytes.load(AO::Relaxed),
+                    );
+                    let (ti, di) = (
+                        op.progress.total_items.load(AO::Relaxed),
+                        op.progress.done_items.load(AO::Relaxed),
+                    );
+                    // Operations that count items but no bytes (deleting, moving within a drive) show
+                    // items per second; operations that report nothing at all (`run_job`) have no
+                    // details to show.
+                    let by_items = tb == 0 && ti > 0;
+                    let has_details = op.cancelable || tb > 0 || ti > 0;
                     if op.expanded {
                         ui.add_space(m.pad);
-                        speed_graph(ui, &m, &pal, &op.history);
-                        ui.add_space(m.pad * 0.6);
-                        let (tb, db) = (
-                            op.progress.total_bytes.load(AO::Relaxed),
-                            op.progress.done_bytes.load(AO::Relaxed),
-                        );
-                        let (ti, di) = (
-                            op.progress.total_items.load(AO::Relaxed),
-                            op.progress.done_items.load(AO::Relaxed),
-                        );
-                        if tb > 0 || op.speed > 0.0 {
-                            op_line(ui, &m, &pal, "Speed", &format!("{}/s", format_size(op.speed as u64)));
+                        if by_items || tb > 0 || op.speed > 0.0 {
+                            speed_graph(ui, &m, &pal, &op.history);
+                            ui.add_space(m.pad * 0.6);
+                            let speed = if by_items {
+                                format!("{:.1} items/s", op.speed)
+                            } else {
+                                format!("{}/s", format_size(op.speed as u64))
+                            };
+                            op_line(ui, &m, &pal, "Speed", &speed);
                         }
                         let eta = if preparing {
                             "Calculating…".to_owned()
                         } else if tb > db && op.speed > 1.0 {
                             format_eta((tb - db) as f64 / op.speed as f64)
+                        } else if by_items && ti > di && op.speed > 0.05 {
+                            format_eta((ti - di) as f64 / op.speed as f64)
                         } else {
                             "—".to_owned()
                         };
@@ -256,12 +268,14 @@ impl Explorer {
 
                     ui.add_space(m.pad * 1.2);
                     ui.horizontal(|ui| {
-                        let label = if op.expanded { "Fewer details" } else { "More details" };
-                        if ui
-                            .add(egui::Button::new(RichText::new(label).color(pal.accent)).frame(false))
-                            .clicked()
-                        {
-                            more = true;
+                        if has_details {
+                            let label = if op.expanded { "Fewer details" } else { "More details" };
+                            if ui
+                                .add(egui::Button::new(RichText::new(label).color(pal.accent)).frame(false))
+                                .clicked()
+                            {
+                                more = true;
+                            }
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if op.cancelable {
@@ -271,9 +285,10 @@ impl Explorer {
                                 {
                                     cancel = true;
                                 }
-                                if ui.add_enabled(!op.cancelling, egui::Button::new(if paused { "Resume" } else { "Pause" })
-                                    .corner_radius(CornerRadius::same(m.radius))
-                                    .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h))).clicked()
+                                if !op.progress.unpausable.load(AO::Relaxed)
+                                    && ui.add_enabled(!op.cancelling, egui::Button::new(if paused { "Resume" } else { "Pause" })
+                                        .corner_radius(CornerRadius::same(m.radius))
+                                        .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h))).clicked()
                                 {
                                     pause = true;
                                 }

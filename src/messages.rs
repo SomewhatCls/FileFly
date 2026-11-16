@@ -31,6 +31,8 @@ pub(crate) enum AppMsg {
     /// should go straight into rename mode (a new zip file does, like in Explorer), and whether it
     /// should be opened in a new tab ("Extract to…").
     Made {
+        /// The progress window entry of the job (see `Explorer::begin_op`); removed when this arrives.
+        op: u64,
         tab: u64,
         created: Vec<PathBuf>,
         errors: Vec<String>,
@@ -41,6 +43,8 @@ pub(crate) enum AppMsg {
     /// the move of their contents into the targets was planned (see `Explorer::run_extract`).
     /// Name clashes are in `plan.todo` and get the same question dialog as a paste.
     ExtractStaged {
+        /// The progress window entry of the job (see `Explorer::begin_op`).
+        op: u64,
         tab: u64,
         plan: PastePlan,
         stagings: Vec<PathBuf>,

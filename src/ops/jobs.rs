@@ -25,8 +25,12 @@ pub(crate) struct ActiveOp {
     pub(crate) hidden: bool,
     pub(crate) cancelling: bool,
     pub(crate) last_t: Instant,
+    /// The count (bytes, or items when `by_items`) at the last sample.
     pub(crate) last_bytes: u64,
-    /// Smoothed bytes per second, and the raw samples the graph draws.
+    /// The operation counts items but no bytes (deleting, moving within a drive): `speed` and
+    /// `history` are then items per second.
+    pub(crate) by_items: bool,
+    /// Smoothed bytes (or items) per second, and the raw samples the graph draws.
     pub(crate) speed: f32,
     pub(crate) history: Vec<f32>,
 }
@@ -47,18 +51,35 @@ impl ActiveOp {
             cancelling: false,
             last_t: now,
             last_bytes: 0,
+            by_items: false,
             speed: 0.0,
             history: Vec::new(),
         }
     }
 
-    /// Takes a speed sample about four times a second.
+    /// Takes a speed sample about four times a second: bytes per second, or items per second for
+    /// an operation that counts no bytes.
     pub(crate) fn sample(&mut self, now: Instant) {
         let dt = now.duration_since(self.last_t).as_secs_f32();
         if dt < 0.25 {
             return;
         }
-        let done = self.progress.done_bytes.load(AO::Relaxed);
+        let by_items =
+            self.progress.total_bytes.load(AO::Relaxed) == 0 && self.progress.total_items.load(AO::Relaxed) > 0;
+        let done = if by_items {
+            self.progress.done_items.load(AO::Relaxed)
+        } else {
+            self.progress.done_bytes.load(AO::Relaxed)
+        };
+        if by_items != self.by_items {
+            // The unit changed (the amount of work became known): start the graph over.
+            self.by_items = by_items;
+            self.speed = 0.0;
+            self.history.clear();
+            self.last_t = now;
+            self.last_bytes = done;
+            return;
+        }
         let paused = self.progress.paused.load(AO::Relaxed);
         let inst = if paused { 0.0 } else { done.saturating_sub(self.last_bytes) as f32 / dt };
         self.speed = if self.speed <= 0.0 { inst } else { self.speed * 0.7 + inst * 0.3 };

@@ -170,8 +170,8 @@ impl Explorer {
                         }
                     }
                 }
-                AppMsg::Made { tab, created, errors, rename, open } => {
-                    self.job_finished();
+                AppMsg::Made { op, tab, created, errors, rename, open } => {
+                    self.ops.retain(|o| o.id != op);
                     // "Extract all" from inside an opened zip: show the result (the tab only shows a
                     // temporary unpacked copy, so refreshing it would tell the user nothing).
                     let inside_zip = self
@@ -210,8 +210,8 @@ impl Explorer {
                         self.new_tab(first.clone());
                     }
                 }
-                AppMsg::ExtractStaged { tab, plan, stagings, errors, open } => {
-                    self.extract_staged(tab, plan, stagings, errors, open);
+                AppMsg::ExtractStaged { op, tab, plan, stagings, errors, open } => {
+                    self.extract_staged(op, tab, plan, stagings, errors, open);
                 }
                 AppMsg::AdminOffer { msg, retry } => self.admin_retry = Some((msg, retry)),
                 AppMsg::Stats(seq, stats) => {

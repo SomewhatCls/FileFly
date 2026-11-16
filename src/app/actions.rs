@@ -229,17 +229,37 @@ impl Explorer {
                     return;
                 }
                 let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
-                self.run_job("Moving to Recycle Bin…", move || match trash::delete_all(&p) {
-                    Ok(_) => Ok(String::new()),
-                    Err(e) => {
-                        let msg = format!("Could not move item to the Recycle Bin: {e}");
-                        if is_denied_text(&msg) {
-                            let retry = AdminRetry::Op(AdminOp::Delete { paths: p.clone() });
-                            let _ = tx.send(AppMsg::AdminOffer { msg: msg.clone(), retry });
-                            ui.request_repaint();
+                let spec = OpSpec {
+                    title: "Moving to Recycle Bin".to_owned(),
+                    from: p[0].parent().map(|d| d.display().to_string()).unwrap_or_default(),
+                    to: String::new(),
+                    cancelable: true,
+                };
+                self.run_op(spec, move |prog| {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    // Batches: progress between them and Cancel in the gaps. One call per file would be much
+                    // slower, because each starts its own shell operation.
+                    const BATCH: usize = 32;
+                    prog.unpausable.store(true, Relaxed); // a running batch cannot be paused
+                    prog.total_items.store(p.len() as u64, Relaxed);
+                    for (i, batch) in p.chunks(BATCH).enumerate() {
+                        if prog.cancelled() {
+                            return Ok(String::new()); // what is already in the bin stays there
                         }
-                        Err(msg)
+                        prog.set_current(&batch[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                        if let Err(e) = trash::delete_all(batch) {
+                            let msg = format!("Could not move item to the Recycle Bin: {e}");
+                            if is_denied_text(&msg) {
+                                // retry as administrator with what is still left
+                                let retry = AdminRetry::Op(AdminOp::Delete { paths: p[i * BATCH..].to_vec() });
+                                let _ = tx.send(AppMsg::AdminOffer { msg: msg.clone(), retry });
+                                ui.request_repaint();
+                            }
+                            return Err(msg);
+                        }
+                        prog.done_items.fetch_add(batch.len() as u64, Relaxed);
                     }
+                    Ok(String::new())
                 });
             }
             Action::RetryAsAdmin => {

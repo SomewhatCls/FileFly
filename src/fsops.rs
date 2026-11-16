@@ -271,6 +271,8 @@ pub struct OpProgress {
     pub cancel: AtomicBool,
     /// Set by the dialog; the worker waits (at chunk boundaries) until it is cleared.
     pub paused: AtomicBool,
+    /// The worker cannot pause (it runs an external ZIP tool): the dialog then has no Pause button.
+    pub unpausable: AtomicBool,
     current: std::sync::Mutex<String>,
     /// Items being worked on right now (id, name). The dialog lists them, each with its own cancel button.
     running: std::sync::Mutex<Vec<(u64, String)>>,
@@ -757,8 +759,11 @@ fn tool(program: impl AsRef<OsStr>) -> Command {
 
 /// Runs a tool to completion. `ErrorKind::NotFound` means the program is not installed (the caller
 /// then tries the next candidate); any other error carries the tool's own message.
-fn run_tool(mut cmd: Command, ok_codes: &[i32]) -> io::Result<()> {
-    let out = cmd.output()?;
+fn run_tool(mut cmd: Command, ok_codes: &[i32], prog: Option<&OpProgress>) -> io::Result<()> {
+    let out = match prog {
+        None => cmd.output()?,
+        Some(p) => output_cancellable(&mut cmd, p)?,
+    };
     if out.status.success() || out.status.code().is_some_and(|c| ok_codes.contains(&c)) {
         return Ok(());
     }
@@ -772,9 +777,40 @@ fn run_tool(mut cmd: Command, ok_codes: &[i32]) -> io::Result<()> {
     }))
 }
 
-fn run_first_available(tools: Vec<(Command, &'static [i32])>) -> io::Result<()> {
+/// `Command::output` that stops early: when the operation is cancelled the tool is killed and the
+/// error that follows is the "cancelled" one (see `is_cancelled`).
+fn output_cancellable(cmd: &mut Command, prog: &OpProgress) -> io::Result<std::process::Output> {
+    use std::io::Read;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    // A tool may print a line per file: its pipes are emptied while we wait, or it would block.
+    fn drain(r: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut r) = r {
+                let _ = r.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let (out, err) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let status = loop {
+        if let Some(s) = child.try_wait()? {
+            break s;
+        }
+        if prog.cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(io::ErrorKind::Interrupted, CANCELLED));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    Ok(std::process::Output { status, stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() })
+}
+
+fn run_first_available(tools: Vec<(Command, &'static [i32])>, prog: Option<&OpProgress>) -> io::Result<()> {
     for (cmd, ok) in tools {
-        match run_tool(cmd, ok) {
+        match run_tool(cmd, ok, prog) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
             done => return done,
         }
@@ -899,7 +935,7 @@ fn zip_temp(dest: &Path) -> PathBuf {
 /// Zips `items` (all in one folder) into the new file `dest`. The archive is built under a temporary
 /// name and renamed into place when finished, so `dest` never holds a half-written zip.
 /// Never overwrites: an existing `dest` is an error.
-pub fn compress_items(items: &[PathBuf], dest: &Path) -> io::Result<()> {
+pub fn compress_items(items: &[PathBuf], dest: &Path, prog: Option<&OpProgress>) -> io::Result<()> {
     let invalid = |m: &str| io::Error::new(io::ErrorKind::InvalidInput, m.to_owned());
     let parent = items.first().and_then(|p| p.parent()).ok_or_else(|| invalid("nothing to compress"))?;
     let mut names = Vec::with_capacity(items.len());
@@ -914,7 +950,7 @@ pub fn compress_items(items: &[PathBuf], dest: &Path) -> io::Result<()> {
     }
     let tmp = zip_temp(dest);
     journal_add("part", &tmp, dest);
-    let result = run_first_available(compress_tools(parent, items, &names, &tmp)).and_then(|_| {
+    let result = run_first_available(compress_tools(parent, items, &names, &tmp), prog).and_then(|_| {
         if tmp.is_file() {
             rename_retry(&tmp, dest)
         } else {
@@ -930,7 +966,7 @@ pub fn compress_items(items: &[PathBuf], dest: &Path) -> io::Result<()> {
 
 /// Unpacks `zip` into the new folder `dest` (same temp-then-rename safety as `compress_items`).
 /// Never merges into or overwrites an existing `dest`.
-pub fn extract_zip(zip: &Path, dest: &Path) -> io::Result<()> {
+pub fn extract_zip(zip: &Path, dest: &Path, prog: Option<&OpProgress>) -> io::Result<()> {
     if fs::symlink_metadata(dest).is_ok() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
     }
@@ -940,7 +976,7 @@ pub fn extract_zip(zip: &Path, dest: &Path) -> io::Result<()> {
         journal_settle(&tmp);
         return Err(e);
     }
-    let result = run_first_available(extract_tools(zip, &tmp)).and_then(|_| rename_retry(&tmp, dest));
+    let result = run_first_available(extract_tools(zip, &tmp), prog).and_then(|_| rename_retry(&tmp, dest));
     if result.is_err() {
         let _ = remove_existing(&tmp);
     }
@@ -951,7 +987,7 @@ pub fn extract_zip(zip: &Path, dest: &Path) -> io::Result<()> {
 /// Unpacks `zip` into a hidden staging folder inside `target` and returns its path.
 /// The caller moves the contents out (asking about clashes) and then calls `discard_staging`.
 /// Crash safety is the same as `extract_zip`: the folder is journaled as a `part` temp.
-pub fn extract_zip_staged(zip: &Path, target: &Path) -> io::Result<PathBuf> {
+pub fn extract_zip_staged(zip: &Path, target: &Path, prog: Option<&OpProgress>) -> io::Result<PathBuf> {
     let stem = zip.file_stem().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the zip has no name"))?;
     let dest = target.join(stem); // never created; only gives the temp its `.<name>.part-<pid>-<n>` shape
     let tmp = free_sibling(&dest, "part");
@@ -960,7 +996,7 @@ pub fn extract_zip_staged(zip: &Path, target: &Path) -> io::Result<PathBuf> {
         journal_settle(&tmp);
         return Err(e);
     }
-    if let Err(e) = run_first_available(extract_tools(zip, &tmp)) {
+    if let Err(e) = run_first_available(extract_tools(zip, &tmp), prog) {
         let _ = remove_existing(&tmp);
         journal_settle(&tmp);
         return Err(e);
@@ -1245,7 +1281,7 @@ pub fn mount_archive(zip: &Path) -> io::Result<PathBuf> {
     let base = dunce::canonicalize(&base)?;
     let stem = zip.file_stem().map(|s| s.to_os_string()).unwrap_or_else(|| "archive".into());
     let root = base.join(stem);
-    if let Err(e) = extract_zip(zip, &root) {
+    if let Err(e) = extract_zip(zip, &root, None) {
         let _ = fs::remove_dir_all(&base);
         return Err(e);
     }
