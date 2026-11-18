@@ -16,6 +16,7 @@ mod trash_table;
 mod widgets;
 pub mod picker;
 
+#[allow(dead_code)]
 pub(crate) use central::*;
 pub(crate) use chrome::*;
 pub(crate) use file_table::*;
