@@ -38,7 +38,9 @@ pub enum GitCommand {
 #[derive(Clone, Debug)]
 pub struct Branch {
     pub name: String,
+    #[allow(dead_code)]
     pub remote: Option<String>,
+    #[allow(dead_code)]
     pub tracking: Option<String>,
 }
 
@@ -83,6 +85,7 @@ pub struct GitSnapshot {
     pub root: PathBuf,
     pub head: Option<Head>,
     pub branches: Vec<Branch>,
+    #[allow(dead_code)]
     pub staged_files: usize,
 }
 

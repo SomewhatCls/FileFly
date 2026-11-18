@@ -8,7 +8,7 @@ impl Explorer {
         let tab = &mut self.tabs[ti];
         tab.load_gen += 1;
         tab.loading = true;
-        tab.error = None;
+        tab.notice = None;
         let (id, seq, dir) = (tab.id, tab.load_gen, tab.dir.clone());
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
@@ -41,7 +41,7 @@ impl Explorer {
         let path = match dunce::canonicalize(&path) {
             Ok(p) if p.is_dir() => clean_path(&p), // no \\?\ / \\?\UNC\ prefix (breaks cargo, cmd, ...)
             Ok(_) => {
-                self.tabs[ti].error = Some("That path is not a folder.".to_owned());
+                self.tabs[ti].error("That path is not a folder.".to_owned());
                 return;
             }
             Err(e) => {
@@ -49,7 +49,7 @@ impl Explorer {
                 if is_denied_io(&e) {
                     self.admin_retry = Some((msg.clone(), AdminRetry::OpenFolder(path.clone())));
                 }
-                self.tabs[ti].error = Some(msg);
+                self.tabs[ti].error(msg);
                 return;
             }
         };
@@ -149,7 +149,30 @@ impl Explorer {
             let mut h = DefaultHasher::new();
             tab.id.hash(&mut h);
             tab.dir.hash(&mut h);
+            tab.trash.is_some().hash(&mut h);
             acc ^= h.finish();
+            // Recycle Bin view: the sizes of the trashed folders, which are ordinary folders where
+            // the system keeps them. These are its own rows, not the listing hidden underneath.
+            if let Some(tr) = tab.trash.as_mut() {
+                for r in tr.rows.iter_mut() {
+                    let Some(p) = r.dir_path.clone() else { continue };
+                    if is_network_path(&p) {
+                        r.size_pending = false;
+                        continue;
+                    }
+                    if r.size.is_none() {
+                        match indexer.lookup(&p) {
+                            Some(old) => r.set_dir_size(old, true),
+                            None => missing = true,
+                        }
+                    }
+                    let mut h = DefaultHasher::new();
+                    p.hash(&mut h);
+                    acc ^= h.finish().rotate_left(13);
+                    paths.push(p);
+                }
+                continue;
+            }
             // Measuring folders over a network share would mean reading the whole share.
             if tab.settings || is_network_path(&tab.dir) {
                 continue;
@@ -268,10 +291,10 @@ impl Explorer {
                     if needs_elevation(&e) {
                         self.admin_retry = Some((msg.clone(), AdminRetry::RunFile(path.to_path_buf())));
                     }
-                    self.tabs[self.active].error = Some(msg);
+                    self.tabs[self.active].error(msg);
                 }
             }
-            Err(e) => self.tabs[self.active].error = Some(format!("Could not access item: {e}")),
+            Err(e) => self.tabs[self.active].error(format!("Could not access item: {e}")),
         }
     }
 

@@ -82,7 +82,7 @@ impl Explorer {
                                 if fs::read_dir(&t.dir).is_err_and(|x| is_denied_io(&x)) {
                                     self.admin_retry = Some((e.clone(), AdminRetry::OpenFolder(t.dir.clone())));
                                 }
-                                t.error = Some(e);
+                                t.error(e);
                             }
                         }
                         if visible_ids.contains(&t.id) {
@@ -100,6 +100,20 @@ impl Explorer {
                                 match result {
                                     Ok(rows) => {
                                         tr.rows = rows;
+                                        index_trash_dirs(tr);
+                                        // Folder sizes: the old value from the index at once, with a
+                                        // spinner; the scan (see `start_indexing`) refreshes it.
+                                        if let Some(ix) = self.indexer.as_ref() {
+                                            for r in tr.rows.iter_mut().filter(|r| r.dir_path.is_some()) {
+                                                match r.dir_path.as_deref().and_then(|p| ix.lookup(p)) {
+                                                    Some(old) => r.set_dir_size(old, true),
+                                                    None => r.size_pending = true,
+                                                }
+                                            }
+                                            if visible_ids.contains(&t.id) {
+                                                reindex = true;
+                                            }
+                                        }
                                         rebuild_trash_view(tr, &t.search);
                                         t.view_dirty = false;
                                     }
@@ -132,7 +146,7 @@ impl Explorer {
                     if let Err(e) = result {
                         match self.tabs[active].trash.as_mut() {
                             Some(tr) => tr.error = Some(e),
-                            None => self.tabs[active].error = Some(e),
+                            None => self.tabs[active].error(e),
                         }
                     }
                     // Refresh every pane on screen: a paste may have landed in a neighbouring pane.
@@ -152,12 +166,12 @@ impl Explorer {
                     if let Some(ti) = self.tabs.iter().position(|t| t.id == tab) {
                         match result {
                             Ok(()) => self.navigate(ti, target),
-                            Err(e) => self.tabs[ti].error = Some(e),
+                            Err(e) => self.tabs[ti].error(e),
                         }
                     }
                 }
-                AppMsg::Made { tab, created, errors, rename, open } => {
-                    self.job_finished();
+                AppMsg::Made { op, tab, created, errors, rename, open } => {
+                    self.ops.retain(|o| o.id != op);
                     // "Extract all" from inside an opened zip: show the result (the tab only shows a
                     // temporary unpacked copy, so refreshing it would tell the user nothing).
                     let inside_zip = self
@@ -168,7 +182,7 @@ impl Explorer {
                     if let (Some(ti), Some(first)) = (inside_zip, created.first()) {
                         self.navigate(ti, first.clone());
                         if !errors.is_empty() {
-                            self.tabs[ti].error = Some(errors.join("\n"));
+                            self.tabs[ti].error(errors.join("\n"));
                         }
                         continue;
                     }
@@ -189,15 +203,15 @@ impl Explorer {
                     // (after load_tab, which clears the tab's error)
                     if !errors.is_empty() {
                         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
-                            t.error = Some(errors.join("\n"));
+                            t.error(errors.join("\n"));
                         }
                     }
                     if let (true, Some(first)) = (open, created.first()) {
                         self.new_tab(first.clone());
                     }
                 }
-                AppMsg::ExtractStaged { tab, plan, stagings, errors, open } => {
-                    self.extract_staged(tab, plan, stagings, errors, open);
+                AppMsg::ExtractStaged { op, tab, plan, stagings, errors, open } => {
+                    self.extract_staged(op, tab, plan, stagings, errors, open);
                 }
                 AppMsg::AdminOffer { msg, retry } => self.admin_retry = Some((msg, retry)),
                 AppMsg::Stats(seq, stats) => {
@@ -207,7 +221,7 @@ impl Explorer {
                         }
                     }
                 }
-                AppMsg::UpdateChecked(r) => self.update_checked(r),
+                AppMsg::UpdateChecked { announce, result } => self.update_checked(announce, result),
                 AppMsg::ShortcutTarget { tab, result } => self.shortcut_resolved(tab, result),
                 AppMsg::QuickKind { path, is_dir } => {
                     self.probed_icons.remove(&path);
@@ -239,9 +253,37 @@ impl Explorer {
                 continue;
             };
             for t in &mut self.tabs {
+                // A trashed folder in the Recycle Bin view.
+                let mut in_trash = false;
+                if let Some(tr) = t.trash.as_mut() {
+                    if let Some(&i) = tr.dir_rows.get(&path) {
+                        if let Some(r) = tr.rows.get_mut(i) {
+                            // as in a normal listing: a running total never replaces a larger old value
+                            let bytes = match r.size {
+                                Some(old) if partial => old.max(size),
+                                _ => size,
+                            };
+                            r.set_dir_size(bytes, partial);
+                            if !partial && tr.sort_col == TrashSort::Size {
+                                tr.needs_sort = true;
+                            }
+                            in_trash = true;
+                        }
+                    }
+                }
+                if in_trash {
+                    continue;
+                }
                 if t.dir == parent {
                     if let Some(&i) = t.lookup.get(&path) {
-                        t.entries[i].dir_size = Some(size);
+                        // A running total never replaces a larger value that is already shown (the old
+                        // size from the index): the row keeps it, with a spinner, until the final size
+                        // arrives.
+                        let shown = t.entries[i].dir_size;
+                        t.entries[i].dir_size = Some(match shown {
+                            Some(old) if partial => old.max(size),
+                            _ => size,
+                        });
                         t.entries[i].dir_partial = partial;
                         // no re-sort for running totals, or rows would jump around while scanning
                         if !partial && t.sort_col == SortColumn::Size {

@@ -31,6 +31,8 @@ pub(crate) enum AppMsg {
     /// should go straight into rename mode (a new zip file does, like in Explorer), and whether it
     /// should be opened in a new tab ("Extract to…").
     Made {
+        /// The progress window entry of the job (see `Explorer::begin_op`); removed when this arrives.
+        op: u64,
         tab: u64,
         created: Vec<PathBuf>,
         errors: Vec<String>,
@@ -41,6 +43,8 @@ pub(crate) enum AppMsg {
     /// the move of their contents into the targets was planned (see `Explorer::run_extract`).
     /// Name clashes are in `plan.todo` and get the same question dialog as a paste.
     ExtractStaged {
+        /// The progress window entry of the job (see `Explorer::begin_op`).
+        op: u64,
         tab: u64,
         plan: PastePlan,
         stagings: Vec<PathBuf>,
@@ -49,12 +53,13 @@ pub(crate) enum AppMsg {
         open: Option<PathBuf>,
     },
     /// The "Check for updates" request finished (None = already up to date).
-    UpdateChecked(Result<Option<UpdateInfo>, String>),
+    UpdateChecked { announce: bool, result: Result<Option<UpdateInfo>, String> },
     /// A .lnk file was resolved (see `shortcut.rs`).
     ShortcutTarget { tab: u64, result: Result<PathBuf, String> },
     QuickKind { path: PathBuf, is_dir: Option<bool> },
 }
 
+#[derive(Clone)]
 pub(crate) enum Action {
     Navigate(PathBuf),
     NewTabAt(PathBuf),

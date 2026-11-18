@@ -109,7 +109,6 @@ pub(crate) struct Explorer {
     pub(crate) require_restart: bool,
     /// Current state of the update request.
     pub(crate) update: UpdateState,
-
     /// Whether the sidebar is compacted.
     pub(crate) sidebar_collapsed: bool,
     /// Width (points) of the expanded sidebar: restored from the session, kept current by
@@ -142,6 +141,7 @@ impl Explorer {
         let git_activated = settings.git_activated;
         let custom_frame = settings.custom_frame;
         let compact = settings.compact;
+        let check_for_update = settings.startup_update_check;
 
         ui.set_theme(match settings.theme {
             ThemeChoice::System => egui::ThemePreference::System,
@@ -293,6 +293,9 @@ impl Explorer {
         app.sync_special_icons();
         if START_DIR.get().is_none() {
             app.restore_session();
+        }
+        if check_for_update {
+            app.check_for_update(true);
         }
         // Tabs load when they first become visible (see `ui`), so restoring many tabs
         // doesn't read every folder and hold every listing in memory at once.

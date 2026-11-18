@@ -34,8 +34,8 @@ pub(crate) enum AdminRetry {
     RunFile(PathBuf),
 }
 
-pub(crate) fn is_denied_io(e: &std::io::Error) -> bool {
-    e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(5)
+pub(crate) fn is_denied_io(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(5)
 }
 
 /// Whether an error message (already formatted) says "access denied".
@@ -50,7 +50,7 @@ pub(crate) fn is_denied_text(s: &str) -> bool {
 }
 
 /// A program that Windows refused to start because it needs elevation (error 740).
-pub(crate) fn needs_elevation(e: &std::io::Error) -> bool {
+pub(crate) fn needs_elevation(e: &io::Error) -> bool {
     e.raw_os_error() == Some(740)
 }
 
@@ -233,7 +233,7 @@ mod imp {
         let params_w = wide(params);
         let dir_w = dir.map(wide);
         let mut info = ShellExecuteInfo {
-            cb_size: std::mem::size_of::<ShellExecuteInfo>() as u32,
+            cb_size: size_of::<ShellExecuteInfo>() as u32,
             mask: if wait { SEE_MASK_NOCLOSEPROCESS } else { 0 },
             hwnd: 0,
             verb: verb.as_ptr(),

@@ -551,6 +551,15 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             |ui| fl_switch(ui, m, pal, &mut sp.s.git_activated),
         );
         fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Check for updates on launch",
+            Some("If active, the app will contact GitHub on launch to check for the newest release. If an update was found, it is shown as a notification."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.startup_update_check),
+        );
+        fl_divider(ui, m, pal);
         let (hint, label) = match &sp.update {
             UpdateState::Idle => (
                 "Checks the github releases for whether the latest version is installed.".to_owned(),
@@ -664,6 +673,7 @@ impl Explorer {
             st.calculate_folder_sizes = s.calculate_folder_sizes;
             st.git_activated = s.git_activated;
             st.compact = s.compact;
+            st.startup_update_check = s.startup_update_check;
             self.settings_dirty = true;
             if s.theme != old.theme {
                 ui.set_theme(theme_pref(s.theme));

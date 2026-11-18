@@ -230,11 +230,13 @@ pub struct Palette {
     pub hover: Color32,
     pub danger: Color32,
     pub danger_bg: Color32,
+    pub success: Color32,
+    pub success_bg: Color32,
     pub chrome: Color32,
 }
 
-fn a(c: u8, alpha: f32) -> Color32 {
-    Color32::from_rgba_unmultiplied(c, c, c, (alpha * 255.0).round() as u8)
+fn grey(luminance: u8, alpha: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(luminance, luminance, luminance, (alpha * 255.0).round() as u8)
 }
 fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (alpha * 255.0).round() as u8)
@@ -245,6 +247,10 @@ fn luminance(c: Color32) -> f32 {
     (0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32) / 255.0
 }
 
+fn rgb(r: u8, g: u8, b: u8) -> Color32 {
+    Color32::from_rgb(r, g, b)
+}
+
 impl Palette {
     pub fn new(theme: Theme, accent: Accent, transparency:TransparencyEffect) -> Self {
         let dark = theme == Theme::Dark;
@@ -253,45 +259,49 @@ impl Palette {
         if dark {
             Self {
                 dark, transparency, accent: acc, on_accent,
-                base: Color32::from_rgb(50, 50, 50),
-                layer: if transparency != TransparencyEffect::None { a(55, 0.5) } else { Color32::from_rgb(40, 40, 40) },
-                flyout: Color32::from_rgb(80, 80, 80),
+                base: rgb(50, 50, 50),
+                layer: if transparency != TransparencyEffect::None { grey(55, 0.5) } else { Color32::from_rgb(40, 40, 40) },
+                flyout: rgb(80, 80, 80),
                 text: Color32::WHITE,
-                text_secondary: a(255, 0.785),
-                text_disabled: a(255, 0.36),
-                subtle_hover: a(255, 0.10),
-                subtle_pressed: a(255, 0.065),
-                control: a(120, 0.15),
-                control_hover: a(120, 0.15),
-                control_stroke: a(160, 0.2),
-                divider: a(255, 0.15),
+                text_secondary: grey(255, 0.785),
+                text_disabled: grey(255, 0.36),
+                subtle_hover: grey(255, 0.10),
+                subtle_pressed: grey(255, 0.065),
+                control: grey(120, 0.15),
+                control_hover: grey(120, 0.15),
+                control_stroke: grey(160, 0.2),
+                divider: grey(255, 0.15),
                 selected: with_alpha(acc, 0.1),
                 selected_hover: with_alpha(acc, 0.15),
                 hover: with_alpha(acc, 0.075),
-                danger: Color32::from_rgb(0xFF, 0x99, 0xA4),
-                danger_bg: Color32::from_rgb(0x44, 0x27, 0x26),
-                chrome: a(255, 0.05),
+                danger: rgb(255, 153, 164),
+                danger_bg: rgb(68, 39, 38),
+                success:    rgb(108,203,95),
+                success_bg: rgb(30,59,38),
+                chrome: grey(255, 0.05),
             }
         } else {
             Self {
                 dark, transparency, accent: acc, on_accent,
-                base: Color32::from_rgb(230, 230, 230),
-                layer: if transparency != TransparencyEffect::None { a(255, 0.6) } else { Color32::from_rgb(250, 250, 250) },
-                flyout: Color32::from_rgb(230, 230, 230),
-                text: Color32::from_rgb(26, 26, 26),
-                text_secondary: a(0, 0.6),
-                text_disabled: a(0, 0.36),
-                subtle_hover: a(0, 0.075),
-                subtle_pressed: a(0, 0.05),
-                control: a(240, 0.85),
-                control_hover: a(225, 0.85),
-                control_stroke: a(0, 0.15),
-                divider: a(0, 0.15),
+                base: rgb(230, 230, 230),
+                layer: if transparency != TransparencyEffect::None { grey(255, 0.6) } else { Color32::from_rgb(250, 250, 250) },
+                flyout: rgb(230, 230, 230),
+                text: rgb(26, 26, 26),
+                text_secondary: grey(0, 0.6),
+                text_disabled: grey(0, 0.36),
+                subtle_hover: grey(0, 0.075),
+                subtle_pressed: grey(0, 0.05),
+                control: grey(240, 0.85),
+                control_hover: grey(225, 0.85),
+                control_stroke: grey(0, 0.15),
+                divider: grey(0, 0.15),
                 selected: with_alpha(acc, 0.12),
                 selected_hover: with_alpha(acc, 0.15),
                 hover: with_alpha(acc, 0.10),
-                danger: Color32::from_rgb(0xC4, 0x2B, 0x1C),
-                danger_bg: Color32::from_rgb(0xFD, 0xE7, 0xE9),
+                danger: rgb(196, 43, 28),
+                danger_bg: rgb(253, 231, 233),
+                success:    rgb(15,115,15),
+                success_bg: rgb(210,230,205),
                 chrome: Color32::TRANSPARENT,
             }
         }
@@ -536,7 +546,7 @@ pub fn popup_shadow(dark: bool) -> egui::Shadow {
         offset: [0, 8],
         blur: if dark { 32 } else { 64 },
         spread: 0,
-        color: if dark { a(80,0.1) } else { Color32::from_black_alpha(42) },
+        color: if dark { grey(80, 0.1) } else { Color32::from_black_alpha(42) },
     }
 }
 

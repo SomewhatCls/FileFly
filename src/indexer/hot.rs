@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard, RwLock,
     },
     time::{Duration, Instant},
 };
@@ -56,11 +56,26 @@ pub struct HotFiles {
     map: Mutex<HashMap<PathBuf, Hot>>,
     /// Mirror of `map.len()`, so scan threads can skip the lock while nothing is hot.
     len: AtomicUsize,
+    /// The hot files' names grouped by folder, replaced as a whole whenever `map` changes. Scan
+    /// threads read this once per folder instead of locking `map` once per file.
+    by_dir: RwLock<Arc<HashMap<PathBuf, Vec<OsString>>>>,
 }
 
 impl HotFiles {
     fn map(&self) -> MutexGuard<'_, HashMap<PathBuf, Hot>> {
         self.map.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Mirrors `m` into `len` and `by_dir`. Called with `map` locked after every change of the set.
+    fn publish(&self, m: &HashMap<PathBuf, Hot>) {
+        self.len.store(m.len(), Ordering::Relaxed);
+        let mut by: HashMap<PathBuf, Vec<OsString>> = HashMap::new();
+        for p in m.keys() {
+            if let (Some(d), Some(n)) = (p.parent(), p.file_name()) {
+                by.entry(d.to_path_buf()).or_default().push(n.to_os_string());
+            }
+        }
+        *self.by_dir.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(by);
     }
 
     /// Marks `file` as always-exact (replaces an earlier pin).
@@ -82,6 +97,16 @@ impl HotFiles {
     /// Cheap check for the scan loop: is anything hot at all?
     pub fn is_active(&self) -> bool {
         self.len.load(Ordering::Relaxed) > 0
+    }
+
+    /// Names of the hot files that live directly in `dir` (empty almost always). Meant to be asked
+    /// once per folder by the scan; unlike `contains` it never waits for a lock the writers hold.
+    pub fn names_in(&self, dir: &Path) -> Vec<OsString> {
+        if !self.is_active() {
+            return Vec::new();
+        }
+        let snap = Arc::clone(&self.by_dir.read().unwrap_or_else(|e| e.into_inner()));
+        snap.get(dir).cloned().unwrap_or_default()
     }
 
     pub fn contains(&self, p: &Path) -> bool {
@@ -115,21 +140,21 @@ impl HotFiles {
                 true
             }
         };
-        self.len.store(m.len(), Ordering::Relaxed);
+        self.publish(&m);
         news
     }
 
     pub fn remove(&self, p: &Path) {
         let mut m = self.map();
         m.remove(p);
-        self.len.store(m.len(), Ordering::Relaxed);
+        self.publish(&m);
     }
 
     /// Files whose poll time has come. Also forgets files that have been quiet for `LIFETIME`.
     pub fn due(&self, now: Instant) -> Vec<PathBuf> {
         let mut m = self.map();
         m.retain(|_, h| now.saturating_duration_since(h.last_change) < LIFETIME);
-        self.len.store(m.len(), Ordering::Relaxed);
+        self.publish(&m);
         m.iter_mut()
             .filter(|(_, h)| h.next_poll <= now)
             .map(|(p, h)| {
@@ -145,7 +170,7 @@ impl HotFiles {
         let mut m = self.map();
         let Some(size) = size else {
             m.remove(p);
-            self.len.store(m.len(), Ordering::Relaxed);
+            self.publish(&m);
             return true;
         };
         let Some(h) = m.get_mut(p) else { return false };

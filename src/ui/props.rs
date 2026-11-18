@@ -12,7 +12,7 @@ pub(crate) struct Props {
     pub(crate) modified: Option<SystemTime>,
     pub(crate) accessed: Option<SystemTime>,
     pub(crate) readonly: bool,
-    pub(crate) hidden: bool,
+    //pub(crate) hidden: bool, UNUSED PENDING REDESIGN
     pub(crate) stats: Option<FolderStats>,
     pub(crate) stats_gen: u64,
 }
@@ -42,7 +42,7 @@ pub(crate) fn build_props(path: &Path) -> Props {
         modified: md.as_ref().and_then(|m| m.modified().ok()),
         accessed: md.as_ref().and_then(|m| m.accessed().ok()),
         readonly: md.as_ref().is_some_and(|m| m.permissions().readonly()),
-        hidden: md.as_ref().is_some_and(|m| attributes(m) & 0x2 != 0),
+        //hidden: md.as_ref().is_some_and(|m| attributes(m) & 0x2 != 0),
         stats: None,
         stats_gen: 0,
     }
@@ -56,7 +56,7 @@ impl Explorer {
         let (m, pal) = (self.m, self.pal);
         let fmt = self.settings.date_format;
         let cached = self.indexer.as_ref().and_then(|ix| ix.lookup(&p.path));
-        let mut readonly = p.readonly;
+        let readonly = p.readonly;
         let (mut copy_path, mut show_in_folder) = (false, false);
         let closed = dialog_shell(
             ui,

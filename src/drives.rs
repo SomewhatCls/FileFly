@@ -2,15 +2,14 @@
 //!
 //! * Windows talks to the Win32 API directly (`GetDriveTypeW`, `WNetGetConnectionW`, a bus-type query for
 //!   USB / SD storage that Windows reports as "fixed"), so mapped network drives are found too.
-//! * Everywhere else it uses `sysinfo` and recognises network file systems (nfs, cifs, sshfs, ...).
+//! * Everywhere else it uses `sysinfo` and recognises network file systems.
 //!
 //! `spawn_watcher` starts a background thread that re-checks the drives about once a second and calls back
 //! whenever something changed (a drive appeared / vanished, a volume label arrived, free space moved).
 //! Probing a disconnected network drive can block for tens of seconds, so network volumes are probed on
 //! helper threads: a slow share never stalls the watcher, and shows as "unavailable" while it does not answer.
 //!
-//! WSL distributions are shown with their proper `\\wsl.localhost\<distro>\` path (legacy `\\wsl$\...`
-//! paths and drive letters mapped to a WSL share are normalised to it).
+//! WSL path are mapped to their proper counterpart.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -86,9 +85,6 @@ pub fn spawn_watcher(
             let (mut list, pending) = imp::poll(&mut state, c.network.load(Ordering::Relaxed));
             list.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
             if last.as_ref() != Some(&list) {
-                if std::env::var_os("SLOPEXPLORE_DRIVE_LOG").is_some() {
-                    log_drives(&list);
-                }
                 last = Some(list.clone());
                 if !on_change(list) {
                     return;
@@ -110,27 +106,6 @@ pub fn spawn_watcher(
         }
     }
     ctl
-}
-
-/// Debug aid: with the environment variable `SLOPEXPLORE_DRIVE_LOG` set, every change the watcher sees is
-/// appended to `slopexplore_drives.log` in the temp folder.
-fn log_drives(list: &[DriveInfo]) {
-    use std::io::Write;
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let items: Vec<String> = list
-        .iter()
-        .map(|d| format!("{} \"{}\" {:?} {}/{}", d.mount_point.display(), d.name, d.kind, d.available, d.total))
-        .collect();
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(std::env::temp_dir().join("slopexplore_drives.log"))
-    {
-        let _ = writeln!(f, "[{secs}] {}", items.join(" | "));
-    }
 }
 
 /// One-shot listing of all drives, sorted by mount point (blocks for up to ~3 s while network drives answer).
@@ -295,7 +270,7 @@ mod imp {
         (ok != 0).then(|| from_wide(&name))
     }
 
-    /// "\\server\share" behind a mapped drive letter like "Z:".
+    /// "\\server\share" behind a mapped drive letter like "N:".
     fn remote_name(letter: char) -> Option<String> {
         let local = wide(&format!("{letter}:"));
         let mut buf = [0u16; 1024];
@@ -327,7 +302,7 @@ mod imp {
                 h,
                 0x002D_1400, // IOCTL_STORAGE_QUERY_PROPERTY
                 &q as *const Query as *const c_void,
-                std::mem::size_of::<Query>() as u32,
+                size_of::<Query>() as u32,
                 buf.as_mut_ptr() as *mut c_void,
                 buf.len() as u32,
                 &mut returned,

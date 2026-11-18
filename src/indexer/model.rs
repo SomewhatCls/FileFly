@@ -16,11 +16,11 @@ pub const PRUNE_SECS: u64 = 30 * 24 * 3600;
 
 /// Rough RAM cost of one cached folder; only used to turn the "MB" setting into an entry count.
 /// 16 B of data + 8 B key, in a hash table that is never completely full: ~40-50 B.
-/// (The old path-keyed cache cost ~170 B per folder, so the same limit now holds ~3.5x more.)
 pub const ENTRY_BYTES: usize = 48;
 
-/// Number of scan worker threads per `Indexer::start()`.
-pub const WORKERS: usize = 3;
+/// Number of scan worker threads per `Indexer::start()`. They share one walk over all listed
+/// folders (see `scan::scan_many`), so this is not limited by the number of folders.
+pub const WORKERS: usize = 8;
 
 pub fn entries_for_mb(mb: usize) -> usize {
     mb.saturating_mul(1 << 20) / ENTRY_BYTES

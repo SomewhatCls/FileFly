@@ -33,7 +33,7 @@ use super::model::{now_secs, CachedFolder};
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, MutexGuard, RwLock,
     },
     time::Duration,
@@ -53,6 +53,44 @@ pub use table::DB_FILE;
 pub type Cache = Arc<Store>;
 
 // The store: pending writes + RAM cache + table
+
+/// Which keys may be in the index file (a bit set with one hash). Once it is `ready`, a lookup of a
+/// key whose bit is clear returns at once instead of reading a slot from the file: during a first
+/// scan nearly every folder is such a miss. It only ever says "maybe" or "never stored", so
+/// stale bits (after a prune or a removal) are harmless.
+struct Filter {
+    bits: Vec<AtomicU64>,
+    ready: AtomicBool,
+}
+
+/// 2^26 bits = 8 MiB; about 3% false "maybe" answers for two million stored folders.
+const FILTER_BITS: usize = 1 << 26;
+
+impl Filter {
+    fn new() -> Filter {
+        Filter { bits: (0..FILTER_BITS / 64).map(|_| AtomicU64::new(0)).collect(), ready: AtomicBool::new(false) }
+    }
+    fn at(key: u64) -> (usize, u64) {
+        let i = key as usize & (FILTER_BITS - 1); // the slot number uses the top bits, so use the low ones
+        (i / 64, 1u64 << (i % 64))
+    }
+    fn add(&self, key: u64) {
+        let (w, m) = Filter::at(key);
+        self.bits[w].fetch_or(m, Ordering::Relaxed);
+    }
+    fn may_contain(&self, key: u64) -> bool {
+        if !self.ready.load(Ordering::Acquire) {
+            return true;
+        }
+        let (w, m) = Filter::at(key);
+        self.bits[w].load(Ordering::Relaxed) & m != 0
+    }
+    fn clear(&self) {
+        for w in &self.bits {
+            w.store(0, Ordering::Relaxed);
+        }
+    }
+}
 
 struct Inner {
     /// Clean read cache (limited by `max_ram`). Anything in here is also on disk or pending.
@@ -91,6 +129,8 @@ pub struct Store {
     /// None if the file can't be opened (e.g. a second window has it open): then RAM is all
     /// there is, the limit is ignored and nothing is saved.
     table: Option<RwLock<Table>>,
+    /// Present whenever there is a table; see `Filter`.
+    filter: Option<Filter>,
     inner: Mutex<Inner>,
     /// Serializes everything that modifies slots (flush, prune, clear).
     flush_lock: Mutex<()>,
@@ -108,8 +148,17 @@ impl Store {
             Some((t, tb)) => (Some(RwLock::new(t)), tb),
             None => (None, Vec::new()),
         };
+        // A new (empty) file needs no reading to know which keys it holds: none.
+        let filter = table.as_ref().map(|t| {
+            let f = Filter::new();
+            if t.read().unwrap_or_else(|e| e.into_inner()).count.load(Ordering::Relaxed) == 0 {
+                f.ready.store(true, Ordering::Release);
+            }
+            f
+        });
         Store {
             table,
+            filter,
             inner: Mutex::new(Inner {
                 ram: KeyMap::default(),
                 pending: KeyMap::default(),
@@ -176,6 +225,9 @@ impl Store {
         }
         // Not in memory: one slot read from the file.
         let table = self.table.as_ref()?;
+        if self.filter.as_ref().is_some_and(|f| !f.may_contain(k)) {
+            return None; // never stored: no need to read the file
+        }
         let r = table.read().unwrap_or_else(|e| e.into_inner()).get(k)?;
         let mut g = self.inner();
         if g.removals == epoch {
@@ -191,6 +243,11 @@ impl Store {
 
     pub fn put_many(&self, items: Vec<(PathBuf, CachedFolder)>) {
         let recs: Vec<(u64, Rec)> = items.iter().map(|(p, v)| (key_of(p), Rec::from_cf(v))).collect();
+        if let Some(f) = &self.filter {
+            for (k, _) in &recs {
+                f.add(*k); // before the entry can reach the file
+            }
+        }
         let persist = self.table.is_some();
         let need_flush = {
             let mut g = self.inner();
@@ -251,6 +308,11 @@ impl Store {
             let mut t = table.write().unwrap_or_else(|e| e.into_inner());
             let _ = reset(&mut t);
             drop(t);
+            if let Some(f) = &self.filter {
+                f.ready.store(false, Ordering::Release);
+                f.clear();
+                f.ready.store(true, Ordering::Release); // the file is empty again
+            }
             self.notify_resize(); // the file shrank back
         }
     }
@@ -301,6 +363,45 @@ impl Store {
         if let Some(table) = &self.table {
             let _ = table.read().unwrap_or_else(|e| e.into_inner()).file.sync_data();
         }
+    }
+
+    /// Reads the index file once from start to end. That puts it into the system's file cache and
+    /// fills `filter`, so that afterwards a lookup of a folder that was never stored costs no disk
+    /// read at all. Skipped for very large files (lookups then always read their slot).
+    pub fn warm(&self) {
+        const MAX: u64 = 256 << 20;
+        const CHUNK: u64 = 256; // slots per read
+        let (Some(table), Some(filter)) = (&self.table, &self.filter) else { return };
+        if filter.ready.load(Ordering::Acquire) {
+            return;
+        }
+        let mut buf = vec![0u8; CHUNK as usize * SLOT];
+        let mut slot = 0u64;
+        loop {
+            // Writers (flush, prune, clear) are held off per chunk, so no slot is read half-written.
+            let _fl = self.flush_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let t = table.read().unwrap_or_else(|e| e.into_inner());
+            let total = 1u64 << t.bits;
+            if slot_off(total) > MAX {
+                return;
+            }
+            if slot >= total {
+                break;
+            }
+            let n = (total - slot).min(CHUNK);
+            if read_at(&t.file, &mut buf[..n as usize * SLOT], slot_off(slot)).is_err() {
+                return;
+            }
+            for i in 0..n as usize {
+                if let Some(entries) = decode(&buf[i * SLOT..(i + 1) * SLOT], slot + i as u64, t.bits) {
+                    for (k, _) in entries {
+                        filter.add(k);
+                    }
+                }
+            }
+            slot += n;
+        }
+        filter.ready.store(true, Ordering::Release);
     }
 
     /// Drops entries not refreshed since `cutoff` (the PRUNE_SECS rule). Reads the whole file,

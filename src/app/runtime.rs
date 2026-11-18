@@ -5,15 +5,17 @@ use crate::prelude::*;
 impl Explorer{
 
     /// Function to draw the Apps entire interface.
-     fn draw_interface(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>){
+     fn draw_interface(&mut self, ui: &mut Ui, actions: &mut Vec<Action>){
          // Background painting.
          let rect = ui.content_rect();
 
          // "Try as administrator" is only offered while the error it belongs to is still showing
          // (the error bar of the table reads which tab that is).
-         if self.admin_retry.as_ref().is_some_and(|(m, _)| self.tabs[self.active].error.as_ref() != Some(m)) {
-             self.admin_retry = None;
-         }
+        if self.admin_retry.as_ref().is_some_and(|(m, _)| {
+            self.tabs[self.active].notice.as_ref().map(|n| &n.text) != Some(m)
+        }) {
+            self.admin_retry = None;
+        }
          let retry_tab = if self.admin_retry.is_some() { self.tabs[self.active].id } else { u64::MAX };
          ui.data_mut(|d| d.insert_temp(Id::unique("admin_retry_tab"), retry_tab));
          let painter = ui.layer_painter(egui::LayerId::background());
