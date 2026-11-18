@@ -531,44 +531,47 @@ impl Explorer {
                         return;
                     }
                     if in_trash {
-                        if cmd_button(
+                        if button(
                             ui,
                             &m,
                             &pal,
-                            "restore",
+                            Some("restore"),
                             Some("Restore"),
-                            "Restore the selected items",
+                            Some("Restore the selected items"),
                             trash_sel > 0,
                             false,
+                            None,
                         )
                         .clicked()
                         {
                             actions.push(Action::TrashRestoreSelected);
                         }
-                        if cmd_button(
+                        if button(
                             ui,
                             &m,
                             &pal,
-                            "delete",
+                            Some("delete"),
                             Some("Delete permanently"),
-                            "Delete the selected items permanently (Del)",
+                            Some("Delete the selected items permanently (Del)"),
                             trash_sel > 0,
                             false,
+                            None,
                         )
                         .clicked()
                         {
                             actions.push(Action::TrashPurgeSelected);
                         }
                         vsep(ui, &m, &pal);
-                        if cmd_button(
+                        if button(
                             ui,
                             &m,
                             &pal,
-                            "empty_bin",
+                            Some("empty_bin"),
                             Some("Empty Recycle Bin"),
-                            "Permanently delete everything in the Recycle Bin",
+                            Some("Permanently delete everything in the Recycle Bin"),
                             trash_any,
                             false,
+                            None,
                         )
                         .clicked()
                         {
@@ -592,15 +595,16 @@ impl Explorer {
                         return;
                     }
                     let wide = ui.available_width() > m.accessibility_scale * 640.0;
-                    if cmd_button(
+                    if button(
                         ui,
                         &m,
                         &pal,
-                        "new_folder",
+                        Some("new_folder"),
                         Some("New folder"),
-                        "New folder (Ctrl+Shift+F)",
+                        Some("New folder (Ctrl+Shift+F)"),
                         true,
                         false,
+                        None,
                     )
                     .clicked()
                     {
@@ -640,15 +644,16 @@ impl Explorer {
                         icon_button(ui, &m, &pal, "delete", "Delete (Del)", false, false);
                     }
                     vsep(ui, &m, &pal);
-                    if cmd_button(
+                    if button(
                         ui,
                         &m,
                         &pal,
-                        "eye",
+                        Some("eye"),
                         if wide { Some("Hidden items") } else { None },
-                        "Show hidden items",
+                        Some("Show hidden items"),
                         true,
                         hidden,
+                        None,
                     )
                     .clicked()
                     {

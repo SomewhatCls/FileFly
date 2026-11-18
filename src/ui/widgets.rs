@@ -159,17 +159,18 @@ pub(crate) fn icon_button(
     resp.on_hover_text(tip)
 }
 
-pub(crate) fn cmd_button(
+pub(crate) fn button(
     ui: &mut Ui,
     m: &Metrics,
     pal: &Palette,
-    icon: &str,
+    icon: Option<&str>,
     label: Option<&str>,
-    tip: &str,
+    tip: Option<&str>,
     enabled: bool,
     toggled: bool,
+    bg_color: Option<Color32>,
 ) -> egui::Response {
-    let isz = m.icon * 0.85;
+    let isz = if icon.is_some() { m.icon * 0.85 } else { 0.0 };
     let w = match label {
         Some(l) => m.pad * 2.0 + isz + m.pad * 0.6 + text_width(ui, l, m.font),
         None => m.ctl_h,
@@ -188,23 +189,37 @@ pub(crate) fn cmd_button(
     } else if enabled {
         hover_fill(ui, rect, &resp, pal, m);
     }
+    // Fills the background with an optional color.
+    if bg_color.is_some() {
+        ui.painter().rect_filled(rect, CornerRadius::same(m.radius), bg_color.unwrap());
+    }
     let c = if enabled { pal.text } else { pal.text_disabled };
     match label {
         Some(l) => {
-            draw_icon(
-                ui,
-                pos2(rect.left() + m.pad + isz / 2.0, rect.center().y),
-                isz,
-                icon,
-                c,
-            );
+            if  icon.is_some() {
+                draw_icon(
+                    ui,
+                    pos2(rect.left() + m.pad + isz / 2.0, rect.center().y),
+                    isz,
+                    icon.unwrap(),
+                    c,
+                );
+            }
             let tr =
                 Rect::from_min_max(pos2(rect.left() + m.pad * 1.6 + isz, rect.top()), rect.max);
             paint_text(ui, tr, l, FontId::proportional(m.font), c, false);
         }
-        None => draw_icon(ui, rect.center(), isz, icon, c),
+        None => {
+            if  icon.is_some() {
+                draw_icon(ui, rect.center(), isz, icon.unwrap(), c);
+            }
+        }
     }
-    resp.on_hover_text(tip)
+    if  tip.is_some() {
+        resp.on_hover_text(tip.unwrap())
+    }else {
+        resp
+    }
 }
 
 /// Truncates `text` with "…" so it fits in `max_w`.

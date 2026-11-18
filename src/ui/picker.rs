@@ -900,13 +900,13 @@ impl Explorer {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
                         let can_make = !icon_mode && archive_of(&p.dir).is_none() && p.list_error.is_none();
-                        if cmd_button(ui, &m, &pal, "new_folder", Some("New folder"), "New folder (Ctrl + Shift + F)", can_make, false)
+                        if button(ui, &m, &pal, Some("new_folder"), Some("New folder"), Some("New folder (Ctrl + Shift + F)"), can_make, false, None)
                             .clicked()
                         {
                             input.new_folder = true;
                         }
                         vsep(ui, &m, &pal);
-                        if cmd_button(ui, &m, &pal, "eye", Some("Hidden items"), "Show hidden items", true, p.show_hidden)
+                        if button(ui, &m, &pal, Some("eye"), Some("Hidden items"), Some("Show hidden items"), true, p.show_hidden, None)
                             .clicked()
                         {
                             input.toggle_hidden = true;

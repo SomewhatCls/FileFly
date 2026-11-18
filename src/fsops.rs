@@ -279,6 +279,17 @@ pub struct OpProgress {
     /// Running items the user cancelled one by one: only they stop, the rest of the operation carries on.
     skipped: std::sync::Mutex<std::collections::HashSet<u64>>,
     any_skipped: AtomicBool,
+    /// "Delete permanently?" question of a delete the Recycle Bin can't fully take; the dialog answers it.
+    perm: std::sync::Mutex<PermPrompt>,
+}
+
+#[derive(Default)]
+enum PermPrompt {
+    #[default]
+    Idle,
+    Asking { count: usize, example: String, reason: String },
+    Delete,
+    Keep,
 }
 
 thread_local! {
@@ -307,6 +318,50 @@ impl OpProgress {
 
     pub fn cancelled(&self) -> bool {
         self.cancel.load(AO::Relaxed)
+    }
+
+    /// Worker thread: shows the question "delete these items permanently?" in the operation's panel and
+    /// blocks until the user answers or the operation is cancelled. `true` = delete permanently,
+    /// `false` = leave the items alone. `reason` may be empty (the dialog then words it generically).
+    pub fn ask_permanent(&self, count: usize, example: String, reason: String) -> bool {
+        *self.perm.lock().unwrap_or_else(|e| e.into_inner()) = PermPrompt::Asking { count, example, reason };
+        loop {
+            {
+                let mut p = self.perm.lock().unwrap_or_else(|e| e.into_inner());
+                if self.cancelled() {
+                    *p = PermPrompt::Idle;
+                    return false;
+                }
+                match *p {
+                    PermPrompt::Delete => {
+                        *p = PermPrompt::Idle;
+                        return true;
+                    }
+                    PermPrompt::Keep => {
+                        *p = PermPrompt::Idle;
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Dialog: the pending question, if any, as (item count, example name, reason).
+    pub fn permanent_question(&self) -> Option<(usize, String, String)> {
+        match &*self.perm.lock().unwrap_or_else(|e| e.into_inner()) {
+            PermPrompt::Asking { count, example, reason } => Some((*count, example.clone(), reason.clone())),
+            _ => None,
+        }
+    }
+
+    /// Dialog: the user's answer (`true` = delete permanently).
+    pub fn answer_permanent(&self, delete: bool) {
+        let mut p = self.perm.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(*p, PermPrompt::Asking { .. }) {
+            *p = if delete { PermPrompt::Delete } else { PermPrompt::Keep };
+        }
     }
 
     /// Worker thread: starts item `id` (ids are unique within one operation, never 0).

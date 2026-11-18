@@ -34,6 +34,7 @@ mod git;
 mod backdrop_blur;
 mod update;
 mod lnk_resolver;
+mod recycle_check;
 
 fn main() -> eframe::Result<()> {
     startup::run()

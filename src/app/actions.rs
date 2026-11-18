@@ -238,26 +238,101 @@ impl Explorer {
                 self.run_op(spec, move |prog| {
                     use std::sync::atomic::Ordering::Relaxed;
                     // Batches: progress between them and Cancel in the gaps. One call per file would be much
-                    // slower, because each starts its own shell operation.
+                    // slower, because each starts its own shell operation. A running shell operation
+                    // itself cannot be interrupted, so Cancel takes effect at the next gap.
                     const BATCH: usize = 32;
+                    let name_of = |x: &Path| x.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     prog.unpausable.store(true, Relaxed); // a running batch cannot be paused
                     prog.total_items.store(p.len() as u64, Relaxed);
-                    for (i, batch) in p.chunks(BATCH).enumerate() {
+
+                    // Like Explorer, find out up front what the Recycle Bin can't take (no bin on this
+                    // drive, bin turned off, single items bigger than its limit). Summing sizes can take a
+                    // moment: the panel shows "Calculating…" with the item being measured.
+                    prog.preparing.store(true, Relaxed);
+                    let (bin_ok, forced, forced_reason) = crate::recycle_check::split(&p, &|| prog.cancelled(), &|x| prog.set_current(&name_of(x)));
+                    prog.preparing.store(false, Relaxed);
+                    if prog.cancelled() {
+                        return Ok(String::new());
+                    }
+                    // The question is shown in this operation's panel in the ops window and this thread
+                    // waits for the answer. Cancel there (or cancelling the operation) changes nothing.
+                    if !forced.is_empty() && !prog.ask_permanent(forced.len(), name_of(&forced[0]), forced_reason) {
+                        return Ok(String::new());
+                    }
+
+                    // Items the bin refused anyway (the check above is an approximation).
+                    let mut denied: Vec<PathBuf> = Vec::new(); // no access rights -> offer administrator retry
+                    let mut refused: Vec<PathBuf> = Vec::new(); // -> ask: delete permanently?
+                    let mut denied_msg = String::new();
+
+                    for batch in bin_ok.chunks(BATCH) {
                         if prog.cancelled() {
-                            return Ok(String::new()); // what is already in the bin stays there
+                            break; // what is already in the bin stays there
                         }
-                        prog.set_current(&batch[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-                        if let Err(e) = trash::delete_all(batch) {
-                            let msg = format!("Could not move item to the Recycle Bin: {e}");
-                            if is_denied_text(&msg) {
-                                // retry as administrator with what is still left
-                                let retry = AdminRetry::Op(AdminOp::Delete { paths: p[i * BATCH..].to_vec() });
-                                let _ = tx.send(AppMsg::AdminOffer { msg: msg.clone(), retry });
-                                ui.request_repaint();
+                        prog.set_current(&name_of(&batch[0]));
+                        if trash::delete_all(batch).is_ok() {
+                            prog.done_items.fetch_add(batch.len() as u64, Relaxed);
+                            continue;
+                        }
+                        // A batch fails as a whole and may have been partly done, so find the culprit
+                        // by going item by item. This is the only case that pays the per-item cost.
+                        for path in batch {
+                            if prog.cancelled() {
+                                break;
                             }
-                            return Err(msg);
+                            prog.set_current(&name_of(path));
+                            // Already in the bin (done by the failed batch before it stopped).
+                            if fs::symlink_metadata(path).is_err() {
+                                prog.done_items.fetch_add(1, Relaxed);
+                                continue;
+                            }
+                            if let Err(e) = trash::delete(path) {
+                                let msg = format!("Could not move item to the Recycle Bin: {e}");
+                                if cfg!(debug_assertions) {
+                                    eprintln!("trash::delete({path:?}) failed: {e:?}");
+                                }
+                                if is_denied_text(&msg) {
+                                    denied.push(path.clone());
+                                    denied_msg = msg;
+                                } else {
+                                    refused.push(path.clone());
+                                }
+                            }
+                            prog.done_items.fetch_add(1, Relaxed);
                         }
-                        prog.done_items.fetch_add(batch.len() as u64, Relaxed);
+                    }
+
+                    // Whatever the user agreed to delete permanently: the items found up front, plus
+                    // any the bin refused after all (those need their own question).
+                    let mut for_good = forced;
+                    if !refused.is_empty()
+                        && !prog.cancelled()
+                        && prog.ask_permanent(refused.len(), name_of(&refused[0]), String::new())
+                    {
+                        for_good.extend(refused);
+                    }
+                    let mut failed = 0usize;
+                    let mut failed_msg = String::new();
+                    for path in &for_good {
+                        if prog.cancelled() {
+                            break;
+                        }
+                        prog.set_current(&name_of(path));
+                        if let Err(e) = delete_for_good(path) {
+                            failed += 1;
+                            failed_msg = format!("Could not delete “{}”: {e}", name_of(path));
+                        }
+                        prog.done_items.fetch_add(1, Relaxed);
+                    }
+
+                    if !denied.is_empty() {
+                        let retry = AdminRetry::Op(AdminOp::Delete { paths: denied });
+                        let _ = tx.send(AppMsg::AdminOffer { msg: denied_msg.clone(), retry });
+                        ui.request_repaint();
+                        return Err(denied_msg);
+                    }
+                    if failed > 0 {
+                        return Err(if failed == 1 { failed_msg } else { format!("{failed} items could not be deleted. Last error: {failed_msg}") });
                     }
                     Ok(String::new())
                 });
@@ -474,5 +549,14 @@ impl Explorer {
             Action::CheckForUpdate => self.check_for_update(false),
             Action::DownloadUpdate => self.open_update_download(),
         }
+    }
+}
+
+/// Deletes a file or folder for good (no Recycle Bin).
+fn delete_for_good(path: &Path) -> std::io::Result<()> {
+    if fs::symlink_metadata(path)?.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
     }
 }
