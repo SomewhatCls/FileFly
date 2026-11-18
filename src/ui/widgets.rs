@@ -378,9 +378,18 @@ pub(crate) fn menu_item(
 
 /// Contents of a context menu that can never run off the window: when the menu is taller than the
 /// window it scrolls instead of being cut off (the popup itself already shifts to stay on screen).
+const MENU_PADDING: i8 = 6; // padding to the window frame
+
 pub(crate) fn menu_scroll(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
-    let max_h = ui.ctx().content_rect().height();
-    // Set the UI height for the scroll menu to the same height as the entire Window.
+    // Everything the popup frame adds around the content:
+    // inner margin + stroke + the outer margin that provides the gap.
+    let style = ui.style();
+    let frame_overhead = style.spacing.menu_margin.sum().y
+        + 2.0 * style.visuals.window_stroke.width
+        + 2.0 * f32::from(MENU_PADDING);
+
+    let max_h = ui.ctx().content_rect().height() - frame_overhead;
+
     ui.set_max_height(max_h);
     egui::ScrollArea::vertical()
         .max_height(max_h)
@@ -391,7 +400,12 @@ pub(crate) fn menu_scroll(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 
 /// `resp.context_menu(..)` with the scrolling behavior of `menu_scroll`.
 pub(crate) fn scroll_context_menu(resp: &egui::Response, add: impl FnOnce(&mut Ui)) {
-    resp.context_menu(|ui| menu_scroll(ui, add));
+    let frame = egui::Frame::popup(&resp.ctx.global_style())
+        .outer_margin(Margin::symmetric(0, MENU_PADDING));
+
+    egui::Popup::context_menu(resp)
+        .frame(frame)
+        .show(|ui| menu_scroll(ui, add));
 }
 
 pub(crate) fn primary_button(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str) -> egui::Response {
