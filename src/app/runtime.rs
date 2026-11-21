@@ -257,6 +257,9 @@ impl eframe::App for Explorer {
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if self.use_custom_window_frame {
+            begin_resize_on_press(ctx, raw_input, &self.m);
+        }
         let reset = ctx
             .data_mut(|d| d.remove_temp::<bool>(Id::unique("pointer_reset")))
             .unwrap_or(false);

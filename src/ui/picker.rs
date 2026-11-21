@@ -900,13 +900,13 @@ impl Explorer {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
                         let can_make = !icon_mode && archive_of(&p.dir).is_none() && p.list_error.is_none();
-                        if button(ui, &m, &pal, Some("new_folder"), Some("New folder"), Some("New folder (Ctrl + Shift + F)"), can_make, false, None)
+                        if Btn::new().icon("new_folder").label("New folder").tip("New folder (Ctrl + Shift + F)").enabled(can_make).show(ui, &m, &pal)
                             .clicked()
                         {
                             input.new_folder = true;
                         }
                         vsep(ui, &m, &pal);
-                        if button(ui, &m, &pal, Some("eye"), Some("Hidden items"), Some("Show hidden items"), true, p.show_hidden, None)
+                        if Btn::new().icon("eye").label("Hidden items").tip("Show hidden items").toggled(p.show_hidden).show(ui, &m, &pal)
                             .clicked()
                         {
                             input.toggle_hidden = true;
@@ -940,7 +940,7 @@ impl Explorer {
                             ui.checkbox(show, "Show extracted files when complete");
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if secondary_button(ui, &m, "Cancel").clicked() {
+                            if secondary_button(ui, &m, &pal, "Cancel").clicked() {
                                 input.cancel = true;
                             }
                             if ui

@@ -15,6 +15,7 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    time::Duration,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::Sender,
@@ -65,6 +66,8 @@ pub struct Indexer {
     dir: PathBuf,
     generation: Arc<AtomicU64>,
     cache_dirty: Arc<AtomicBool>,
+    /// Whether the app window has focus (see `set_focused`).
+    focused: Arc<AtomicBool>,
     live: Arc<AtomicUsize>,
     tx: Sender<IndexMsg>,
     ctx: egui::Context,
@@ -88,6 +91,7 @@ impl Indexer {
             dir: dir.to_path_buf(),
             generation: Arc::new(AtomicU64::new(0)),
             cache_dirty: Arc::new(AtomicBool::new(false)),
+            focused: Arc::new(AtomicBool::new(true)),
             live: Arc::new(AtomicUsize::new(0)),
             tx,
             ctx,
@@ -187,6 +191,12 @@ impl Indexer {
         }
     }
 
+    /// Tells the indexer whether the window has focus. Rescans that are only due because the
+    /// entry outlived `TTL_SECS` wait for focus, so they never start while the user is elsewhere.
+    pub fn set_focused(&self, focused: bool) {
+        self.focused.store(focused, Ordering::Relaxed);
+    }
+
     /// True while a scan started by `start()` still has a live worker thread.
     pub fn is_running(&self) -> bool {
         self.live.load(Ordering::SeqCst) > 0
@@ -228,6 +238,7 @@ impl Indexer {
         let generation = Arc::clone(&self.generation);
         let dirty = Arc::clone(&self.cache_dirty);
         let hot = Arc::clone(&self.hot);
+        let focused = Arc::clone(&self.focused);
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
         self.live.fetch_add(1, Ordering::SeqCst);
@@ -237,6 +248,9 @@ impl Indexer {
             let now = now_secs();
             // Up-to-date folders are answered right away, the rest goes into the walk.
             let mut todo = Vec::new();
+            // Unchanged folders whose entry merely aged past the TTL: they keep showing their size
+            // and are re-scanned once the window has focus.
+            let mut aged = Vec::new();
             for folder in folders {
                 if generation.load(Ordering::Relaxed) != my_gen {
                     return;
@@ -249,6 +263,13 @@ impl Indexer {
                             return;
                         }
                         ctx.request_repaint();
+                    }
+                    None if cached.as_ref().is_some_and(|c| c.modified_ns == stamp) => {
+                        if tx.send(IndexMsg::Size(folder.clone(), cached.map_or(0, |c| c.size))).is_err() {
+                            return;
+                        }
+                        ctx.request_repaint();
+                        aged.push((folder, stamp));
                     }
                     None => {
                         // Not up to date: the row keeps the old size, with a spinner, until the walk
@@ -272,7 +293,20 @@ impl Indexer {
                 let _ = tx.send(IndexMsg::Size(p.to_path_buf(), n));
                 ctx.request_repaint();
             };
-            scan_many(todo, &cache, &generation, my_gen, &dirty, &hot, WORKERS, &progress, &done);
+            if !todo.is_empty() {
+                scan_many(todo, &cache, &generation, my_gen, &dirty, &hot, WORKERS, &progress, &done);
+            }
+            if aged.is_empty() {
+                return;
+            }
+            // Once started a scan may run in the background; only the start waits for focus.
+            while !focused.load(Ordering::Relaxed) {
+                if generation.load(Ordering::Relaxed) != my_gen {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            scan_many(aged, &cache, &generation, my_gen, &dirty, &hot, WORKERS, &progress, &done);
         });
     }
 

@@ -531,48 +531,18 @@ impl Explorer {
                         return;
                     }
                     if in_trash {
-                        if button(
-                            ui,
-                            &m,
-                            &pal,
-                            Some("restore"),
-                            Some("Restore"),
-                            Some("Restore the selected items"),
-                            trash_sel > 0,
-                            false,
-                            None,
-                        )
+                        if Btn::new().icon("restore").label("Restore").tip("Restore the selected items").enabled(trash_sel > 0).show(ui, &m, &pal)
                         .clicked()
                         {
                             actions.push(Action::TrashRestoreSelected);
                         }
-                        if button(
-                            ui,
-                            &m,
-                            &pal,
-                            Some("delete"),
-                            Some("Delete permanently"),
-                            Some("Delete the selected items permanently (Del)"),
-                            trash_sel > 0,
-                            false,
-                            None,
-                        )
+                        if Btn::new().icon("delete").label("Delete permanently").tip("Delete the selected items permanently (Del)").enabled(trash_sel > 0).show(ui, &m, &pal)
                         .clicked()
                         {
                             actions.push(Action::TrashPurgeSelected);
                         }
                         vsep(ui, &m, &pal);
-                        if button(
-                            ui,
-                            &m,
-                            &pal,
-                            Some("empty_bin"),
-                            Some("Empty Recycle Bin"),
-                            Some("Permanently delete everything in the Recycle Bin"),
-                            trash_any,
-                            false,
-                            None,
-                        )
+                        if Btn::new().icon("empty_bin").label("Empty Recycle Bin").tip("Permanently delete everything in the Recycle Bin").enabled(trash_any).show(ui, &m, &pal)
                         .clicked()
                         {
                             actions.push(Action::TrashEmpty);
@@ -595,17 +565,7 @@ impl Explorer {
                         return;
                     }
                     let wide = ui.available_width() > m.accessibility_scale * 640.0;
-                    if button(
-                        ui,
-                        &m,
-                        &pal,
-                        Some("new_folder"),
-                        Some("New folder"),
-                        Some("New folder (Ctrl+Shift+F)"),
-                        true,
-                        false,
-                        None,
-                    )
+                    if Btn::new().icon("new_folder").label("New folder").tip("New folder (Ctrl+Shift+F)").show(ui, &m, &pal)
                     .clicked()
                     {
                         actions.push(Action::NewFolder);
@@ -644,17 +604,7 @@ impl Explorer {
                         icon_button(ui, &m, &pal, "delete", "Delete (Del)", false, false);
                     }
                     vsep(ui, &m, &pal);
-                    if button(
-                        ui,
-                        &m,
-                        &pal,
-                        Some("eye"),
-                        if wide { Some("Hidden items") } else { None },
-                        Some("Show hidden items"),
-                        true,
-                        hidden,
-                        None,
-                    )
+                    if { let b = Btn::new().icon("eye").tip("Show hidden items").toggled(hidden); if wide { b.label("Hidden items") } else { b } }.show(ui, &m, &pal)
                     .clicked()
                     {
                         actions.push(Action::ToggleHidden);

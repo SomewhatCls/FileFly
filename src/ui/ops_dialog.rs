@@ -212,19 +212,10 @@ fn op_panel(ui: &mut Ui, m: &Metrics, pal: &Palette, op: &mut ActiveOp, width: f
         ui.add_space(m.pad * 1.2);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // Right to left: Cancel ends up rightmost, like in a Windows dialog.
-            if ui
-                .add(
-                    egui::Button::new("Cancel")
-                        .corner_radius(CornerRadius::same(m.radius))
-                        .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
-                )
-                .clicked()
-            {
+            if secondary_button(ui, m, pal, "Cancel").clicked() {
                 out.perm = Some(false);
             }
-            if button(ui, &m, &pal, None, Some("Delete permanently"), None, true, false, Some(with_alpha(pal.accent, 0.7)))
-                .clicked()
-            {
+            if primary_button(ui, m, pal, "Delete permanently").clicked() {
                 out.perm = Some(true);
             }
         });
@@ -235,39 +226,27 @@ fn op_panel(ui: &mut Ui, m: &Metrics, pal: &Palette, op: &mut ActiveOp, width: f
     ui.horizontal(|ui| {
         if has_details {
             let label = if op.expanded { "Fewer details" } else { "More details" };
-            if ui
-                .add(egui::Button::new(RichText::new(label).color(pal.accent)).frame(false))
-                .clicked()
-            {
+            if Btn::new().label(label).show(ui, m, pal).clicked() {
                 out.more = true;
             }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if op.cancelable {
-                if ui
-                    .add_enabled(
-                        !op.cancelling,
-                        egui::Button::new("Cancel")
-                            .corner_radius(CornerRadius::same(m.radius))
-                            .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
-                    )
-                    .clicked()
-                {
+                let idle = !op.cancelling;
+                if Btn::new().label("Cancel").kind(BtnKind::Standard).enabled(idle).show(ui, m, pal).clicked() {
                     out.cancel = true;
                 }
                 if !op.progress.unpausable.load(AO::Relaxed)
-                    && ui
-                        .add_enabled(
-                            !op.cancelling,
-                            egui::Button::new(if paused { "Resume" } else { "Pause" })
-                                .corner_radius(CornerRadius::same(m.radius))
-                                .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
-                        )
+                    && Btn::new()
+                        .label(if paused { "Resume" } else { "Pause" })
+                        .kind(BtnKind::Standard)
+                        .enabled(idle)
+                        .show(ui, m, pal)
                         .clicked()
                 {
                     out.pause = true;
                 }
-            } else if secondary_button(ui, m, "Hide").clicked() {
+            } else if secondary_button(ui, m, pal, "Hide").clicked() {
                 out.hide = true;
             }
         });

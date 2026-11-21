@@ -363,6 +363,9 @@ impl Explorer {
         // The drive watcher thread polls on its own; it only needs to know whether the window is in use.
         let focused = self.ui.input(|i| i.focused);
         self.drive_ctl.set_focused(focused);
+        if let Some(ix) = &self.indexer {
+            ix.set_focused(focused);
+        }
         if self.indexer.as_ref().is_some_and(|ix| ix.is_dirty()) {
             if self.last_save.elapsed() > Duration::from_secs(15) {
                 if let Some(ix) = &self.indexer {

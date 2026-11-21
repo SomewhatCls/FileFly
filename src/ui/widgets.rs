@@ -2,19 +2,21 @@
 
 use crate::prelude::*;
 
+fn margin(l: f32, r: f32, t: f32, b: f32) -> Margin {
+    Margin { left: l as i8, right: r as i8, top: t as i8, bottom: b as i8 }
+}
+
+fn sense(enabled: bool) -> Sense {
+    if enabled { Sense::click() } else { Sense::hover() }
+}
+
+fn text_color(pal: &Palette, enabled: bool) -> Color32 {
+    if enabled { pal.text } else { pal.text_disabled }
+}
+
 pub(crate) fn bar_frame(pal: &Palette, l: f32, r: f32, t: f32, b: f32) -> egui::Frame {
-    egui::Frame::new()
-        .fill(if pal.transparency != TransparencyEffect::None {
-            Color32::TRANSPARENT
-        } else {
-            pal.base
-        })
-        .inner_margin(Margin {
-            left: l as i8,
-            right: r as i8,
-            top: t as i8,
-            bottom: b as i8,
-        })
+    let fill = if pal.transparency != TransparencyEffect::None { Color32::TRANSPARENT } else { pal.base };
+    egui::Frame::new().fill(fill).inner_margin(margin(l, r, t, b))
 }
 
 /// The big rounded "card" on the right (nav row, command bar, file list, status bar share it).
@@ -28,28 +30,15 @@ pub(crate) fn layer_frame(
     round_top_left: bool,
 ) -> egui::Frame {
     let cr = if round_top_left && pal.transparency != TransparencyEffect::None {
-        CornerRadius {
-            nw: radius * 2,
-            ne: 0,
-            sw: 0,
-            se: 0,
-        }
+        CornerRadius { nw: radius * 2, ..CornerRadius::ZERO }
     } else {
         CornerRadius::ZERO
     };
-    egui::Frame::new()
-        .fill(pal.layer)
-        .corner_radius(cr)
-        .inner_margin(Margin {
-            left: l as i8,
-            right: r as i8,
-            top: t as i8,
-            bottom: b as i8,
-        })
+    egui::Frame::new().fill(pal.layer).corner_radius(cr).inner_margin(margin(l, r, t, b))
 }
 
 /// Wraps a pill around a label with a given color.
-pub(crate) fn status_pill(ui: &mut Ui, m: &Metrics, bg: Color32, text_color:  Color32, text: &str) {
+pub(crate) fn status_pill(ui: &mut Ui, m: &Metrics, bg: Color32, text_color: Color32, text: &str) {
     ui.style_mut().interaction.selectable_labels = false;
     ui.spacing_mut().item_spacing.x = 7.0;
     egui::Frame::new()
@@ -58,13 +47,8 @@ pub(crate) fn status_pill(ui: &mut Ui, m: &Metrics, bg: Color32, text_color:  Co
         .inner_margin(Margin::symmetric(9, 0))
         .outer_margin(Margin::symmetric(0, (m.pad * 0.6) as i8))
         .show(ui, |ui| {
-        ui.label(
-            RichText::new(text)
-                .color(text_color)
-                .strong()
-                .size(m.font * 0.93),
-        )}
-    );
+            ui.label(RichText::new(text).color(text_color).strong().size(m.font * 0.93))
+        });
 }
 
 /// Draws text and returns whether the text was truncated.
@@ -80,11 +64,7 @@ pub(crate) fn paint_text(
     job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width().max(1.0));
     let galley = ui.painter().layout_job(job);
     let elided = galley.elided;
-    let x = if right {
-        rect.right() - galley.size().x
-    } else {
-        rect.left()
-    };
+    let x = if right { rect.right() - galley.size().x } else { rect.left() };
     let pos = pos2(x, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, color);
     elided
@@ -105,8 +85,7 @@ pub(crate) fn hover_fill(ui: &Ui, rect: Rect, resp: &egui::Response, pal: &Palet
     } else {
         return;
     };
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(m.radius), c);
+    ui.painter().rect_filled(rect, CornerRadius::same(m.radius), c);
 }
 
 /// Hover / press feedback for list-like items (quick access, drives): accent-tinted fill plus a
@@ -116,13 +95,8 @@ pub(crate) fn list_hover(ui: &Ui, rect: Rect, resp: &egui::Response, pal: &Palet
     if !down && !resp.hovered() {
         return;
     }
-    let fill = if down {
-        pal.hover.gamma_multiply(1.6)
-    } else {
-        pal.hover
-    };
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(m.radius), fill);
+    let fill = if down { pal.hover.gamma_multiply(1.6) } else { pal.hover };
+    ui.painter().rect_filled(rect, CornerRadius::same(m.radius), fill);
     let marker = Rect::from_center_size(
         pos2(rect.left() + m.accessibility_scale * 2.0, rect.center().y),
         vec2(m.accessibility_scale * 3.0, m.font * 0.8),
@@ -130,6 +104,115 @@ pub(crate) fn list_hover(ui: &Ui, rect: Rect, resp: &egui::Response, pal: &Palet
     ui.painter()
         .rect_filled(marker, CornerRadius::same(2), pal.accent.gamma_multiply(0.6));
 }
+
+/// Visual style of a [`Btn`]; all kinds share hover / pressed / disabled behaviour.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum BtnKind {
+    /// Transparent until hovered (toolbars, title bars).
+    Subtle,
+    /// Bordered neutral control (dialogs, settings).
+    Standard,
+    /// Accent-filled call to action.
+    Accent,
+    /// Red destructive action.
+    Danger,
+}
+
+/// Scales the RGB channels of an opaque colour (hover / pressed shades of filled buttons).
+fn shade(c: Color32, f: f32) -> Color32 {
+    let s = |v: u8| (v as f32 * f).round() as u8;
+    Color32::from_rgb(s(c.r()), s(c.g()), s(c.b()))
+}
+
+/// The one Fluent button: optional icon and label, tooltip, toggled state and a [`BtnKind`].
+#[derive(Clone, Copy)]
+pub(crate) struct Btn<'a> {
+    icon: Option<&'a str>,
+    label: Option<&'a str>,
+    tip: Option<&'a str>,
+    kind: BtnKind,
+    enabled: bool,
+    toggled: bool,
+}
+
+impl<'a> Btn<'a> {
+    pub(crate) fn new() -> Self {
+        Self { icon: None, label: None, tip: None, kind: BtnKind::Subtle, enabled: true, toggled: false }
+    }
+    pub(crate) fn icon(mut self, icon: &'a str) -> Self { self.icon = Some(icon); self }
+    pub(crate) fn label(mut self, label: &'a str) -> Self { self.label = Some(label); self }
+    pub(crate) fn tip(mut self, tip: &'a str) -> Self { self.tip = Some(tip); self }
+    pub(crate) fn kind(mut self, kind: BtnKind) -> Self { self.kind = kind; self }
+    pub(crate) fn enabled(mut self, enabled: bool) -> Self { self.enabled = enabled; self }
+    pub(crate) fn toggled(mut self, toggled: bool) -> Self { self.toggled = toggled; self }
+
+    pub(crate) fn show(self, ui: &mut Ui, m: &Metrics, pal: &Palette) -> egui::Response {
+        let enabled = self.enabled && ui.is_enabled();
+        let filled = self.kind != BtnKind::Subtle;
+        let isz = if self.icon.is_some() { m.icon * 0.85 } else { 0.0 };
+        let gap = if self.icon.is_some() && self.label.is_some() { m.pad * 0.6 } else { 0.0 };
+        let text_w = self.label.map_or(0.0, |l| text_width(ui, l, m.font));
+        let content_w = isz + gap + text_w;
+        let w = if self.label.is_none() {
+            m.ctl_h
+        } else if filled {
+            (m.pad * 2.0 + content_w).max(m.accessibility_scale * 92.0)
+        } else {
+            m.pad * 2.0 + content_w
+        };
+        let (rect, resp) = ui.allocate_exact_size(vec2(w, m.ctl_h), sense(enabled));
+        let radius = CornerRadius::same(m.radius);
+        let (down, hover) = (resp.is_pointer_button_down_on(), resp.hovered());
+
+        // Background, then (for enabled buttons) hover / pressed feedback.
+        let accent_fill = match self.kind {
+            BtnKind::Accent => Some(pal.accent),
+            BtnKind::Danger => Some(DANGER_RED),
+            _ => None,
+        };
+        let text_col = match (enabled, self.kind) {
+            (false, _) => pal.text_disabled,
+            (_, BtnKind::Accent) => pal.on_accent,
+            (_, BtnKind::Danger) => Color32::WHITE,
+            _ => pal.text,
+        };
+        match accent_fill {
+            Some(fill) if enabled => {
+                let f = if down { 0.8 } else if hover { 0.9 } else { 1.0 };
+                ui.painter().rect_filled(rect, radius, shade(fill, f));
+            }
+            Some(_) => { ui.painter().rect_filled(rect, radius, pal.subtle_hover); }
+            None => {
+                if self.kind == BtnKind::Standard {
+                    ui.painter().rect_filled(rect, radius, pal.control);
+                    ui.painter()
+                        .rect_stroke(rect, radius, Stroke::new(1.0_f32, pal.control_stroke), StrokeKind::Inside);
+                }
+                if self.toggled {
+                    ui.painter().rect_filled(rect, radius, pal.selected);
+                } else if enabled {
+                    hover_fill(ui, rect, &resp, pal, m);
+                }
+            }
+        }
+
+        let mut x = rect.center().x - content_w / 2.0;
+        if let Some(icon) = self.icon {
+            draw_icon(ui, pos2(x + isz / 2.0, rect.center().y), isz, icon, text_col);
+            x += isz + gap;
+        }
+        if let Some(l) = self.label {
+            let tr = Rect::from_min_max(pos2(x, rect.top()), pos2(rect.right() - m.pad, rect.bottom()));
+            paint_text(ui, tr, l, FontId::proportional(m.font), text_col, false);
+        }
+        match self.tip {
+            Some(t) => resp.on_hover_text(t),
+            None => resp,
+        }
+    }
+}
+
+const DANGER_RED: Color32 = Color32::from_rgb(0xC4, 0x2B, 0x1C);
 
 pub(crate) fn icon_button(
     ui: &mut Ui,
@@ -140,101 +223,19 @@ pub(crate) fn icon_button(
     enabled: bool,
     toggled: bool,
 ) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(
-        vec2(m.ctl_h, m.ctl_h),
-        if enabled {
-            Sense::click()
-        } else {
-            Sense::hover()
-        },
-    );
-    if toggled {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(m.radius), pal.selected);
-    } else if enabled {
-        hover_fill(ui, rect, &resp, pal, m);
-    }
-    let c = if enabled { pal.text } else { pal.text_disabled };
-    draw_icon(ui, rect.center(), m.icon * 0.85, icon, c);
-    resp.on_hover_text(tip)
+    Btn::new().icon(icon).tip(tip).enabled(enabled).toggled(toggled).show(ui, m, pal)
 }
 
-pub(crate) fn button(
-    ui: &mut Ui,
-    m: &Metrics,
-    pal: &Palette,
-    icon: Option<&str>,
-    label: Option<&str>,
-    tip: Option<&str>,
-    enabled: bool,
-    toggled: bool,
-    bg_color: Option<Color32>,
-) -> egui::Response {
-    let isz = if icon.is_some() { m.icon * 0.85 } else { 0.0 };
-    let w = match label {
-        Some(l) => m.pad * 2.0 + isz + m.pad * 0.6 + text_width(ui, l, m.font),
-        None => m.ctl_h,
-    };
-    let (rect, resp) = ui.allocate_exact_size(
-        vec2(w, m.ctl_h),
-        if enabled {
-            Sense::click()
-        } else {
-            Sense::hover()
-        },
-    );
-    if toggled {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(m.radius), pal.selected);
-    } else if enabled {
-        hover_fill(ui, rect, &resp, pal, m);
-    }
-    // Fills the background with an optional color.
-    if bg_color.is_some() {
-        ui.painter().rect_filled(rect, CornerRadius::same(m.radius), bg_color.unwrap());
-    }
-    let c = if enabled { pal.text } else { pal.text_disabled };
-    match label {
-        Some(l) => {
-            if  icon.is_some() {
-                draw_icon(
-                    ui,
-                    pos2(rect.left() + m.pad + isz / 2.0, rect.center().y),
-                    isz,
-                    icon.unwrap(),
-                    c,
-                );
-            }
-            let tr =
-                Rect::from_min_max(pos2(rect.left() + m.pad * 1.6 + isz, rect.top()), rect.max);
-            paint_text(ui, tr, l, FontId::proportional(m.font), c, false);
-        }
-        None => {
-            if  icon.is_some() {
-                draw_icon(ui, rect.center(), isz, icon.unwrap(), c);
-            }
-        }
-    }
-    if  tip.is_some() {
-        resp.on_hover_text(tip.unwrap())
-    }else {
-        resp
-    }
+pub(crate) fn primary_button(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str) -> egui::Response {
+    Btn::new().label(text).kind(BtnKind::Accent).show(ui, m, pal)
 }
 
-/// Truncates `text` with "…" so it fits in `max_w`.
-fn fit_text(ui: &Ui, text: &str, font: f32, max_w: f32) -> String {
-    if text_width(ui, text, font) <= max_w {
-        return text.to_owned();
-    }
-    let mut chars: Vec<char> = text.chars().collect();
-    while chars.pop().is_some() {
-        let cand = format!("{}…", chars.iter().collect::<String>());
-        if text_width(ui, &cand, font) <= max_w {
-            return cand;
-        }
-    }
-    "…".to_owned()
+pub(crate) fn secondary_button(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str) -> egui::Response {
+    Btn::new().label(text).kind(BtnKind::Standard).show(ui, m, pal)
+}
+
+pub(crate) fn danger_button(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str) -> egui::Response {
+    Btn::new().label(text).kind(BtnKind::Danger).show(ui, m, pal)
 }
 
 /// creates a drop-down menu for the toolbar.
@@ -251,16 +252,13 @@ pub(crate) fn cmd_dropdown<R>(
 ) -> Option<R> {
     let icon_size = m.icon * 0.85;
     let chevron = m.small_icon * 0.7;
-    let label = label.map(|l| fit_text(ui, l, m.font, max_label_w));
 
-    let width = match &label {
-        Some(l) => m.pad * 3.2 + icon_size + chevron + text_width(ui, l, m.font),
+    // paint_text elides labels wider than their rect, so only the width needs capping here.
+    let width = match label {
+        Some(l) => m.pad * 3.2 + icon_size + chevron + text_width(ui, l, m.font).min(max_label_w),
         None => m.pad * 2.4 + icon_size + chevron,
     };
-    let (rect, resp) = ui.allocate_exact_size(
-        vec2(width, m.ctl_h),
-        if enabled { Sense::click() } else { Sense::hover() },
-    );
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, m.ctl_h), sense(enabled));
 
     // Show button as pressed while drop-down menu is opened.
     let open_id = resp.id.with("dd_open");
@@ -273,7 +271,7 @@ pub(crate) fn cmd_dropdown<R>(
         hover_fill(ui, rect, &resp, pal, m);
     }
 
-    let color = if enabled { pal.text } else { pal.text_disabled };
+    let color = text_color(pal, enabled);
     draw_icon(
         ui,
         pos2(rect.left() + m.pad + icon_size / 2.0, rect.center().y),
@@ -281,18 +279,18 @@ pub(crate) fn cmd_dropdown<R>(
         icon,
         color,
     );
-    let chevron_color = pos2(rect.right() - m.pad - chevron / 2.0, rect.center().y);
+    let chevron_pos = pos2(rect.right() - m.pad - chevron / 2.0, rect.center().y);
     draw_icon(
         ui,
-        chevron_color,
+        chevron_pos,
         chevron,
         "chevron_down",
         if enabled { pal.text_secondary } else { pal.text_disabled },
     );
-    if let Some(l) = &label {
+    if let Some(l) = label {
         let tr = Rect::from_min_max(
             pos2(rect.left() + m.pad * 1.6 + icon_size, rect.top()),
-            pos2(chevron_color.x - chevron / 2.0 - m.pad * 0.6, rect.bottom()),
+            pos2(chevron_pos.x - chevron / 2.0 - m.pad * 0.6, rect.bottom()),
         );
         paint_text(ui, tr, l, FontId::proportional(m.font), color, false);
     }
@@ -328,14 +326,7 @@ pub(crate) fn menu_item(
     enabled: bool,
 ) -> bool {
     let w = ui.available_width().max(m.accessibility_scale * 230.0);
-    let (rect, resp) = ui.allocate_exact_size(
-        vec2(w, m.row_h * 0.95),
-        if enabled {
-            Sense::click()
-        } else {
-            Sense::hover()
-        },
-    );
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, m.row_h * 0.95), sense(enabled));
     if enabled && resp.hovered() {
         ui.painter().rect_filled(
             rect.shrink2(vec2(0.0, 1.0)),
@@ -343,7 +334,7 @@ pub(crate) fn menu_item(
             pal.control_hover,
         );
     }
-    let col = if enabled { pal.text } else { pal.text_disabled };
+    let col = text_color(pal, enabled);
     if let Some(i) = icon {
         draw_icon(
             ui,
@@ -357,44 +348,31 @@ pub(crate) fn menu_item(
         pos2(rect.left() + m.pad * 2.2 + m.small_icon, rect.top()),
         pos2(rect.right() - m.pad, rect.bottom()),
     );
-    let hint_font_size = FontId::proportional(m.font * 0.86);
+    let hint_size = m.font * 0.86;
 
     // Width the hint occupies, so the label can stop before it.
-    let hint_width = hint.map_or(0.0, |h| {
-        ui.painter()
-            .layout_no_wrap(h.to_owned(), hint_font_size.clone(), pal.text_secondary)
-            .size()
-            .x
-            + m.pad
-    });
+    let hint_width = hint.map_or(0.0, |h| text_width(ui, h, hint_size) + m.pad);
 
     let mut label_rect = text_rect;
     label_rect.max.x = (text_rect.right() - hint_width).max(text_rect.left() + 1.0);
 
-    let truncated = paint_text(
-        ui,
-        label_rect,
-        label,
-        FontId::proportional(m.font),
-        col,
-        false,
-    );
+    let truncated = paint_text(ui, label_rect, label, FontId::proportional(m.font), col, false);
 
     if let Some(h) = hint {
-        paint_text(ui, text_rect, h, hint_font_size, pal.text_secondary, true);
+        paint_text(ui, text_rect, h, FontId::proportional(hint_size), pal.text_secondary, true);
     }
-    let resp = if truncated {
-        resp.on_hover_text(label)
+    if truncated {
+        resp.on_hover_text(label).clicked()
     } else {
-        resp
-    };
-    resp.clicked()
+        resp.clicked()
+    }
 }
+
+/// Gap between a popup menu and the window edge.
+const MENU_PADDING: i8 = 6;
 
 /// Contents of a context menu that can never run off the window: when the menu is taller than the
 /// window it scrolls instead of being cut off (the popup itself already shifts to stay on screen).
-const MENU_PADDING: i8 = 6; // padding to the window frame
-
 pub(crate) fn menu_scroll(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     // Everything the popup frame adds around the content:
     // inner margin + stroke + the outer margin that provides the gap.
@@ -421,24 +399,6 @@ pub(crate) fn scroll_context_menu(resp: &egui::Response, add: impl FnOnce(&mut U
     egui::Popup::context_menu(resp)
         .frame(frame)
         .show(|ui| menu_scroll(ui, add));
-}
-
-pub(crate) fn primary_button(ui: &mut Ui, m: &Metrics, pal: &Palette, text: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(text).color(pal.on_accent))
-            .fill(pal.accent)
-            .stroke(Stroke::NONE)
-            .corner_radius(CornerRadius::same(m.radius))
-            .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
-    )
-}
-
-pub(crate) fn secondary_button(ui: &mut Ui, m: &Metrics, text: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(text)
-            .corner_radius(CornerRadius::same(m.radius))
-            .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
-    )
 }
 
 /// Fluent-style dialog: rounded flyout surface, optional dimmed scrim. Returns true when closed (X / Esc).
@@ -486,18 +446,13 @@ pub(crate) fn dialog_shell(
             ui.horizontal(|ui| {
                 ui.label(RichText::new(title).size(m.font * 1.3).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if icon_button(ui, m, pal, "close", "Close", true, false).clicked() {
-                        closed = true;
-                    }
+                    closed |= icon_button(ui, m, pal, "close", "Close", true, false).clicked();
                 });
             });
             ui.add_space(m.pad);
             add(ui);
         });
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.egui_wants_keyboard_input() {
-        closed = true;
-    }
-    closed
+    closed || (ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.egui_wants_keyboard_input())
 }
 
 pub(crate) fn theme_pref(t: ThemeChoice) -> egui::ThemePreference {
@@ -506,16 +461,6 @@ pub(crate) fn theme_pref(t: ThemeChoice) -> egui::ThemePreference {
         ThemeChoice::Light => egui::ThemePreference::Light,
         ThemeChoice::Dark => egui::ThemePreference::Dark,
     }
-}
-
-pub(crate) fn danger_button(ui: &mut Ui, m: &Metrics, text: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(text).color(Color32::WHITE))
-            .fill(Color32::from_rgb(0xC4, 0x2B, 0x1C))
-            .stroke(Stroke::NONE)
-            .corner_radius(CornerRadius::same(m.radius))
-            .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h)),
-    )
 }
 
 /// Stepped busy indicator: 8 ticks with a fading tail, advancing 10x per second.

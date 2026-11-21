@@ -144,7 +144,7 @@ impl Default for Settings {
             unlimited_cache: true,
             git_activated: false,
             col_widths: [150.0, 110.0, 90.0],
-            left_drag_space: false,
+            left_drag_space: true,
             window_size: None,
             window_pos: None,
             custom_frame: true,
@@ -159,8 +159,32 @@ impl Default for Settings {
     }
 }
 
+/// Generates `copy_page_fields_from` / `page_fields_eq` for the fields the Settings page edits
+/// (window geometry, columns, the session and pins belong to the app and are left alone).
+macro_rules! page_fields {
+    ($($f:ident),* $(,)?) => {
+        /// Copies the Settings-page fields from `o`.
+        pub(crate) fn copy_page_fields_from(&mut self, o: &Settings) {
+            $(self.$f = o.$f;)*
+            #[cfg(not(windows))]
+            { self.follow_text_scale = false; }
+        }
+        /// Whether all Settings-page fields equal those of `o`.
+        pub(crate) fn page_fields_eq(&self, o: &Settings) -> bool {
+            true $(&& self.$f == o.$f)*
+        }
+    };
+}
+
 ///Implements the Settings functions.
 impl Settings {
+    page_fields!(
+        theme, font_size, follow_text_scale, left_drag_space, custom_frame, use_system_accent,
+        custom_accent, transparency_effect, show_hidden, date_format, network_drives,
+        max_search_results, search_threads, index_ram, unlimited_cache, calculate_folder_sizes,
+        git_activated, compact, startup_update_check, blur_paning,
+    );
+
     /// Size the UI actually uses. Following the system replaces the custom size.
     pub(crate) fn effective_font_size(&mut self, system_scale: f32) -> f32 {
         #[cfg(windows)]

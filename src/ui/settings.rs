@@ -92,7 +92,9 @@ pub(crate) fn fl_divider(ui: &mut Ui, m: &Metrics, pal: &Palette) {
         .rect_filled(r.shrink2(vec2(m.pad * 0.8, 0.0)), CornerRadius::ZERO, pal.divider);
 }
 
-/// One setting: title and optional description on the left, `control` vertically centred on the right.
+/// One setting: title and optional description on the left, `control` right-aligned beside them.
+/// The text takes the width the control leaves free; when that would drop below a minimum (narrow
+/// window) the control moves below the text instead, so nothing overlaps or gets squeezed.
 pub(crate) fn fl_row(
     ui: &mut Ui,
     metrics: &Metrics,
@@ -101,67 +103,84 @@ pub(crate) fn fl_row(
     description: Option<&str>,
     add_control: impl FnOnce(&mut Ui),
 ) {
-    // ---- Layout constants ----
+    let scale = metrics.accessibility_scale;
     let row_width = ui.available_width();
     let padding_x = metrics.pad * 1.6;
     let padding_y = metrics.pad * 0.9;
-    let title_description_gap = metrics.accessibility_scale * 2.0;
+    let title_description_gap = scale * 2.0;
+    let min_text_width = scale * 180.0;
+    let min_height = metrics.row_h * 1.55;
 
-    // Left ~55% of the row is the text column; the control goes to its right.
-    let text_column_width = ((row_width - padding_x * 3.0) * 0.55).max(metrics.accessibility_scale * 120.0);
+    // The control's natural width is only known after drawing it, so the layout decision uses the
+    // width remembered from the previous frame (a changed width repaints right away).
+    let width_id = ui.scope_id().with(("fl_row_control_width", title));
+    let known_width = ui.data(|d| d.get_temp::<f32>(width_id)).unwrap_or(0.0);
+    let stacked = row_width - padding_x * 3.0 - known_width < min_text_width;
+    let text_width = if stacked {
+        row_width - padding_x * 2.0
+    } else {
+        row_width - padding_x * 3.0 - known_width
+    };
 
-    // ---- Measure the text ----
     let title_galley = ui.painter().layout(
         title.to_owned(),
         FontId::proportional(metrics.font),
         palette.text,
-        text_column_width,
+        text_width,
     );
     let description_galley = description.map(|text| {
         ui.painter().layout(
             text.to_owned(),
             FontId::proportional(metrics.font * 0.88),
             palette.text_secondary,
-            text_column_width,
+            text_width,
         )
     });
-
     let title_height = title_galley.size().y;
     let text_block_height = match &description_galley {
         Some(desc) => title_height + title_description_gap + desc.size().y,
         None => title_height,
     };
 
-    // ---- Allocate the row ----
-    let row_height = (text_block_height + padding_y * 2.0).max(metrics.row_h * 1.55);
+    let stack_gap = metrics.pad * 0.6;
+    let row_height = if stacked {
+        text_block_height + stack_gap + metrics.ctl_h + padding_y * 2.0
+    } else {
+        (text_block_height + padding_y * 2.0).max(min_height)
+    };
     let (row_rect, _response) = ui.allocate_exact_size(vec2(row_width, row_height), Sense::hover());
 
-    // ---- Paint the text, vertically centered in the row ----
+    let text_top = if stacked {
+        row_rect.top() + padding_y
+    } else {
+        row_rect.center().y - text_block_height / 2.0
+    };
     let text_left = row_rect.left() + padding_x;
-    let text_top = row_rect.center().y - text_block_height / 2.0;
-
-    ui.painter()
-        .galley(pos2(text_left, text_top), title_galley, palette.text);
-
+    ui.painter().galley(pos2(text_left, text_top), title_galley, palette.text);
     if let Some(desc) = description_galley {
         let desc_top = text_top + title_height + title_description_gap;
-        ui.painter()
-            .galley(pos2(text_left, desc_top), desc, palette.text_secondary);
+        ui.painter().galley(pos2(text_left, desc_top), desc, palette.text_secondary);
     }
 
-    // ---- Control area: right of the text column, full row height ----
     let control_rect = Rect::from_min_max(
-        pos2(row_rect.left() + padding_x * 2.0 + text_column_width, row_rect.top()),
-        pos2(row_rect.right() - padding_x, row_rect.bottom()),
+        pos2(
+            text_left,
+            if stacked { row_rect.bottom() - padding_y - metrics.ctl_h } else { row_rect.top() },
+        ),
+        pos2(row_rect.right() - padding_x, if stacked { row_rect.bottom() - padding_y } else { row_rect.bottom() }),
     );
-
-    // new_child does NOT advance the parent's cursor (scope_builder did).
+    // new_child does NOT advance the parent's cursor.
     let mut control_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(control_rect)
             .layout(Layout::right_to_left(Align::Center)),
     );
     add_control(&mut control_ui);
+    let control_width = control_ui.min_rect().width();
+    if (control_width - known_width).abs() > 0.5 {
+        ui.data_mut(|d| d.insert_temp(width_id, control_width));
+        ui.ctx().request_repaint();
+    }
 }
 
 /// Fluent toggle switch with its "On" / "Off" label to the left.
@@ -194,18 +213,222 @@ pub(crate) fn fl_switch(ui: &mut Ui, m: &Metrics, pal: &Palette, on: &mut bool) 
     ui.label(RichText::new(if *on { "On" } else { "Off" }).color(pal.text_secondary));
 }
 
+/// Fluent slider: thin rounded track with an accent-filled part, a ring-and-dot thumb that grows on
+/// hover and shrinks while pressed, and the current value (plus `suffix`) to its right.
+/// `log` spreads the range logarithmically, `step` > 0 snaps the value. Check the returned response
+/// for `changed()`, `dragged()` and `drag_stopped()` as with any egui widget.
+/// Every slider reserves the same value and reset-button columns (the reset button only shows when
+/// `value != default`), so the tracks of stacked rows line up and the track takes the leftover width.
+pub(crate) fn fl_slider<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    value: &mut T,
+    default: T,
+    range: std::ops::RangeInclusive<T>,
+    log: bool,
+    step: f64,
+    suffix: &str,
+) -> egui::Response {
+    let (lo, hi) = (range.start().to_f64(), range.end().to_f64());
+    let to_t = |v: f64| {
+        let t = if log { (v.max(lo).ln() - lo.ln()) / (hi.ln() - lo.ln()) } else { (v - lo) / (hi - lo) };
+        t.clamp(0.0, 1.0)
+    };
+    // Snaps to the step / integer grid and into the range (also used for typed values).
+    let snap = |mut v: f64| {
+        if step > 0.0 {
+            v = lo + ((v - lo) / step).round() * step;
+        } else if T::INTEGRAL {
+            v = v.round();
+        }
+        v.clamp(lo, hi)
+    };
+    let from_t = |t: f64| snap(if log { (lo.ln() + t * (hi.ln() - lo.ln())).exp() } else { lo + t * (hi - lo) });
+    let plain = |v: f64| if T::INTEGRAL || step >= 1.0 { format!("{v:.0}") } else { format!("{v:.1}") };
+
+    let enabled = ui.is_enabled();
+    let thumb_r = m.font * 0.7;
+    let label_w = m.font * 6.5;
+    // One rect: [reset slot | track | value field], children placed by explicit coordinates.
+    // Preferred width is fixed so rows can tell how much room the control needs; the track only
+    // shrinks when even a stacked row is too narrow.
+    let field_h = m.ctl_h * 0.9;
+    let slot_w = m.ctl_h + m.pad * 0.5;
+    let track_w = (m.accessibility_scale * 200.0)
+        .min(ui.available_width() - slot_w - label_w - m.pad)
+        .max(m.accessibility_scale * 60.0);
+    let (rect, container) = ui.allocate_exact_size(
+        vec2(slot_w + track_w + m.pad + label_w, (thumb_r * 2.0).max(field_h)),
+        Sense::hover(),
+    );
+    let track_left = rect.left() + slot_w;
+    // Only the track itself reacts to the pointer; the value field is a text edit.
+    let track_hit = Rect::from_min_size(
+        pos2(track_left, rect.center().y - thumb_r),
+        vec2(track_w, thumb_r * 2.0),
+    );
+    let mut resp = ui.interact(
+        track_hit,
+        container.id.with("track"),
+        if enabled { Sense::click_and_drag() } else { Sense::hover() },
+    );
+    let (x0, x1) = (track_left + thumb_r, track_left + track_w - thumb_r);
+
+    let before = value.to_f64();
+    let mut new = before;
+    if enabled {
+        if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on() || resp.clicked()) {
+            new = from_t(((p.x - x0) / (x1 - x0)) as f64);
+        }
+        if resp.has_focus() {
+            let nudge = if step > 0.0 { step } else if T::INTEGRAL { 1.0 } else { (hi - lo) / 100.0 };
+            let dir = ui.input(|i| {
+                (i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::ArrowUp)) as i8
+                    - (i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowDown)) as i8
+            });
+            if dir != 0 {
+                new = (before + dir as f64 * nudge).clamp(lo, hi);
+            }
+        }
+        if new != before {
+            *value = T::from_f64(new);
+            resp.mark_changed();
+        }
+    }
+
+    // Track, then the filled part up to the thumb.
+    let cx = egui::lerp(x0..=x1, to_t(value.to_f64()) as f32);
+    let track = Rect::from_min_max(
+        pos2(x0, rect.center().y - m.accessibility_scale * 2.0),
+        pos2(x1, rect.center().y + m.accessibility_scale * 2.0),
+    );
+    let round = CornerRadius::same(255);
+    let (rail, fill) = if enabled {
+        (pal.text_secondary.gamma_multiply(0.5), pal.accent)
+    } else {
+        (pal.text_disabled, pal.text_disabled)
+    };
+    ui.painter().rect_filled(track, round, rail);
+    ui.painter().rect_filled(Rect::from_min_max(track.min, pos2(cx, track.max.y)), round, fill);
+
+    // Thumb: neutral ring with an accent dot.
+    let center = pos2(cx, rect.center().y);
+    let dot_target = if !enabled { 0.5 } else if resp.is_pointer_button_down_on() { 0.5 } else if resp.hovered() { 0.7 } else { 0.6 };
+    let dot = ui.ctx().animate_value_with_time(resp.id, dot_target, 0.1);
+    ui.painter().circle(center, thumb_r, pal.flyout, Stroke::new(1.0_f32, pal.control_stroke));
+    ui.painter().circle_filled(center, thumb_r * dot, fill);
+    if enabled && resp.hovered() {
+        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+    }
+
+    // Value field: shows the number (unit beside it); typing and pressing Enter applies the value,
+    // clamped into the range.
+    let field = Rect::from_min_max(
+        pos2(rect.right() - label_w, rect.center().y - field_h / 2.0),
+        pos2(rect.right(), rect.center().y + field_h / 2.0),
+    );
+    let edit_id = container.id.with("edit");
+    let buf_id = container.id.with("buf");
+    let focused = ui.ctx().memory(|mem| mem.has_focus(edit_id));
+    let radius = CornerRadius::same(m.radius);
+    if enabled {
+        ui.painter().rect_filled(field, radius, pal.control);
+        ui.painter().rect_stroke(field, radius, Stroke::new(1.0_f32, pal.control_stroke), StrokeKind::Inside);
+        if focused {
+            let underline = Rect::from_min_max(pos2(field.left() + 2.0, field.bottom() - 2.0), pos2(field.right() - 2.0, field.bottom()));
+            ui.painter().rect_filled(underline, CornerRadius::same(1), pal.accent);
+        }
+    }
+    let text_col = if enabled { pal.text } else { pal.text_disabled };
+    let inset = m.pad * 0.5;
+    let unit = suffix.trim();
+    let unit_w = if unit.is_empty() { 0.0 } else { text_width(ui, unit, m.font) + inset };
+    if !unit.is_empty() {
+        let unit_rect = Rect::from_min_max(field.min, pos2(field.right() - inset, field.bottom()));
+        paint_text(ui, unit_rect, unit, FontId::proportional(m.font), if enabled { pal.text_secondary } else { pal.text_disabled }, true);
+    }
+    let edit_rect = Rect::from_min_max(
+        pos2(field.left() + inset, field.top()),
+        pos2(field.right() - inset - unit_w, field.bottom()),
+    );
+    let mut text: String =
+        if focused { ui.data(|d| d.get_temp(buf_id)).unwrap_or_default() } else { plain(value.to_f64()) };
+    // A right-to-left layout centres the edit vertically in the field.
+    let edit = ui
+        .scope_builder(
+            egui::UiBuilder::new().max_rect(edit_rect).layout(Layout::right_to_left(Align::Center)),
+            |ui| {
+                // A text edit is at least `interact_size.y` tall; the app's is taller than the field,
+                // which pushed the text down.
+                ui.spacing_mut().interact_size.y = 0.0;
+                ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .id(edit_id)
+                        .font(FontId::proportional(m.font))
+                        .text_color(text_col)
+                        .align(Align2::RIGHT_CENTER)
+                        .frame(egui::Frame::NONE)
+                        .margin(Margin::ZERO)
+                        .desired_width(edit_rect.width()),
+                )
+            },
+        )
+        .inner;
+    if edit.gained_focus() {
+        // Select everything so typing replaces the number.
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
+            let end = egui::text::CCursor::new(text.chars().count());
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), end)));
+            state.store(ui.ctx(), edit_id);
+        }
+    }
+    if edit.has_focus() || edit.gained_focus() {
+        ui.data_mut(|d| d.insert_temp(buf_id, text.clone()));
+    }
+    if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        let typed = text.trim().trim_end_matches(unit).trim();
+        if let Some(v) = typed.parse::<f64>().ok().filter(|v| v.is_finite()) {
+            let v = snap(v);
+            if v != value.to_f64() {
+                *value = T::from_f64(v);
+                resp.mark_changed();
+            }
+        }
+    }
+
+    // Reset button in its own slot at the left; the slot stays empty while at the default.
+    if value.to_f64() != default.to_f64() {
+        let slot = Rect::from_min_size(rect.min, vec2(m.ctl_h, rect.height()));
+        let reset = ui
+            .scope_builder(
+                egui::UiBuilder::new().max_rect(slot).layout(Layout::top_down(Align::Center)),
+                |ui| ui.centered_and_justified(|ui| icon_button(ui, m, pal, "refresh", "Reset to default", true, false)).inner,
+            )
+            .inner;
+        if reset.clicked() {
+            *value = default;
+            resp.mark_changed();
+        }
+    }
+    resp
+}
+
 pub(crate) fn settings_page(ui: &mut Ui, rect: Rect, m: &Metrics, pal: &Palette, tab_id: u64, sp: &mut SettingsPage) {
+    // The footer's space is always reserved, so the button appearing never shifts the page.
+    let footer_h = m.ctl_h + m.pad * 2.0;
+    let scroll_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - footer_h));
+    let avail = rect.width();
+    let w = (avail - m.pad * 4.0).clamp(m.accessibility_scale * 240.0, m.accessibility_scale * 860.0);
+    let left = ((avail - w) / 2.0).max(m.pad * 2.0);
     ui.scope_builder(
         egui::UiBuilder::new()
             .id_salt(("settings_page", tab_id))
-            .max_rect(rect),
+            .max_rect(scroll_rect),
         |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let avail = ui.available_width();
-                    let w = (avail - m.pad * 4.0).clamp(m.accessibility_scale * 240.0, m.accessibility_scale * 860.0);
-                    let left = ((avail - w) / 2.0).max(m.pad * 2.0);
                     ui.horizontal_top(|ui| {
                         ui.add_space(left);
                         ui.vertical(|ui| {
@@ -216,6 +439,19 @@ pub(crate) fn settings_page(ui: &mut Ui, rect: Rect, m: &Metrics, pal: &Palette,
                 });
         },
     );
+    if !sp.s.page_fields_eq(&Settings::default()) {
+        let footer = Rect::from_min_max(pos2(rect.left() + left, rect.bottom() - footer_h), pos2(rect.left() + left + w, rect.bottom()));
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(footer).layout(Layout::left_to_right(Align::Center)),
+            |ui| {
+                if secondary_button(ui, m, pal, "Restore all defaults").clicked() {
+                    sp.s.copy_page_fields_from(&Settings::default());
+                    sp.font = sp.s.font_size;
+                    sp.font_edit = None;
+                }
+            },
+        );
+    }
 }
 
 pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut SettingsPage) {
@@ -251,15 +487,10 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             // The whole UI is sized from this value, so applying it mid-drag would move the slider
             // under the cursor. Preview in the handle, apply on release.
             ui.add_enabled_ui(!sp.s.follow_text_scale, |ui| {
-                let resp = ui.add(
-                    egui::Slider::new(&mut sp.font, 10.0..=24.0)
-                        .step_by(1.0)
-                        .suffix(" pt"),
-                );
+                let resp = fl_slider(ui, m, pal, &mut sp.font, 14.0, 10.0..=24.0, false, 1.0, " pt");
                 if resp.dragged() {
                     sp.font_edit = Some(sp.font);
                 } else if resp.drag_stopped() || resp.changed() {
-                    eprintln!("commit: sp.font = {}", sp.font);
                     sp.s.font_size = sp.font;
                     sp.font_edit = None;
                 }
@@ -416,7 +647,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             "Quick access",
             Some("Pin folders with the + button in the sidebar or a folder's right-click menu; unpin them from their own right-click menu."),
             |ui| {
-                if secondary_button(ui, m, "Restore defaults").clicked() {
+                if secondary_button(ui, m, pal, "Restore defaults").clicked() {
                     sp.reset_quick = true;
                 }
             },
@@ -450,21 +681,12 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             "Maximum search results",
             Some("Default: 100,000"),
             |ui| {
-                ui.add(
-                    egui::Slider::new(&mut sp.s.max_search_results, 1_usize..=10_000_000_usize)
-                        .logarithmic(true),
-                );
-                if sp.s.max_search_results != 100_000_usize && ui.button("⟲").on_hover_text("Reset to default").clicked() {
-                    sp.s.max_search_results = 100_000_usize;
-                }
+                fl_slider(ui, m, pal, &mut sp.s.max_search_results, 100_000, 1..=10_000_000, true, 0.0, "");
             },
         );
         fl_divider(ui, m, pal);
         fl_row(ui, m, pal, "Search threads", Some("Default: 4"), |ui| {
-            ui.add(egui::Slider::new(&mut sp.s.search_threads, 1_usize..=64_usize));
-            if sp.s.search_threads != 4_usize && ui.button("⟲").on_hover_text("Reset to default").clicked() {
-                sp.s.search_threads = 4_usize;
-            }
+            fl_slider(ui, m, pal, &mut sp.s.search_threads, 4, 1..=64, false, 0.0, "");
         });
     });
 
@@ -485,7 +707,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             fl_divider(ui, m, pal);
             let loc = format!("Index location: {}", sp.index_dir);
             fl_row(ui, m, pal, "Index location", Some(loc.as_str()), |ui| {
-                if secondary_button(ui, m, "Choose location…").clicked() {
+                if secondary_button(ui, m, pal, "Choose location…").clicked() {
                     sp.choose = true;
                 }
             });
@@ -495,7 +717,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 sp.cache_len
             );
             fl_row(ui, m, pal, "Rescan all folders", Some(cached.as_str()), |ui| {
-                if secondary_button(ui, m, "Rescan all").clicked() {
+                if secondary_button(ui, m, pal, "Rescan all").clicked() {
                     sp.rescan = true;
                 }
             });
@@ -507,24 +729,15 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 "Delete index",
                 Some("Removes all saved folder sizes from memory and disk; the folders on screen are measured again."),
                 |ui| {
-                    if danger_button(ui, m, "Delete index").clicked() {
+                    if danger_button(ui, m, pal, "Delete index").clicked() {
                         sp.delete_index = true;
                     }
                 },
             );
             fl_divider(ui, m, pal);
             fl_row(ui, m, pal, "Cache size (Experimental)",  Some("Sets the maximum ram allowed for caching folder sizes.\n Default: 64MB"), |ui| {
-                // The whole UI is sized from this value, so applying it mid-drag would move the slider
-                // under the cursor. Preview in the handle, apply on release.
                 ui.add_enabled_ui(!sp.s.unlimited_cache, |ui| {
-                    ui.add(
-                        egui::Slider::new(&mut sp.s.index_ram, 1_usize..=10_000_usize)
-                            .logarithmic(true)
-                            .suffix("MB"),
-                    );
-                    if sp.s.index_ram != 64_usize && ui.button("⟲").on_hover_text("Reset to default").clicked() {
-                        sp.s.index_ram = 64_usize;
-                    }
+                    fl_slider(ui, m, pal, &mut sp.s.index_ram, 64, 1..=10_000, true, 0.0, " MB");
                 });
             });
             fl_divider(ui, m, pal);
@@ -582,7 +795,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                     if available {
                         primary_button(ui, m, pal, label).clicked()
                     } else {
-                        secondary_button(ui, m, label).clicked()
+                        secondary_button(ui, m, pal, label).clicked()
                     }
                 })
                 .inner;
@@ -606,7 +819,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             "Open-source licenses",
             Some("FileFly is built with open-source libraries. Their copyright notices and license terms are listed here."),
             |ui| {
-                if secondary_button(ui, m, "View licenses").clicked() {
+                if secondary_button(ui, m, pal, "View licenses").clicked() {
                     sp.show_licenses = true;
                 }
             },
@@ -654,26 +867,7 @@ impl Explorer {
         }
         if s != old {
             // Only the fields the page edits: window geometry, columns and the session belong to the app.
-            let st = &mut self.settings;
-            st.theme = s.theme;
-            st.font_size = s.font_size;
-            st.follow_text_scale = if cfg!(windows) { s.follow_text_scale } else { false };
-            st.left_drag_space = s.left_drag_space;
-            st.custom_frame = s.custom_frame;
-            st.use_system_accent = s.use_system_accent;
-            st.custom_accent = s.custom_accent;
-            st.transparency_effect = s.transparency_effect;
-            st.show_hidden = s.show_hidden;
-            st.date_format = s.date_format;
-            st.network_drives = s.network_drives;
-            st.max_search_results = s.max_search_results;
-            st.search_threads = s.search_threads;
-            st.index_ram = s.index_ram;
-            st.unlimited_cache = s.unlimited_cache;
-            st.calculate_folder_sizes = s.calculate_folder_sizes;
-            st.git_activated = s.git_activated;
-            st.compact = s.compact;
-            st.startup_update_check = s.startup_update_check;
+            self.settings.copy_page_fields_from(&s);
             self.settings_dirty = true;
             if s.theme != old.theme {
                 ui.set_theme(theme_pref(s.theme));

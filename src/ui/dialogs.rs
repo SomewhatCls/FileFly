@@ -19,10 +19,10 @@ impl Explorer {
                 ui.label(&c.text);
                 ui.add_space(m.pad * 1.5);
                 ui.horizontal(|ui| {
-                    if danger_button(ui, &m, "Delete").clicked() {
+                    if danger_button(ui, &m, &pal, "Delete").clicked() {
                         choice = 1;
                     }
-                    if secondary_button(ui, &m, "Cancel").clicked() {
+                    if secondary_button(ui, &m, &pal, "Cancel").clicked() {
                         choice = 2;
                     }
                 });
@@ -109,14 +109,14 @@ impl Explorer {
                         if primary_button(ui, &m, &pal, "Replace").clicked() {
                             choice = 1;
                         }
-                        if secondary_button(ui, &m, "Keep both").clicked() {
+                        if secondary_button(ui, &m, &pal, "Keep both").clicked() {
                             choice = 2;
                         }
                     }
-                    if secondary_button(ui, &m, "Skip").clicked() {
+                    if secondary_button(ui, &m, &pal, "Skip").clicked() {
                         choice = 3;
                     }
-                    if secondary_button(ui, &m, "Cancel").clicked() {
+                    if secondary_button(ui, &m, &pal, "Cancel").clicked() {
                         choice = 4;
                     }
                 });

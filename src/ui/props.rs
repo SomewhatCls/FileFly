@@ -161,10 +161,10 @@ impl Explorer {
                 });*/
                 ui.add_space(m.pad);
                 ui.horizontal(|ui| {
-                    if secondary_button(ui, &m, "Copy path").clicked() {
+                    if secondary_button(ui, &m, &pal, "Copy path").clicked() {
                         copy_path = true;
                     }
-                    if secondary_button(ui, &m, "Show in folder").clicked() {
+                    if secondary_button(ui, &m, &pal, "Show in folder").clicked() {
                         show_in_folder = true;
                     }
                 });
