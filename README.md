@@ -1,4 +1,4 @@
-# FileFly - a cross-platform, quad-panning file manager
+# FileFly - a cross-platform, quad-paning file manager
 <img width="1804" height="1328" alt="image" src="https://github.com/user-attachments/assets/60aab92b-76a3-4a78-871d-e3a83e1d5a10" />
 
 ## Table of contents
@@ -39,8 +39,8 @@ In my Testing, FileFly searches through Windows directories about 1000x faster t
 ### Resources:
 In my Testing, FileFly uses between 3-5x less RAM than the Windows File Explorer in regular use. Thus, it usually stays below 100MB RAM usage, and often below 60MB too. It is also possible to further reduce the RAM usage in the indexer cache section of the settings.
 
-### Panning: 
-FileFly supports intelligent panning, with up to 4 directories being open at once. "Intelligent" here refers to the panes automatically being split along the shorter axis.
+### Paning: 
+FileFly supports intelligent paning, with up to 4 directories being open at once. "Intelligent" here refers to the panes automatically being split along the shorter axis.
 
 ### Folder Sizes:
 To obtain folder sizes in Windows File Explorer, one has to individually observe the properties of each folder. In addition, Windows takes a very long time to calculate them. On modern systems, this is unacceptable. Therefore, FileFly indexes folder sizes automatically and saves them in a compact binary format. Folder sizes are shown in the same Row as file sizes.
@@ -74,7 +74,7 @@ All common file operations, such as copy, paste, cut (move), delete, rename, dra
 - Font size, accessibility scaling and date/time format options.
 
 ## Feature Gallery
-### Panning
+### Paning
 <img width="1804" height="1328" alt="image" src="https://github.com/user-attachments/assets/f2311272-e328-451c-8ce6-75c289b57583" />
 <br><br>
 <img width="2880" height="1800" alt="image" src="https://github.com/user-attachments/assets/51c866fd-53b3-415d-b361-3467fa4f0de6" />
