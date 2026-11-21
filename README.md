@@ -17,7 +17,7 @@
 
 I started working on this project for 4 reasons:
 - I was tired of Windows Explorers lack of features and slow speed
-- I was also not a fan of the proprietary nature of its superior Windows alternatives (FilePilot, Directory Opus etc.)
+- I was also not a fan of the proprietary nature of its superior Windows alternatives (File Pilot, Directory Opus etc.)
 - I wanted to experience the capabilities of current chatbots in coding
 - I wanted to familiarize myself with the Rust programming language
 
