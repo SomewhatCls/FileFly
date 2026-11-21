@@ -3,6 +3,27 @@
 use crate::prelude::*;
 
 impl Explorer {
+    /// `X:\$Recycle.Bin` (and anything inside it): the raw storage of a drive's Recycle Bin, whose
+    /// `$I…`/`$R…` files mean nothing to a user. Those open the Recycle Bin view instead.
+    /// Only drive-letter paths on Windows can match; elsewhere this is always false.
+    pub(crate) fn is_recycle_bin_dir(p: &Path) -> bool {
+        use std::path::Component;
+        let mut c = p.components();
+        matches!(c.next(), Some(Component::Prefix(_)))
+            && matches!(c.next(), Some(Component::RootDir))
+            && matches!(c.next(), Some(Component::Normal(n)) if n.to_string_lossy().eq_ignore_ascii_case("$Recycle.Bin"))
+    }
+
+    /// `navigate`, except that a drive's `$Recycle.Bin` folder opens the Recycle Bin view
+    /// (so the sidebar entry and the Recycle Bin toolbar show up, like when clicking the sidebar entry).
+    pub(crate) fn navigate_or_bin(&mut self, ti: usize, path: PathBuf) {
+        if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&path) {
+            self.open_trash(ti);
+        } else {
+            self.navigate(ti, path);
+        }
+    }
+
     pub(crate) fn open_trash(&mut self, ti: usize) {
         let tab = &mut self.tabs[ti];
         if tab.trash.is_none() {

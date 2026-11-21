@@ -1,7 +1,6 @@
 //! Progress dialog for running file operations.
 
 use crate::prelude::*;
-//TODO: Fix background transparency drawing for consecutive uses.
 
 /// Thin rounded progress bar; a sliding segment when the amount of work isn't known.
 pub(crate) fn progress_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, frac: Option<f32>, paused: bool) {
@@ -276,12 +275,31 @@ fn op_panel(ui: &mut Ui, m: &Metrics, pal: &Palette, op: &mut ActiveOp, width: f
     out
 }
 
+/// Keys of the state remembered about the operations window: the backdrop that was applied to it, and the
+/// height it was last sized to.
+fn ops_window_keys() -> (Id, Id) {
+    (Id::unique("file-ops-backdrop"), Id::unique("file-ops-height"))
+}
+
+/// The operations window is a native window that egui destroys as soon as a frame passes without
+/// `show_viewport_immediate` for it (every operation finished or hidden). The next one gets a brand new window
+/// that has neither the backdrop effect nor the fitted size, so what was remembered about the old one must go,
+/// or the new window would be taken for already set up.
+fn forget_ops_window_state(ctx: &egui::Context) {
+    let (backdrop_key, height_key) = ops_window_keys();
+    ctx.data_mut(|d| {
+        d.remove_temp::<(bool, TransparencyEffect)>(backdrop_key);
+        d.remove_temp::<f32>(height_key);
+    });
+}
+
 impl Explorer {
     /// One progress window for all running file operations (a separate OS window): every
     /// operation is a panel of its own, stacked top to bottom with its own bar and graph, like
     /// Explorer's copy dialog. A new operation adds a panel; a finished one removes its panel.
     pub(crate) fn ui_ops(&mut self, ui: &mut Ui) {
         if self.ops.is_empty() {
+            forget_ops_window_state(ui.ctx());
             return;
         }
         self.ui.request_repaint_after(Duration::from_millis(100));
@@ -310,8 +328,10 @@ impl Explorer {
             any_cancelable |= op.cancelable;
         }
         if shown == 0 {
+            forget_ops_window_state(&ctx);
             return;
         }
+        let (backdrop_key, height_key) = ops_window_keys();
 
         let win_w = width + m.pad * 4.0;
         let bar_h = (m.accessibility_scale * 32.0).round();
@@ -342,12 +362,11 @@ impl Explorer {
         ctx.show_viewport_immediate(vid, builder, |ui, _class| {
             // Backdrop over the whole window (the native window only exists once it has been
             // shown, so this is retried until it works and redone when the theme changes).
-            let key = Id::unique("file-ops-backdrop");
             let want = (pal.dark, transparency.expect("A transparency effect should always be set"));
-            if ui.ctx().data(|d| d.get_temp::<(bool, TransparencyEffect)>(key)) != Some(want)
+            if ui.ctx().data(|d| d.get_temp::<(bool, TransparencyEffect)>(backdrop_key)) != Some(want)
                 && backdrop_by_title(&win_title, pal.dark, transparency.expect("A transparency effect should always be set"))
             {
-                ui.ctx().data_mut(|d| d.insert_temp(key, want));
+                ui.ctx().data_mut(|d| d.insert_temp(backdrop_key, want));
             }
             let full = ui.max_rect();
             ui.layer_painter(egui::LayerId::background())
@@ -413,10 +432,9 @@ impl Explorer {
             });
             // Fit the window to its content (it grows with each operation and "More details").
             let need = (panel.inner + bar_h + m.pad * 3.0).min(max_h);
-            let key = Id::unique("file-ops-height");
-            let last = ui.ctx().data(|d| d.get_temp::<f32>(key)).unwrap_or(0.0);
+            let last = ui.ctx().data(|d| d.get_temp::<f32>(height_key)).unwrap_or(0.0);
             if (need - last).abs() > 1.0 {
-                ui.ctx().data_mut(|d| d.insert_temp(key, need));
+                ui.ctx().data_mut(|d| d.insert_temp(height_key, need));
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(win_w, need)));
             }

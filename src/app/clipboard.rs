@@ -15,7 +15,6 @@ impl Explorer {
             self.clipboard = None;
         }
         let n = items.len();
-        let all = items.clone();
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         let verb = if cut { "Moving" } else { "Copying" };
         let title = if n == 1 {
@@ -57,17 +56,19 @@ impl Explorer {
             // overlaps one that is running or queued ahead of it waits for its turn. Cancelling one
             // item (its button in the dialog) stops only that item; cancelling the whole operation
             // stops everything that has not finished.
-            type Slot = (usize, PasteItem);
-            let queue: std::sync::Mutex<(VecDeque<Slot>, Vec<Slot>)> =
-                std::sync::Mutex::new((items.into_iter().enumerate().collect(), Vec::new()));
+            // Waiting and running items are indices into `items`. A failure is (item, message, refused for
+            // lack of access rights).
+            let items = &items;
+            let queue: std::sync::Mutex<(VecDeque<usize>, Vec<usize>)> =
+                std::sync::Mutex::new(((0..n).collect(), Vec::new()));
             let cv = std::sync::Condvar::new();
-            let errors: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
+            let errors: std::sync::Mutex<Vec<(usize, String, bool)>> = std::sync::Mutex::new(Vec::new());
             let sizes = &sizes;
             let prog = &*prog;
             std::thread::scope(|sc| {
                 for _ in 0..PASTE_WORKERS.min(n).max(1) {
                     sc.spawn(|| loop {
-                        let (idx, it) = {
+                        let idx = {
                             let mut g = queue.lock().unwrap_or_else(|e| e.into_inner());
                             loop {
                                 if prog.cancelled() {
@@ -79,19 +80,20 @@ impl Explorer {
                                     return;
                                 }
                                 let pick = (0..g.0.len()).find(|&k| {
-                                    let cand = &g.0[k].1;
-                                    g.1.iter().all(|(_, r)| !paste_overlaps(cand, r))
-                                        && g.0.iter().take(k).all(|(_, e)| !paste_overlaps(cand, e))
+                                    let cand = &items[g.0[k]];
+                                    g.1.iter().all(|&r| !paste_overlaps(cand, &items[r]))
+                                        && g.0.iter().take(k).all(|&e| !paste_overlaps(cand, &items[e]))
                                 });
                                 if let Some(k) = pick {
-                                    if let Some(slot) = g.0.remove(k) {
-                                        g.1.push((slot.0, slot.1.clone()));
-                                        break slot;
+                                    if let Some(idx) = g.0.remove(k) {
+                                        g.1.push(idx);
+                                        break idx;
                                     }
                                 }
                                 g = cv.wait_timeout(g, Duration::from_millis(100)).unwrap_or_else(|e| e.into_inner()).0;
                             }
                         };
+                        let it = &items[idx];
                         let id = idx as u64 + 1;
                         let name = it
                             .dst
@@ -99,15 +101,16 @@ impl Explorer {
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_default();
                         prog.begin_item(id, &name);
-                        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| paste_one(&it, cut, prog)))
+                        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| paste_one(it, cut, prog)))
                             .unwrap_or_else(|_| Pasted::Failed(format!("Could not paste “{name}”: unexpected failure")));
                         let (done_by_it, total_by_it) = prog.end_item(id);
+                        let denied = matches!(outcome, Pasted::Denied(_));
                         match outcome {
                             Pasted::Done => {
                                 prog.done_items.fetch_add(1, AO::Relaxed);
                             }
-                            Pasted::Failed(e) => {
-                                errors.lock().unwrap_or_else(|e| e.into_inner()).push((idx, e));
+                            Pasted::Failed(e) | Pasted::Denied(e) => {
+                                errors.lock().unwrap_or_else(|e| e.into_inner()).push((idx, e, denied));
                                 prog.done_items.fetch_add(1, AO::Relaxed);
                             }
                             Pasted::Stopped if prog.cancelled() => {} // the whole operation was cancelled
@@ -119,7 +122,7 @@ impl Explorer {
                             }
                         }
                         let mut g = queue.lock().unwrap_or_else(|e| e.into_inner());
-                        g.1.retain(|(i, _)| *i != idx);
+                        g.1.retain(|&i| i != idx);
                         cv.notify_all();
                     });
                 }
@@ -131,29 +134,26 @@ impl Explorer {
             }
 
             let mut errors = errors.into_inner().unwrap_or_else(|e| e.into_inner());
-            errors.sort_by_key(|e| e.0);
-            let failed: Vec<(usize, String)> = errors.clone();
             if errors.is_empty() {
-                Ok(String::new())
-            } else {
-                let more = errors.len().saturating_sub(2);
-                let mut text = errors.into_iter().take(2).map(|e| e.1).collect::<Vec<_>>().join("  |  ");
-                if more > 0 {
-                    text.push_str(&format!("  (+{more} more)"));
-                }
-                // Items refused for lack of rights can be redone as administrator.
-                let denied: Vec<(PathBuf, PathBuf, bool)> = failed
-                    .iter()
-                    .filter(|(_, e)| is_denied_text(e))
-                    .map(|(i, _)| (all[*i].src.clone(), all[*i].dst.clone(), all[*i].replace))
-                    .collect();
-                if !denied.is_empty() {
-                    let retry = AdminRetry::Op(AdminOp::Paste { items: denied, cut });
-                    let _ = tx.send(AppMsg::AdminOffer { msg: text.clone(), retry });
-                    ui.request_repaint();
-                }
-                Err(text)
+                return Ok(String::new());
             }
+            errors.sort_by_key(|e| e.0);
+            let mut text = errors.iter().take(2).map(|e| e.1.as_str()).collect::<Vec<_>>().join("  |  ");
+            if errors.len() > 2 {
+                text.push_str(&format!("  (+{} more)", errors.len() - 2));
+            }
+            // Items refused for lack of rights can be redone as administrator.
+            let denied: Vec<(PathBuf, PathBuf, bool)> = errors
+                .iter()
+                .filter(|e| e.2)
+                .map(|e| (items[e.0].src.clone(), items[e.0].dst.clone(), items[e.0].replace))
+                .collect();
+            if !denied.is_empty() {
+                let retry = AdminRetry::Op(AdminOp::Paste { items: denied, cut });
+                let _ = tx.send(AppMsg::AdminOffer { msg: text.clone(), retry });
+                ui.request_repaint();
+            }
+            Err(text)
         });
     }
 

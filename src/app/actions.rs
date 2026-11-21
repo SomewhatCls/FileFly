@@ -33,9 +33,15 @@ impl Explorer {
             return;
         }
         match action {
-            Action::Navigate(p) => self.navigate(ti, p),
+            Action::Navigate(p) => self.navigate_or_bin(ti, p),
             Action::NewTabAt(p) => {
-                if has_zip_ext(&p) && p.is_file() {
+                if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
+                    // The raw folder is shown as the Recycle Bin view, in a tab of its own.
+                    let home = dirs::home_dir().unwrap_or_else(|| self.tabs[ti].dir.clone());
+                    self.new_tab(home);
+                    let tab = self.active;
+                    self.open_trash(tab);
+                } else if has_zip_ext(&p) && p.is_file() {
                     // A zip gets its own tab next to its folder, then opens like a folder.
                     let home = p.parent().map(Path::to_path_buf).unwrap_or_else(|| p.clone());
                     self.new_tab(home);
@@ -103,7 +109,7 @@ impl Explorer {
             Action::Up => {
                 // From the top of an opened zip, "Up" leaves the zip (its parent as shown, not the cache).
                 if let Some(parent) = self.tabs[ti].shown_dir().parent().map(Path::to_path_buf) {
-                    self.navigate(ti, parent);
+                    self.navigate_or_bin(ti, parent);
                 }
             }
             Action::Refresh => {
@@ -119,7 +125,7 @@ impl Explorer {
             Action::GoToAddress(s) => {
                 let typed = expand_env(s.trim().trim_matches('"'));
                 if !typed.is_empty() {
-                    self.navigate(ti, PathBuf::from(typed));
+                    self.navigate_or_bin(ti, PathBuf::from(typed));
                 }
             }
             Action::FocusAddress => {
@@ -131,7 +137,13 @@ impl Explorer {
             Action::FocusSearch => self
                 .ui
                 .memory_mut(|m| m.request_focus(Id::unique("search_box"))),
-            Action::Open(p) => self.open_path(&p),
+            Action::Open(p) => {
+                if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
+                    self.open_trash(ti);
+                } else {
+                    self.open_path(&p);
+                }
+            }
             Action::Compress(p) => self.compress(ti, p),
             Action::Extract(p) => self.extract(ti, p),
             Action::ExtractTo(p) => self.open_extract_to(ti, p),
@@ -198,10 +210,9 @@ impl Explorer {
                 let Some(parent) = p.parent() else { return };
                 let dest = parent.join(&new_name);
                 // fs::rename silently replaces an existing file on Windows, so check first.
-                // (Changing only the letter case is the same file and stays allowed.)
-                if fs::symlink_metadata(&dest).is_ok()
-                    && !p.as_os_str().eq_ignore_ascii_case(dest.as_os_str())
-                {
+                // (Changing only the letter case is the same file and stays allowed: the file system
+                // decides what "the same" is, not an ASCII-only comparison of the names.)
+                if fs::symlink_metadata(&dest).is_ok() && !is_same_entry(&p, &dest) {
                     self.tabs[ti].error(format!("An item named “{new_name}” already exists here."));
                     return;
                 }
@@ -287,11 +298,11 @@ impl Explorer {
                                 continue;
                             }
                             if let Err(e) = trash::delete(path) {
-                                let msg = format!("Could not move item to the Recycle Bin: {e}");
+                                let msg = format!("Could not move item to the Recycle Bin: {e}"); // shown to the user only
                                 if cfg!(debug_assertions) {
                                     eprintln!("trash::delete({path:?}) failed: {e:?}");
                                 }
-                                if is_denied_text(&msg) {
+                                if is_denied_trash(&e) {
                                     denied.push(path.clone());
                                     denied_msg = msg;
                                 } else {
@@ -318,9 +329,14 @@ impl Explorer {
                             break;
                         }
                         prog.set_current(&name_of(path));
-                        if let Err(e) = delete_for_good(path) {
-                            failed += 1;
-                            failed_msg = format!("Could not delete “{}”: {e}", name_of(path));
+                        // File by file, so Cancel also stops in the middle of a big folder.
+                        match delete_for_good(path, &|| prog.cancelled(), &|f| prog.set_current(&name_of(f))) {
+                            Ok(true) => {}
+                            Ok(false) => break, // cancelled: what is left of this folder stays as it is
+                            Err(e) => {
+                                failed += 1;
+                                failed_msg = format!("Could not delete “{}”: {e}", name_of(path));
+                            }
                         }
                         prog.done_items.fetch_add(1, Relaxed);
                     }
@@ -369,7 +385,7 @@ impl Explorer {
                 }
             }
             Action::NewFolder => {
-                let target = unique_copy_name(&self.tabs[ti].dir.join("New folder"));
+                let target = unique_folder_name(&self.tabs[ti].dir.join("New folder"));
                 match fs::create_dir(&target) {
                     Ok(()) => {
                         self.tabs[ti].pending_rename = Some(target);
@@ -429,7 +445,7 @@ impl Explorer {
             }
             Action::OpenContaining(p) => {
                 if let Some(parent) = p.parent().map(Path::to_path_buf) {
-                    self.navigate(ti, parent);
+                    self.navigate_or_bin(ti, parent);
                     self.tabs[ti].select_only(p);
                 }
             }
@@ -552,11 +568,28 @@ impl Explorer {
     }
 }
 
-/// Deletes a file or folder for good (no Recycle Bin).
-fn delete_for_good(path: &Path) -> std::io::Result<()> {
-    if fs::symlink_metadata(path)?.is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
+/// Whether `a` and `b` are the same directory entry, which is what a rename that only changes the
+/// letter case of a name is. Never a text comparison: that would be wrong for every non-ASCII letter
+/// and for case-sensitive file systems.
+fn is_same_entry(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!(
+            (fs::symlink_metadata(a), fs::symlink_metadata(b)),
+            (Ok(x), Ok(y)) if x.dev() == y.dev() && x.ino() == y.ino()
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        // Both names resolve to the one stored path (with the case it is really stored in). Links are
+        // left out: a link and its target resolve to the same path but are two entries.
+        let is_link = |p: &Path| fs::symlink_metadata(p).map(|m| m.file_type().is_symlink()).unwrap_or(true);
+        !is_link(a)
+            && !is_link(b)
+            && matches!((dunce::canonicalize(a), dunce::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
     }
 }
