@@ -22,7 +22,11 @@ pub(crate) fn tab_body(
     has_scanner: bool,
 ) {
     let tab_id = tab.id;
-    if tab.settings {
+    if tab.page == Some(Page::Licenses) {
+        licenses_page(ui, rect, m, pal);
+        return;
+    }
+    if tab.page == Some(Page::Settings) {
         if let Some(sp) = sp {
             // Same side gutter as the file view, so the scroll bar does not sit on the window edge.
             let inner = Rect::from_min_max(
@@ -161,7 +165,7 @@ impl Explorer {
         self.fix_tiles();
         let (m, pal) = (self.m, self.pal);
         // The Settings tab edits a working copy of the settings (see `finish_settings_page`).
-        let mut sp: Option<SettingsPage> = if self.visible_tabs().iter().any(|&i| self.tabs[i].settings) {
+        let mut sp: Option<SettingsPage> = if self.visible_tabs().iter().any(|&i| self.tabs[i].page == Some(Page::Settings)) {
             Some(SettingsPage::new(
                 &self.settings,
                 self.font_edit,
@@ -260,12 +264,12 @@ impl Explorer {
                             m.small_icon,
                             if in_bin {
                                 "recycle_bin"
-                            } else if tabs[idx].settings {
-                                "settings"
+                            } else if let Some(page) = tabs[idx].page {
+                                page.icon()
                             } else {
                                 "folder"
                             },
-                            if tabs[idx].settings {pal.text_secondary} else {Color32::WHITE},
+                            if tabs[idx].page.is_some() {pal.text_secondary} else {Color32::WHITE},
                         );
                         let close_rect = Rect::from_center_size(
                             pos2(hdr.right() - m.pad - m.small_icon / 2.0, hdr.center().y),

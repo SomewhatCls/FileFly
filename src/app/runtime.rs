@@ -152,7 +152,7 @@ impl eframe::App for Explorer {
             hide_window(frame);
             save_settings(&self.settings);
             self.peers.shutdown();
-            if let Some(ix) = &self.indexer { ix.save_if_dirty(&self.index_dir, true); }
+            if let Some(ix) = &self.indexer { ix.save_if_dirty(true); }
             remove_archive_cache(); // unpacked zips are temporary
             finish_journal(); // (keeps its entries if a copy was still running)
 
@@ -191,7 +191,7 @@ impl eframe::App for Explorer {
         self.ui_confirm(ui);
         self.ui_ops(ui);
         self.ui_picker(ui);
-        self.ui_licenses(ui);
+        self.ui_whats_new(ui);
 
         // Apply actions after rendering, as in your original code.
         for action in actions {
