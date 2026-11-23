@@ -530,14 +530,28 @@ pub(crate) fn spinner(ui: &mut Ui, diameter: f32, color: Color32) -> egui::Respo
     response
 }
 
-/// Busy spinner for a right-aligned size cell, directly left of the text, never on top of it.
-/// Nothing is drawn when the cell has no room for both.
-pub(crate) fn size_cell_spinner(ui: &Ui, m: &Metrics, pal: &Palette, cell: Rect, text: &str) {
-    let diameter = m.font * 0.85;
-    let left = cell.right() - text_width(ui, text, m.font) - m.pad * 0.5 - diameter;
-    if left >= cell.left() {
-        paint_spinner(ui, pos2(left + diameter * 0.5, cell.center().y), diameter, pal.accent);
-    }
+/// Diameter of the busy spinner in a size cell.
+pub(crate) fn size_spinner_diameter(m: &Metrics) -> f32 {
+    m.font * 0.85
+}
+
+/// The narrowest Size column that still shows the widest regular value ("999.9 MB") next to the spinner.
+pub(crate) fn size_col_min_width(ui: &Ui, m: &Metrics) -> f32 {
+    text_width(ui, "999.9 MB", m.font) + size_spinner_diameter(m) + m.pad * 0.5 + m.pad * 1.2
+}
+
+/// Busy spinner for a right-aligned size cell. It is always drawn: directly left of the text when
+/// there is room, otherwise pinned to the cell's left edge. Returns the rect the text belongs in
+/// (the whole cell, or the part right of the spinner), so a value that doesn't fit is pushed to the
+/// right and truncated instead of the spinner being cut off.
+pub(crate) fn size_cell_spinner(ui: &Ui, m: &Metrics, pal: &Palette, cell: Rect, text: &str) -> Rect {
+    let diameter = size_spinner_diameter(m);
+    let gap = m.pad * 0.5;
+    let left = (cell.right() - text_width(ui, text, m.font) - gap - diameter).max(cell.left());
+    paint_spinner(ui, pos2(left + diameter * 0.5, cell.center().y), diameter, pal.accent);
+    let mut text_rect = cell;
+    text_rect.min.x = (left + diameter + gap).min(cell.right());
+    text_rect
 }
 
 /// Stepped busy indicator: 8 ticks with a fading tail, advancing 10x per second.

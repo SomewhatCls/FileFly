@@ -56,7 +56,9 @@ pub(crate) fn trash_table_ui(
     }
 
     // Columns after Name: Original location, Date deleted, Size. Dropped in that order when narrow.
-    let widths = [m.accessibility_scale * 230.0, m.accessibility_scale * 150.0, m.accessibility_scale * 90.0];
+    // The Size column always has room for the widest regular value ("999.9 MB") plus the spinner.
+    let size_w = size_col_min_width(ui, m).max(m.accessibility_scale * 90.0);
+    let widths = [m.accessibility_scale * 230.0, m.accessibility_scale * 150.0, size_w];
     let mut show = [true; 3];
     let name_min = m.accessibility_scale * 220.0;
     let total = |show: &[bool; 3]| (0..3).filter(|&i| show[i]).map(|i| widths[i]).sum::<f32>();
@@ -258,10 +260,15 @@ pub(crate) fn trash_table_ui(
                     row.icon,
                     Color32::WHITE,
                 );
-                let name_rect = Rect::from_min_max(
-                    pos2(rect.left() + m.pad * 1.7 + m.icon, rect.top()),
-                    pos2(rect.left() + name_w - m.pad * 0.5, rect.bottom()),
-                );
+                // When the Size column has been dropped (narrow window), a row whose size is still being
+                // summed keeps its spinner at the row's right edge, and the name makes room for it.
+                let edge_spinner = row.size_pending && !show[2];
+                let spinner_d = size_spinner_diameter(m);
+                let name_left = rect.left() + m.pad * 1.7 + m.icon;
+                let name_right = (rect.left() + name_w - m.pad * 0.5
+                    - if edge_spinner { spinner_d + m.pad } else { 0.0 })
+                .max(name_left);
+                let name_rect = Rect::from_min_max(pos2(name_left, rect.top()), pos2(name_right, rect.bottom()));
                 paint_text(
                     ui,
                     name_rect,
@@ -282,19 +289,29 @@ pub(crate) fn trash_table_ui(
                         1 => row.date_text.as_str(),
                         _ => row.size_text.as_str(),
                     };
+                    // A folder whose size is still being summed: spinner next to the number.
+                    let text_rect = if ci == 2 && row.size_pending {
+                        size_cell_spinner(ui, m, pal, cell, text)
+                    } else {
+                        cell
+                    };
                     paint_text(
                         ui,
-                        cell,
+                        text_rect,
                         text,
                         FontId::proportional(m.font),
                         pal.text_secondary,
                         ci == 2,
                     );
-                    // A folder whose size is still being summed: spinner next to the number.
-                    if ci == 2 && row.size_pending {
-                        size_cell_spinner(ui, m, pal, cell, text);
-                    }
                     cx += widths[ci];
+                }
+                if edge_spinner {
+                    paint_spinner(
+                        ui,
+                        pos2(rect.right() - m.pad - spinner_d / 2.0, rect.center().y),
+                        spinner_d,
+                        pal.accent,
+                    );
                 }
 
                 if resp.clicked() || resp.secondary_clicked() {

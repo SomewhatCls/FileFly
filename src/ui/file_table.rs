@@ -328,17 +328,19 @@ pub(crate) fn table_ui(
     let col_floor = m.accessibility_scale * 50.0;
     // The folder picker has no Size column (nothing is measured there): it takes no room.
     let show = [true, true, !picker];
-    let n_shown = show.iter().filter(|s| **s).count() as f32;
-    let want = [0, 1, 2].map(|i| if show[i] { base_cols[i] * m.accessibility_scale } else { 0.0 });
+    // The Size column never gets narrower than its widest regular value ("999.9 MB") plus the busy
+    // spinner, whatever width is stored in the settings; the other columns keep `col_floor`.
+    let floor_px = [col_floor, col_floor, size_col_min_width(ui, &m).max(col_floor)];
+    let want = [0, 1, 2].map(|i| if show[i] { (base_cols[i] * m.accessibility_scale).max(floor_px[i]) } else { 0.0 });
     let room = (avail - name_min).max(0.0);
     let sum_want: f32 = want.iter().sum();
     let eff_px: [f32; 3] = if sum_want <= room {
         want
     } else {
-        let floors = n_shown * col_floor;
+        let floors: f32 = (0..3).filter(|&i| show[i]).map(|i| floor_px[i]).sum();
         let excess = (sum_want - floors).max(f32::EPSILON);
         let k = ((room.max(floors) - floors) / excess).clamp(0.0, 1.0);
-        [0, 1, 2].map(|i| if show[i] { col_floor + (want[i] - col_floor).max(0.0) * k } else { 0.0 })
+        [0, 1, 2].map(|i| if show[i] { floor_px[i] + (want[i] - floor_px[i]).max(0.0) * k } else { 0.0 })
     };
     // The widths actually on screen, in stored units: drags start from these.
     let eff_cols = [eff_px[0] / m.accessibility_scale, eff_px[1] / m.accessibility_scale, eff_px[2] / m.accessibility_scale];
@@ -448,7 +450,8 @@ pub(crate) fn table_ui(
                 // clamping never lets the boundary drift away from the pointer.
                 let start = ui.data(|d| d.get_temp::<[f32; 3]>(hid));
                 if let (Some(start), Some(total_drag)) = (start, h.total_drag_delta()) {
-                    const MIN_W: f32 = 50.0;
+                    // Per-column minimum in stored units (the Size column's keeps its spinner visible).
+                    let min_of = |i: usize| floor_px[i] / m.accessibility_scale;
                     const MAX_W: f32 = 600.0;
                     let dx = total_drag.x / m.accessibility_scale;
                     let mut nc = start;
@@ -458,13 +461,13 @@ pub(crate) fn table_ui(
                             // Name must keep its minimum width, or other columns would vanish.
                             let room = (avail / m.accessibility_scale - name_min / m.accessibility_scale - shown_sum).max(0.0);
                             let hi = (start[k] + room).min(MAX_W).max(start[k]);
-                            let lo = MIN_W.min(start[k]);
+                            let lo = min_of(k).min(start[k]);
                             nc[k] = (start[k] - dx).clamp(lo, hi);
                         }
                         Some(k2) => {
                             let pair = start[k] + start[k2];
-                            let lo = MIN_W.max(pair - MAX_W);
-                            let hi = MAX_W.min(pair - MIN_W);
+                            let lo = min_of(k).max(pair - MAX_W);
+                            let hi = MAX_W.min(pair - min_of(k2));
                             if lo <= hi {
                                 nc[k] = (start[k] + dx).clamp(lo, hi);
                                 nc[k2] = pair - nc[k];
@@ -823,10 +826,12 @@ pub(crate) fn table_ui(
                             },
                         ),
                     };
-                    paint_text(ui, cell, text, FontId::proportional(m.font), color, ci == 2);
-                    if ci == 2 && scanning {
-                        size_cell_spinner(ui, &m, &pal, cell, text);
-                    }
+                    let text_rect = if ci == 2 && scanning {
+                        size_cell_spinner(ui, &m, &pal, cell, text)
+                    } else {
+                        cell
+                    };
+                    paint_text(ui, text_rect, text, FontId::proportional(m.font), color, ci == 2);
                     cx += cw;
                 }
 
