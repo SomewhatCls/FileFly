@@ -100,7 +100,7 @@ fn is_special_dir(path: &Path) -> bool {
 fn generic_dir_probe() -> Option<&'static Path> {
     static P: OnceLock<Option<PathBuf>> = OnceLock::new();
     P.get_or_init(|| {
-        let p = std::env::temp_dir().join("yourapp-generic-folder"); // use your app's name
+        let p = std::env::temp_dir().join("filefly-generic-folder");
         std::fs::create_dir_all(&p).ok()?;
         Some(p)
     })
@@ -124,9 +124,16 @@ pub fn make_icon_key(is_dir: bool, ext: Option<&str>, path: &Path) -> String {
     }
 }
 
+/// What a worker loads an icon from.
+enum Source {
+    Path(PathBuf),
+    /// The system Recycle Bin / trash can, empty or full.
+    RecycleBin { full: bool },
+}
+
 struct Job {
     key: String,
-    path: PathBuf,
+    src: Source,
 }
 
 struct Done {
@@ -134,10 +141,16 @@ struct Done {
     img: Option<egui::ColorImage>,
 }
 
+/// `closed` lives inside the mutex: set outside it, the flag could flip between a worker's check
+/// and its `wait`, and the wake-up would be lost.
+struct QueueState {
+    jobs: VecDeque<Job>,
+    closed: bool,
+}
+
 struct Queue {
-    jobs: Mutex<VecDeque<Job>>,
+    state: Mutex<QueueState>,
     cv: Condvar,
-    closed: AtomicBool,
 }
 
 struct Slot {
@@ -226,6 +239,11 @@ mod linux {
         };
         load_image_file(&find(&names)?)
     }
+
+    /// Icon by theme name(s), e.g. `user-trash`.
+    pub fn load_named(names: &[String]) -> Option<egui::ColorImage> {
+        load_image_file(&find(names)?)
+    }
 }
 
 fn load_icon(path: &Path) -> Option<egui::ColorImage> {
@@ -253,12 +271,295 @@ fn load_icon(path: &Path) -> Option<egui::ColorImage> {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Recycle Bin / trash can
+// ---------------------------------------------------------------------------------------------
+
+const BIN_EMPTY: &str = "<bin:empty>";
+const BIN_FULL: &str = "<bin:full>";
+
+/// Whether the bin holds anything, which decides the icon. Written by `refresh_recycle_bin_state`
+/// on a background thread; the UI thread only ever reads this flag.
+static BIN_IS_FULL: AtomicBool = AtomicBool::new(false);
+
+/// Re-reads on a background thread whether the bin is empty. Called at startup and whenever the
+/// window gains focus (see `icons_begin_frame`); call it as well after the app trashes, restores,
+/// purges or empties something.
+pub fn refresh_recycle_bin_state(ctx: &egui::Context) {
+    // Queries run one after another, so the last one to start also stores the last answer.
+    static SERIAL: Mutex<()> = Mutex::new(());
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(full) = bin_is_full() {
+            if BIN_IS_FULL.swap(full, Ordering::Relaxed) != full {
+                ctx.request_repaint();
+            }
+        }
+    });
+}
+
+#[cfg(windows)]
+fn bin_is_full() -> Option<bool> {
+    win_bin::is_full()
+}
+
+/// Only the home trash; the per-volume trash folders are ignored.
+#[cfg(target_os = "linux")]
+fn bin_is_full() -> Option<bool> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+    Some(std::fs::read_dir(base.join("Trash/files")).ok()?.next().is_some())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn bin_is_full() -> Option<bool> {
+    None
+}
+
+fn load_bin_icon(full: bool) -> Option<egui::ColorImage> {
+    #[cfg(windows)]
+    {
+        return win_bin::icon(full);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let names: Vec<String> = if full {
+            vec!["user-trash-full".into(), "user-trash".into()]
+        } else {
+            vec!["user-trash".into()]
+        };
+        return linux::load_named(&names);
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = full;
+        None
+    }
+}
+
+fn load_job(src: &Source) -> Option<egui::ColorImage> {
+    match src {
+        Source::Path(p) => load_icon(p),
+        Source::RecycleBin { full } => load_bin_icon(*full),
+    }
+}
+
+#[cfg(windows)]
+mod win_bin {
+    //! Raw Win32 declarations
+    use super::*;
+    use std::ffi::c_void;
+    use std::mem::size_of;
+    use std::ptr::null_mut;
+
+    type Handle = *mut c_void;
+
+    const SIID_RECYCLER: i32 = 31;
+    const SIID_RECYCLERFULL: i32 = 32;
+    const SHGSI_ICON: u32 = 0x100;
+    const SHGSI_LARGEICON: u32 = 0x0;
+    const MAX_PATH: usize = 260;
+    const BI_RGB: u32 = 0;
+    const DIB_RGB_COLORS: u32 = 0;
+
+    #[repr(C)]
+    struct StockIconInfo {
+        cb_size: u32,
+        h_icon: Handle,
+        sys_image_index: i32,
+        icon: i32,
+        path: [u16; MAX_PATH],
+    }
+
+    /// `SHQUERYRBINFO` is declared with 1-byte packing in shellapi.h.
+    #[repr(C, packed(1))]
+    struct QueryRbInfo {
+        cb_size: u32,
+        size: i64,
+        num_items: i64,
+    }
+
+    #[repr(C)]
+    struct IconInfo {
+        f_icon: i32,
+        x_hotspot: u32,
+        y_hotspot: u32,
+        hbm_mask: Handle,
+        hbm_color: Handle,
+    }
+
+    #[repr(C)]
+    struct Bitmap {
+        bm_type: i32,
+        bm_width: i32,
+        bm_height: i32,
+        bm_width_bytes: i32,
+        bm_planes: u16,
+        bm_bits_pixel: u16,
+        bm_bits: *mut c_void,
+    }
+
+    #[repr(C)]
+    struct BitmapInfoHeader {
+        size: u32,
+        width: i32,
+        height: i32,
+        planes: u16,
+        bit_count: u16,
+        compression: u32,
+        size_image: u32,
+        x_pels_per_meter: i32,
+        y_pels_per_meter: i32,
+        clr_used: u32,
+        clr_important: u32,
+    }
+
+    #[repr(C)]
+    struct BitmapInfo {
+        header: BitmapInfoHeader,
+        colors: [u32; 1],
+    }
+
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SHGetStockIconInfo(siid: i32, flags: u32, info: *mut StockIconInfo) -> i32;
+        fn SHQueryRecycleBinW(root: *const u16, info: *mut QueryRbInfo) -> i32;
+    }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetIconInfo(icon: Handle, info: *mut IconInfo) -> i32;
+        fn DestroyIcon(icon: Handle) -> i32;
+        fn GetDC(hwnd: Handle) -> Handle;
+        fn ReleaseDC(hwnd: Handle, hdc: Handle) -> i32;
+    }
+
+    #[link(name = "gdi32")]
+    unsafe extern "system" {
+        fn GetObjectW(obj: Handle, len: i32, out: *mut c_void) -> i32;
+        fn GetDIBits(
+            hdc: Handle,
+            bitmap: Handle,
+            start: u32,
+            lines: u32,
+            bits: *mut c_void,
+            info: *mut BitmapInfo,
+            usage: u32,
+        ) -> i32;
+        fn DeleteObject(obj: Handle) -> i32;
+    }
+
+    /// Item count of all bins together (can touch every drive, hence never on the UI thread).
+    pub fn is_full() -> Option<bool> {
+        let mut info = QueryRbInfo { cb_size: size_of::<QueryRbInfo>() as u32, size: 0, num_items: 0 };
+        let hr = unsafe { SHQueryRecycleBinW(std::ptr::null(), &mut info) };
+        if hr < 0 {
+            return None;
+        }
+        let n = info.num_items; // copied out: the struct is packed
+        Some(n > 0)
+    }
+
+    /// The shell's stock Recycle Bin icon, in the system's large icon size.
+    pub fn icon(full: bool) -> Option<egui::ColorImage> {
+        let mut sii = StockIconInfo {
+            cb_size: size_of::<StockIconInfo>() as u32,
+            h_icon: null_mut(),
+            sys_image_index: 0,
+            icon: 0,
+            path: [0; MAX_PATH],
+        };
+        unsafe {
+            let id = if full { SIID_RECYCLERFULL } else { SIID_RECYCLER };
+            if SHGetStockIconInfo(id, SHGSI_ICON | SHGSI_LARGEICON, &mut sii) < 0 || sii.h_icon.is_null() {
+                return None;
+            }
+            let img = hicon_to_image(sii.h_icon);
+            DestroyIcon(sii.h_icon);
+            img
+        }
+    }
+
+    fn hicon_to_image(hicon: Handle) -> Option<egui::ColorImage> {
+        unsafe {
+            let mut ii = IconInfo { f_icon: 0, x_hotspot: 0, y_hotspot: 0, hbm_mask: null_mut(), hbm_color: null_mut() };
+            if GetIconInfo(hicon, &mut ii) == 0 {
+                return None;
+            }
+            let img = bitmap_to_image(ii.hbm_color);
+            for bmp in [ii.hbm_color, ii.hbm_mask] {
+                if !bmp.is_null() {
+                    DeleteObject(bmp);
+                }
+            }
+            img
+        }
+    }
+
+    /// Reads a 32-bit colour bitmap with an alpha channel. Anything without alpha gives `None`
+    /// (the caller then shows the built-in icon).
+    fn bitmap_to_image(hbm: Handle) -> Option<egui::ColorImage> {
+        if hbm.is_null() {
+            return None;
+        }
+        unsafe {
+            let mut bm = Bitmap {
+                bm_type: 0,
+                bm_width: 0,
+                bm_height: 0,
+                bm_width_bytes: 0,
+                bm_planes: 0,
+                bm_bits_pixel: 0,
+                bm_bits: null_mut(),
+            };
+            if GetObjectW(hbm, size_of::<Bitmap>() as i32, &mut bm as *mut Bitmap as *mut c_void) == 0
+                || bm.bm_width <= 0
+                || bm.bm_height <= 0
+            {
+                return None;
+            }
+            let (w, h) = (bm.bm_width, bm.bm_height);
+            let mut bmi = BitmapInfo {
+                header: BitmapInfoHeader {
+                    size: size_of::<BitmapInfoHeader>() as u32,
+                    width: w,
+                    height: -h, // top-down
+                    planes: 1,
+                    bit_count: 32,
+                    compression: BI_RGB,
+                    size_image: 0,
+                    x_pels_per_meter: 0,
+                    y_pels_per_meter: 0,
+                    clr_used: 0,
+                    clr_important: 0,
+                },
+                colors: [0],
+            };
+            let mut px = vec![0u8; w as usize * h as usize * 4];
+            let hdc = GetDC(null_mut());
+            let lines = GetDIBits(hdc, hbm, 0, h as u32, px.as_mut_ptr().cast(), &mut bmi, DIB_RGB_COLORS);
+            ReleaseDC(null_mut(), hdc);
+            if lines == 0 {
+                return None;
+            }
+            for p in px.chunks_exact_mut(4) {
+                p.swap(0, 2); // BGRA -> RGBA
+            }
+            if px.chunks_exact(4).all(|p| p[3] == 0) {
+                return None;
+            }
+            Some(egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px))
+        }
+    }
+}
+
 impl IconCache {
     pub fn new(ctx: &egui::Context) -> Self {
         let queue = Arc::new(Queue {
-            jobs: Mutex::new(VecDeque::new()),
+            state: Mutex::new(QueueState { jobs: VecDeque::new(), closed: false }),
             cv: Condvar::new(),
-            closed: AtomicBool::new(false),
         });
         let (tx, rx) = mpsc::channel();
 
@@ -268,18 +569,20 @@ impl IconCache {
                 .name(format!("icon-worker-{i}"))
                 .spawn(move || loop {
                     let job = {
-                        let mut g = q.jobs.lock().unwrap();
+                        let mut g = q.state.lock().unwrap();
                         loop {
-                            if q.closed.load(Ordering::Relaxed) {
+                            if g.closed {
                                 return;
                             }
-                            if let Some(j) = g.pop_front() {
+                            if let Some(j) = g.jobs.pop_front() {
                                 break j;
                             }
                             g = q.cv.wait(g).unwrap();
                         }
                     };
-                    let img = load_icon(&job.path);
+                    // A panicking shell extension must neither kill the worker nor leave the key pending forever.
+                    let img = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_job(&job.src)))
+                        .unwrap_or(None);
                     if tx.send(Done { key: job.key, img }).is_err() {
                         return;
                     }
@@ -288,6 +591,7 @@ impl IconCache {
                 .expect("spawn icon worker");
         }
 
+        refresh_recycle_bin_state(ctx);
         Self { ctx: ctx.clone(), queue, rx, slots: HashMap::new(), pending: HashSet::new(), frame: 0 }
     }
 
@@ -297,8 +601,8 @@ impl IconCache {
 
         // Drop jobs that haven't started: whatever is still visible re-queues itself this frame.
         {
-            let mut jobs = self.queue.jobs.lock().unwrap();
-            for j in jobs.drain(..) {
+            let mut st = self.queue.state.lock().unwrap();
+            for j in st.jobs.drain(..) {
                 self.pending.remove(&j.key);
             }
         }
@@ -323,20 +627,23 @@ impl IconCache {
         }
     }
 
-    /// TODO: Sanity-check this function and associated ones regarding its threaded nature.
+    /// The cached texture for `key`, or `None` while it is still being loaded on a worker (it is
+    /// queued here) or if the platform has no icon for it.
     pub fn get(&mut self, key: &str, path: &Path) -> Option<egui::TextureHandle> {
         if let Some(slot) = self.slots.get_mut(key) {
             slot.last_used = self.frame;
             return slot.tex.clone();
         }
         if self.pending.insert(key.to_owned()) {
-            let load = if let Some(ico) = key.strip_prefix("ico:") {
+            let src = if let Some(ico) = key.strip_prefix("ico:") {
                 // custom folder icons load the .ico instead of the folder itself
-                PathBuf::from(ico)
+                Source::Path(PathBuf::from(ico))
+            } else if key == BIN_EMPTY || key == BIN_FULL {
+                Source::RecycleBin { full: key == BIN_FULL }
             } else if key == "<dir>" {
                 // shared generic folder icon: never taken from whichever real folder asked first
                 match generic_dir_probe() {
-                    Some(p) => p.to_path_buf(),
+                    Some(p) => Source::Path(p.to_path_buf()),
                     None => {
                         // no probe available: use the built-in folder.svg
                         self.pending.remove(key);
@@ -345,9 +652,9 @@ impl IconCache {
                     }
                 }
             } else {
-                path.to_owned()
+                Source::Path(path.to_owned())
             };
-            self.queue.jobs.lock().unwrap().push_back(Job { key: key.to_owned(), path: load });
+            self.queue.state.lock().unwrap().jobs.push_back(Job { key: key.to_owned(), src });
             self.queue.cv.notify_one();
         }
         None
@@ -356,7 +663,7 @@ impl IconCache {
 
 impl Drop for IconCache {
     fn drop(&mut self) {
-        self.queue.closed.store(true, Ordering::Relaxed);
+        self.queue.state.lock().unwrap().closed = true;
         self.queue.cv.notify_all();
     }
 }
@@ -366,6 +673,10 @@ thread_local! {
 }
 
 pub fn icons_begin_frame(ctx: &egui::Context) {
+    // Something may have been trashed or restored outside the app while it was in the background.
+    if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))) {
+        refresh_recycle_bin_state(ctx);
+    }
     ICON_CACHE.with(|c| c.borrow_mut().get_or_insert_with(|| IconCache::new(ctx)).begin_frame());
 }
 
@@ -384,6 +695,13 @@ pub fn draw_path_icon(ui: &Ui, center: Pos2, size: f32, key: &str, path: &Path, 
         }
         None => draw_icon(ui, center, size, fallback, tint),
     }
+}
+
+/// Draws the system's Recycle Bin icon (empty or full). The built-in `recycle_bin` SVG stands in
+/// until it has loaded, and on platforms without one.
+pub fn draw_recycle_bin_icon(ui: &Ui, center: Pos2, size: f32, tint: Color32) {
+    let key = if BIN_IS_FULL.load(Ordering::Relaxed) { BIN_FULL } else { BIN_EMPTY };
+    draw_path_icon(ui, center, size, key, Path::new(""), "recycle_bin", tint);
 }
 
 /// Name of the built-in icon that stands in for an entry until its platform icon has loaded.
