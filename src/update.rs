@@ -7,6 +7,9 @@ use std::time::Duration;
 
 const REPO: &str = "SomewhatCls/FileFly";
 
+/// Shown in the "What's new" popup when the running version has no release (or an empty description).
+const NO_NOTES: &str = "This release has no release notes.";
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct UpdateInfo {
     pub(crate) version: String,
@@ -45,8 +48,34 @@ struct Asset {
     browser_download_url: String,
 }
 
+/// Why a release lookup failed. Callers decide what to do from the variant, never from the message text.
+#[derive(Debug)]
+enum FetchError {
+    /// HTTP 404: the requested release (or tag) doesn't exist.
+    NotFound,
+    /// HTTP 403/429.
+    RateLimited,
+    /// Transport errors, timeouts, unreadable JSON and any other status.
+    Other(String),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => f.write_str("release not found"),
+            Self::RateLimited => f.write_str("GitHub rate limit reached, try again later"),
+            Self::Other(msg) => f.write_str(msg),
+        }
+    }
+}
+
+/// `v1.2.3` -> `1.2.3`. Strips exactly one leading `v`.
+fn strip_v(tag: &str) -> &str {
+    tag.strip_prefix('v').unwrap_or(tag)
+}
+
 /// Runs on a background thread. `which` is `latest` or `tags/<tag>`.
-fn fetch_release(which: &str) -> Result<Release, String> {
+fn fetch_release(which: &str) -> Result<Release, FetchError> {
     ureq::get(&format!("https://api.github.com/repos/{REPO}/releases/{which}"))
         .header("User-Agent", concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")))
         .header("Accept", "application/vnd.github+json")
@@ -56,34 +85,41 @@ fn fetch_release(which: &str) -> Result<Release, String> {
         .build()
         .call()
         .map_err(|e| match e {
-            ureq::Error::StatusCode(404) => "no releases have been published yet".to_owned(),
-            ureq::Error::StatusCode(403 | 429) => "GitHub rate limit reached, try again later".to_owned(),
-            other => other.to_string(),
+            ureq::Error::StatusCode(404) => FetchError::NotFound,
+            ureq::Error::StatusCode(403 | 429) => FetchError::RateLimited,
+            other => FetchError::Other(other.to_string()),
         })?
         .body_mut()
         .read_json::<Release>()
-        .map_err(|e| e.to_string())
+        .map_err(|e| FetchError::Other(e.to_string()))
 }
 
-/// The release notes of the running version (the newest release's when this build has none, like a dev build).
-/// Returns (version, notes).
+/// The release notes of the running version. Returns (version, notes).
+/// A version without a published release (like a dev build) or with an empty description gets a
+/// "no release notes" placeholder; any other failure (network, rate limit, ...) is reported as an error.
 fn fetch_release_notes() -> Result<(String, String), String> {
     let current = env!("CARGO_PKG_VERSION");
-    // Only "this version has no release" (a dev build) falls back to the newest one; a failing network
-    // is reported at once instead of waiting for a second timeout.
-    let rel = match fetch_release(&format!("tags/v{current}")) {
-        Err(e) if e.contains("no releases") => fetch_release("latest")?,
-        other => other?,
-    };
-    let version = rel.tag_name.trim_start_matches('v').to_owned();
-    Ok((version, rel.body.unwrap_or_default()))
+    match fetch_release(&format!("tags/v{current}")) {
+        Ok(rel) => {
+            let notes = rel
+                .body
+                .filter(|b| !b.trim().is_empty())
+                .unwrap_or_else(|| NO_NOTES.to_owned());
+            Ok((current.to_owned(), notes))
+        }
+        Err(FetchError::NotFound) => Ok((current.to_owned(), NO_NOTES.to_owned())),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Runs on a background thread.
 /// Ok(None) = newest is installed
 fn fetch_latest() -> Result<Option<UpdateInfo>, String> {
-    let rel = fetch_release("latest")?;
-    let latest = Version::parse(rel.tag_name.trim_start_matches('v'))
+    let rel = fetch_release("latest").map_err(|e| match e {
+        FetchError::NotFound => "no releases have been published yet".to_owned(),
+        other => other.to_string(),
+    })?;
+    let latest = Version::parse(strip_v(&rel.tag_name))
         .map_err(|e| format!("unreadable version tag '{}': {e}", rel.tag_name))?;
     let current = Version::parse(env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())?;
     if latest <= current {
@@ -100,6 +136,10 @@ fn fetch_latest() -> Result<Option<UpdateInfo>, String> {
         let n = a.name.to_ascii_lowercase();
         n.ends_with(".appimage")
     });
+    // Other targets have no installer to offer: fall back to the release page.
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    let file: Option<&Asset> = None;
+
     let url = file.map(|a| a.browser_download_url.clone()).unwrap_or(rel.html_url);
     Ok(Some(UpdateInfo { version: latest.to_string(), url }))
 }
@@ -120,6 +160,10 @@ impl Explorer {
     /// Opens the "What's new" popup and loads the release notes (only now: nothing contacts GitHub
     /// before the user asks).
     pub(crate) fn open_whats_new(&mut self) {
+        // A fetch is already in flight; don't start a second one.
+        if matches!(self.whats_new, Some(WhatsNew::Loading)) {
+            return;
+        }
         self.whats_new = Some(WhatsNew::Loading);
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
