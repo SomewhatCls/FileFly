@@ -54,37 +54,32 @@ impl Explorer {
             }
         };
         let tab = &mut self.tabs[ti];
-        let in_trash = tab.trash.is_some();
-        if tab.settings {
-            // Leaving the Settings page: the tab turns into a normal folder tab.
-            tab.settings = false;
+        if tab.page.is_some() {
+            // Leaving a page (Settings, Licenses): the tab turns into a normal folder tab.
+            tab.page = None;
             tab.back.clear();
             tab.fwd.clear();
             self.set_dir(ti, path);
             return;
         }
-        if path == tab.dir {
-            if in_trash {
-                // The Recycle Bin is a view *over* `tab.dir`, so asking for that same folder
-                // (e.g. Home right after opening the bin from Home) must leave the bin instead of
-                // being ignored. open_trash() already pushed `dir` onto the back stack; undo that.
-                if tab.back.last() == Some(&path) {
-                    tab.back.pop();
-                }
-                tab.fwd.clear();
-                self.set_dir(ti, path);
-            } else {
-                tab.address = display_path(&path).display().to_string();
-            }
+        // The Recycle Bin is a view *over* `tab.dir`, so asking for that same folder while in the
+        // bin must leave the bin; otherwise the same folder is simply ignored.
+        if path == tab.dir && tab.trash.is_none() {
+            tab.address = display_path(&path).display().to_string();
             return;
         }
-        if !in_trash {
-            // (in the bin, open_trash() has already recorded the folder we came from)
-            let prev = tab.dir.clone();
-            tab.back.push(prev);
-        }
+        let cur = tab.place();
+        tab.back.push(cur);
         tab.fwd.clear();
         self.set_dir(ti, path);
+    }
+
+    /// Shows a history entry without touching the history stacks.
+    pub(crate) fn goto_place(&mut self, ti: usize, place: Place) {
+        match place {
+            Place::Folder(p) => self.set_dir(ti, p),
+            Place::Trash => self.show_trash(ti),
+        }
     }
 
     pub(crate) fn set_dir(&mut self, ti: usize, path: PathBuf) {
@@ -97,7 +92,7 @@ impl Explorer {
         tab.rename = None;
         tab.editing_addr = false;
         tab.trash = None;
-        tab.settings = false;
+        tab.page = None;
         tab.entries.clear();
         tab.lookup.clear();
         tab.view.clear();
@@ -169,12 +164,12 @@ impl Explorer {
                     let mut h = DefaultHasher::new();
                     p.hash(&mut h);
                     acc ^= h.finish().rotate_left(13);
-                    paths.push(p);
+                    paths.push((p, None)); // trashed items have no listing time to pass on
                 }
                 continue;
             }
             // Measuring folders over a network share would mean reading the whole share.
-            if tab.settings || is_network_path(&tab.dir) {
+            if tab.page.is_some() || is_network_path(&tab.dir) {
                 continue;
             }
             for e in tab.entries.iter_mut().filter(|e| e.is_dir && !e.is_link) {
@@ -187,7 +182,7 @@ impl Explorer {
                 let mut h = DefaultHasher::new();
                 e.path.hash(&mut h);
                 acc ^= h.finish().rotate_left(13);
-                paths.push(e.path.clone());
+                paths.push((e.path.clone(), e.modified));
             }
         }
         let sig = (acc, paths.len());
@@ -198,7 +193,7 @@ impl Explorer {
             return;
         }
         self.index_sig = Some(sig);
-        indexer.start(paths); // also cancels a scan that belonged to the previous folder
+        indexer.start_with(paths); // also cancels a scan that belonged to the previous folder
     }
 
     /// Rebuilds the Quick access list from the settings and tells the icon cache which folders

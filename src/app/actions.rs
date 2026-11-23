@@ -93,17 +93,17 @@ impl Explorer {
             Action::Back => {
                 let tab = &mut self.tabs[ti];
                 if let Some(p) = tab.back.pop() {
-                    let cur = tab.dir.clone();
+                    let cur = tab.place();
                     tab.fwd.push(cur);
-                    self.set_dir(ti, p);
+                    self.goto_place(ti, p);
                 }
             }
             Action::Forward => {
                 let tab = &mut self.tabs[ti];
                 if let Some(p) = tab.fwd.pop() {
-                    let cur = tab.dir.clone();
+                    let cur = tab.place();
                     tab.back.push(cur);
-                    self.set_dir(ti, p);
+                    self.goto_place(ti, p);
                 }
             }
             Action::Up => {
@@ -115,7 +115,7 @@ impl Explorer {
             Action::Refresh => {
                 if self.tabs[ti].trash.is_some() {
                     self.load_trash(ti);
-                } else if self.tabs[ti].settings {
+                } else if self.tabs[ti].page == Some(Page::Settings) {
                     self.refresh_drives();
                 } else {
                     self.reindex_force = true; // F5 also recalculates folder sizes
@@ -322,6 +322,13 @@ impl Explorer {
                     {
                         for_good.extend(refused);
                     }
+                    // Permanent deletion counts bytes: measure first, then every deleted file adds its size.
+                    if !for_good.is_empty() {
+                        prog.preparing.store(true, Relaxed);
+                        let total: u64 = for_good.iter().map(|x| size_up_to(x, u64::MAX, &|| prog.cancelled())).sum();
+                        prog.total_bytes.store(total, Relaxed);
+                        prog.preparing.store(false, Relaxed);
+                    }
                     let mut failed = 0usize;
                     let mut failed_msg = String::new();
                     for path in &for_good {
@@ -330,7 +337,10 @@ impl Explorer {
                         }
                         prog.set_current(&name_of(path));
                         // File by file, so Cancel also stops in the middle of a big folder.
-                        match delete_for_good(path, &|| prog.cancelled(), &|f| prog.set_current(&name_of(f))) {
+                        match delete_for_good(path, &|| prog.cancelled(), &|f, bytes| {
+                            prog.set_current(&name_of(f));
+                            prog.done_bytes.fetch_add(bytes, Relaxed);
+                        }) {
                             Ok(true) => {}
                             Ok(false) => break, // cancelled: what is left of this folder stays as it is
                             Err(e) => {
@@ -422,27 +432,7 @@ impl Explorer {
                     }
                 }
             }
-            Action::Properties(p) => {
-                let seq = self.props_gen.fetch_add(1, AO::SeqCst) + 1;
-                let mut props = build_props(&p);
-                props.stats_gen = seq;
-                if props.is_dir {
-                    let (tx, ui, g) = (
-                        self.msg_tx.clone(),
-                        self.ui.clone(),
-                        Arc::clone(&self.props_gen),
-                    );
-                    let root = p.clone();
-                    std::thread::spawn(move || {
-                        let stats = folder_stats(&root, &|| g.load(AO::Relaxed) != seq);
-                        if g.load(AO::Relaxed) == seq {
-                            let _ = tx.send(AppMsg::Stats(seq, stats));
-                            ui.request_repaint();
-                        }
-                    });
-                }
-                self.props = Some(props);
-            }
+            Action::Properties(p) => self.open_properties(p),
             Action::OpenContaining(p) => {
                 if let Some(parent) = p.parent().map(Path::to_path_buf) {
                     self.navigate_or_bin(ti, parent);
@@ -470,6 +460,7 @@ impl Explorer {
                 self.reload_all();
             }
             Action::OpenSettings => self.open_settings(),
+            Action::OpenWhatsNew => self.open_whats_new(),
             Action::PinQuick(p) => self.pin_quick(p),
             Action::UnpinQuick(p) => self.unpin_quick(&p),
             Action::OpenRecycleBin => {

@@ -41,11 +41,40 @@ impl Notice {
     }
 }
 
+/// A spot in a tab's back/forward history: a folder, or the Recycle Bin view.
+#[derive(Clone, PartialEq)]
+pub(crate) enum Place {
+    Folder(PathBuf),
+    Trash,
+}
+
+/// A tab that shows an app page instead of a folder.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Page {
+    Settings,
+    Licenses,
+}
+
+impl Page {
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Page::Settings => "Settings",
+            Page::Licenses => "Licenses",
+        }
+    }
+    pub(crate) fn icon(self) -> &'static str {
+        match self {
+            Page::Settings => "settings",
+            Page::Licenses => "info",
+        }
+    }
+}
+
 pub(crate) struct Tab {
     pub(crate) id: u64,
     pub(crate) dir: PathBuf,
-    pub(crate) back: Vec<PathBuf>,
-    pub(crate) fwd: Vec<PathBuf>,
+    pub(crate) back: Vec<Place>,
+    pub(crate) fwd: Vec<Place>,
     pub(crate) entries: Vec<Entry>,
     pub(crate) lookup: HashMap<PathBuf, usize>,
     pub(crate) view: Vec<usize>,
@@ -67,8 +96,8 @@ pub(crate) struct Tab {
     pub(crate) rename: Option<RenameState>,
     pub(crate) pending_rename: Option<PathBuf>,
     pub(crate) trash: Option<TrashState>,
-    /// True: this tab shows the Settings page instead of a folder.
-    pub(crate) settings: bool,
+    /// Set: this tab shows that page instead of a folder.
+    pub(crate) page: Option<Page>,
     pub(crate) search_job: Option<SearchJob>,
     pub(crate) search_results: Vec<Entry>,
     /// hash of a path -> index into `search_results`. Keeps only 8 bytes per hit instead of a second copy of
@@ -88,6 +117,11 @@ pub(crate) fn path_key(p: &Path) -> u64 {
 }
 
 impl Tab {
+    /// Where the tab is right now, as a history entry.
+    pub(crate) fn place(&self) -> Place {
+        if self.trash.is_some() { Place::Trash } else { Place::Folder(self.dir.clone()) }
+    }
+
     pub(crate) fn new(id: u64, dir: PathBuf) -> Self {
         // Restored sessions / dragged-out tabs may still carry a \\?\ verbatim path.
         let dir = clean_path(&dir);
@@ -116,7 +150,7 @@ impl Tab {
             rename: None,
             pending_rename: None,
             trash: None,
-            settings: false,
+            page: None,
             search_job: None,
             search_results: Vec::new(),
             search_lookup: HashMap::new(),
@@ -177,8 +211,8 @@ impl Tab {
         if self.trash.is_some() {
             return "Recycle Bin".to_owned();
         }
-        if self.settings {
-            return "Settings".to_owned();
+        if let Some(page) = self.page {
+            return page.title().to_owned();
         }
         let dir = self.shown_dir();
         dir.file_name()
@@ -190,7 +224,7 @@ impl Tab {
     }
     /// Recycle Bin or Settings: the tab shows a page of its own, not the files of `dir`.
     pub(crate) fn special(&self) -> bool {
-        self.trash.is_some() || self.settings
+        self.trash.is_some() || self.page.is_some()
     }
     /// Everything that indexes into `view` (the table, selection, context menu) must read from this instead of `self.entries`.
     pub(crate) fn source(&self) -> &[Entry] {

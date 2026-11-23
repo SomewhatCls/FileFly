@@ -24,12 +24,21 @@ impl Explorer {
         }
     }
 
+    /// Opens the Recycle Bin view as a new history step.
     pub(crate) fn open_trash(&mut self, ti: usize) {
         let tab = &mut self.tabs[ti];
         if tab.trash.is_none() {
-            let cur = tab.dir.clone();
+            let cur = tab.place();
             tab.back.push(cur);
             tab.fwd.clear();
+        }
+        self.show_trash(ti);
+    }
+
+    /// Switches the tab to the Recycle Bin view (no history change) and (re)loads it.
+    pub(crate) fn show_trash(&mut self, ti: usize) {
+        let tab = &mut self.tabs[ti];
+        if tab.trash.is_none() {
             tab.trash = Some(TrashState::new());
             tab.search.clear();
             tab.clear_selection();
