@@ -13,7 +13,7 @@ impl Explorer {
             tab.view.len(),
             if tab.view.len() == 1 { "" } else { "s" }
         );
-        if tab.settings {
+        if tab.page.is_some() {
             text = String::new();
         } else if let Some(tr) = &tab.trash {
             text = format!(
@@ -48,14 +48,14 @@ impl Explorer {
         if tab.trash.is_none() && tab.search_job.as_ref().is_some_and(|j| !j.done) {
             text.push_str("   |   searching…");
         }
-        // File operations have their own progress dialog; the status bar only keeps a spinner for
-        // one whose dialog the user hid.
-        let hidden_op = self.ops.iter().find(|o| o.hidden).map(|o| o.title.clone());
-        let busy = self.jobs_running > 0
-            || hidden_op.is_some()
-            || tab.loading
-            || tab.trash.as_ref().is_some_and(|t| t.loading);
-        let job = if self.job_label.is_empty() { hidden_op.unwrap_or_default() } else { self.job_label.clone() };
+        // File operations have their own progress dialog; the status bar keeps an entry for them
+        // while the user has hidden any of those dialogs. Clicking it opens the dialog again (or, with
+        // several operations running, a list to choose from).
+        let ops: Vec<(u64, String)> = self.ops.iter().map(|o| (o.id, o.title.clone())).collect();
+        let any_hidden = self.ops.iter().any(|o| o.hidden);
+        let busy = self.jobs_running > 0 || tab.loading || tab.trash.as_ref().is_some_and(|t| t.loading);
+        let job = self.job_label.clone();
+        let mut reopen: Vec<u64> = Vec::new();
         let clip = self.clipboard.as_ref().map(|(p, cut)| {
             let what = if p.len() == 1 {
                 p[0].file_name()
@@ -100,13 +100,44 @@ impl Explorer {
                         );
                     }
                     if busy {
-                        ui.add(egui::Spinner::new().size(m.font));
+                        spinner(ui, m.font, pal.text_secondary);
                         if !job.is_empty() {
                             ui.label(
                                 RichText::new(job)
                                     .color(pal.text_secondary)
                                     .size(m.font * 0.93),
                             );
+                        }
+                    }
+
+                    if any_hidden {
+                        let entry = ui
+                            .horizontal(|ui| {
+                                ui.add_space(m.pad);
+                                spinner(ui, m.font, pal.text_secondary);
+                                let label = match ops.as_slice() {
+                                    [(_, title)] => title.clone(),
+                                    _ => format!("{} operations", ops.len()),
+                                };
+                                ui.label(RichText::new(label).color(pal.text_secondary).size(m.font * 0.93));
+                            })
+                            .response;
+                        let click = ui
+                            .interact(entry.rect, Id::unique("status_ops"), Sense::click())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if let [(id, _)] = ops.as_slice() {
+                            if click.clicked() {
+                                reopen.push(*id);
+                            }
+                        } else {
+                            egui::Popup::menu(&click).align(egui::RectAlign::TOP_START).show(|ui| {
+                                for (id, title) in &ops {
+                                    if menu_item(ui, &m, &pal, None, title, None, true) {
+                                        reopen.push(*id);
+                                        ui.close();
+                                    }
+                                }
+                            });
                         }
                     }
 
@@ -120,11 +151,16 @@ impl Explorer {
                         // Consider a more elegant solution.
                         if is_archive_path(&*self.tabs[self.active].dir) &&
                             self.tabs[self.active].trash.is_none() &&
-                            !self.tabs[self.active].settings {
+                            self.tabs[self.active].page.is_none() {
                             status_pill(ui, &m, pal.control_hover, pal.text_secondary,"Read-only");
                         }
                     });
                 });
             });
+        for id in reopen {
+            if let Some(op) = self.ops.iter_mut().find(|o| o.id == id) {
+                op.hidden = false;
+            }
+        }
     }
 }

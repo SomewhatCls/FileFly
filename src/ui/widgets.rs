@@ -401,7 +401,14 @@ pub(crate) fn scroll_context_menu(resp: &egui::Response, add: impl FnOnce(&mut U
         .show(|ui| menu_scroll(ui, add));
 }
 
-/// Fluent-style dialog: rounded flyout surface, optional dimmed scrim. Returns true when closed (X / Esc).
+/// The one surface colour of a dialog. Opaque: a see-through dialog would show the file list's text through it
+/// (a real backdrop blur is not available for an in-window popup).
+fn dialog_surface(pal: &Palette) -> Color32 {
+    if pal.dark { Color32::from_rgb(43, 43, 43) } else { Color32::from_rgb(249, 249, 249) }
+}
+
+/// Fluent-style dialog: rounded flyout surface, optional dimmed scrim. Returns true when closed (X / Esc /
+/// a click outside of it).
 pub(crate) fn dialog_shell(
     ui: &mut Ui,
     m: &Metrics,
@@ -412,22 +419,46 @@ pub(crate) fn dialog_shell(
     width: f32,
     add: impl FnOnce(&mut Ui),
 ) -> bool {
+    dialog_shell_with_footer(ui, m, pal, id, title, modal, width, add, None)
+}
+
+/// `dialog_shell` with a command row along the bottom edge, like a Windows content dialog.
+pub(crate) fn dialog_shell_with_footer<'a>(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    id: &str,
+    title: &str,
+    modal: bool,
+    width: f32,
+    add: impl FnOnce(&mut Ui),
+    footer: Option<Box<dyn FnOnce(&mut Ui) + 'a>>,
+) -> bool {
+    // A click outside the dialog closes it. Not on the frame it first appears in: that frame may still
+    // carry the click that opened it.
+    let frame_nr = ui.ctx().cumulative_pass_nr();
+    let seen_id = Id::unique((id, "last_frame"));
+    let first_frame = ui.data(|d| d.get_temp::<u64>(seen_id)).is_none_or(|last| last + 1 < frame_nr);
+    ui.data_mut(|d| d.insert_temp(seen_id, frame_nr));
+    let mut clicked_outside = false;
     if modal {
         let screen = ui.content_rect();
         egui::Area::new(Id::unique((id, "scrim")))
             .order(egui::Order::Middle)
             .fixed_pos(screen.min)
             .show(ui, |ui| {
-                let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
+                let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
+                clicked_outside = resp.clicked();
                 ui.painter().rect_filled(
                     rect,
                     CornerRadius::ZERO,
-                    Color32::from_black_alpha(if pal.dark { 95 } else { 48 }),
+                    Color32::from_black_alpha(if pal.dark { 110 } else { 55 }),
                 );
             });
     }
+    let radius = (m.radius as f32 * 1.6).round() as u8;
     let mut closed = false;
-    egui::Window::new(title)
+    let window = egui::Window::new(title)
         .id(Id::unique(id))
         .title_bar(false)
         .collapsible(false)
@@ -436,22 +467,51 @@ pub(crate) fn dialog_shell(
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .frame(
             egui::Frame::window(&ui.global_style())
-                .fill(pal.flyout)
+                .fill(dialog_surface(pal))
+                .corner_radius(CornerRadius::same(radius))
                 .shadow(popup_shadow(pal.dark))
                 .stroke(Stroke::new(1.0_f32, pal.divider))
-                .inner_margin(Margin::same((m.pad * 2.0) as i8)),
+                .inner_margin(Margin::ZERO),
         )
         .show(ui, |ui| {
-            ui.set_width(width);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(title).size(m.font * 1.3).strong());
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    closed |= icon_button(ui, m, pal, "close", "Close", true, false).clicked();
+            ui.spacing_mut().item_spacing.y = m.pad * 0.6;
+            let side = (m.pad * 2.5) as i8;
+            egui::Frame::new()
+                .inner_margin(Margin { left: side, right: side, top: (m.pad * 2.0) as i8, bottom: side })
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(title).size(m.font * 1.4).color(pal.text));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            closed |= icon_button(ui, m, pal, "close", "Close", true, false).clicked();
+                        });
+                    });
+                    ui.add_space(m.pad * 0.8);
+                    add(ui);
                 });
-            });
-            ui.add_space(m.pad);
-            add(ui);
+            if let Some(footer) = footer {
+                // Same surface as the body, set apart by a hairline.
+                ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), Stroke::new(1.0_f32, pal.divider));
+                egui::Frame::new()
+                    .inner_margin(Margin::symmetric(side, (m.pad * 1.3) as i8))
+                    .show(ui, |ui| {
+                        // A fixed height: a bare right-to-left layout would take all the height there is.
+                        ui.allocate_ui_with_layout(
+                            vec2(width, m.ctl_h),
+                            Layout::right_to_left(Align::Center),
+                            footer,
+                        );
+                    });
+            }
         });
+    if !modal {
+        // Without a scrim: a click on the main window (not on a menu opened from the dialog).
+        if let (Some(w), Some(pos)) = (&window, ui.input(|i| i.pointer.interact_pos())) {
+            let on_page = ui.ctx().layer_id_at(pos).is_some_and(|l| l.order <= egui::Order::Middle);
+            clicked_outside = ui.input(|i| i.pointer.any_click()) && on_page && !w.response.rect.contains(pos);
+        }
+    }
+    closed |= clicked_outside && !first_frame;
     closed || (ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.egui_wants_keyboard_input())
 }
 
@@ -460,6 +520,23 @@ pub(crate) fn theme_pref(t: ThemeChoice) -> egui::ThemePreference {
         ThemeChoice::System => egui::ThemePreference::System,
         ThemeChoice::Light => egui::ThemePreference::Light,
         ThemeChoice::Dark => egui::ThemePreference::Dark,
+    }
+}
+
+/// The busy indicator as a widget: reserves a `diameter` square in the layout and paints the spinner in `color`.
+pub(crate) fn spinner(ui: &mut Ui, diameter: f32, color: Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(diameter), Sense::hover());
+    paint_spinner(ui, rect.center(), diameter, color);
+    response
+}
+
+/// Busy spinner for a right-aligned size cell, directly left of the text, never on top of it.
+/// Nothing is drawn when the cell has no room for both.
+pub(crate) fn size_cell_spinner(ui: &Ui, m: &Metrics, pal: &Palette, cell: Rect, text: &str) {
+    let diameter = m.font * 0.85;
+    let left = cell.right() - text_width(ui, text, m.font) - m.pad * 0.5 - diameter;
+    if left >= cell.left() {
+        paint_spinner(ui, pos2(left + diameter * 0.5, cell.center().y), diameter, pal.accent);
     }
 }
 

@@ -109,7 +109,27 @@ fn op_panel(ui: &mut Ui, m: &Metrics, pal: &Palette, op: &mut ActiveOp, width: f
     ui.label(RichText::new(headline).size(m.font * 1.05));
     ui.add_space(m.pad * 0.6);
     progress_bar(ui, m, pal, frac, paused);
-    ui.add_space(m.pad);
+    // Running total under the bar: bytes done of total, or items done of total.
+    let (tb, db, ti, di) = (
+        op.progress.total_bytes.load(AO::Relaxed),
+        op.progress.done_bytes.load(AO::Relaxed),
+        op.progress.total_items.load(AO::Relaxed),
+        op.progress.done_items.load(AO::Relaxed),
+    );
+    let totals = if preparing {
+        None
+    } else if tb > 0 {
+        Some(format!("{} of {}", format_size(db.min(tb)), format_size(tb)))
+    } else if ti > 1 {
+        Some(format!("{} of {} items", di.min(ti), ti))
+    } else {
+        None
+    };
+    ui.add_space(m.pad * 0.5);
+    if let Some(t) = totals {
+        ui.label(RichText::new(t).size(m.font * 0.95).color(pal.text_secondary));
+    }
+    ui.add_space(m.pad * 0.5);
 
     if !op.from.is_empty() {
         op_line(ui, m, pal, "From", &op.from);
@@ -146,18 +166,10 @@ fn op_panel(ui: &mut Ui, m: &Metrics, pal: &Palette, op: &mut ActiveOp, width: f
         }
     }
 
-    let (tb, db) = (
-        op.progress.total_bytes.load(AO::Relaxed),
-        op.progress.done_bytes.load(AO::Relaxed),
-    );
-    let (ti, di) = (
-        op.progress.total_items.load(AO::Relaxed),
-        op.progress.done_items.load(AO::Relaxed),
-    );
-    // Operations that count items but no bytes (deleting, moving within a drive) show
-    // items per second; operations that report nothing at all (`run_job`) have no
-    // details to show.
-    let by_items = tb == 0 && ti > 0;
+    // Operations that count items but no bytes (moving to the Recycle Bin, moving within a drive) show
+    // items per second, once there is more than one item; operations that report nothing at all
+    // (`run_job`) have no details to show.
+    let by_items = tb == 0 && ti > 1;
     let has_details = op.cancelable || tb > 0 || ti > 0;
     if op.expanded {
         ui.add_space(m.pad);
@@ -254,38 +266,19 @@ fn op_panel(ui: &mut Ui, m: &Metrics, pal: &Palette, op: &mut ActiveOp, width: f
     out
 }
 
-/// Keys of the state remembered about the operations window: the backdrop that was applied to it, and the
-/// height it was last sized to.
-fn ops_window_keys() -> (Id, Id) {
-    (Id::unique("file-ops-backdrop"), Id::unique("file-ops-height"))
-}
-
-/// The operations window is a native window that egui destroys as soon as a frame passes without
-/// `show_viewport_immediate` for it (every operation finished or hidden). The next one gets a brand new window
-/// that has neither the backdrop effect nor the fitted size, so what was remembered about the old one must go,
-/// or the new window would be taken for already set up.
-fn forget_ops_window_state(ctx: &egui::Context) {
-    let (backdrop_key, height_key) = ops_window_keys();
-    ctx.data_mut(|d| {
-        d.remove_temp::<(bool, TransparencyEffect)>(backdrop_key);
-        d.remove_temp::<f32>(height_key);
-    });
-}
-
 impl Explorer {
     /// One progress window for all running file operations (a separate OS window): every
     /// operation is a panel of its own, stacked top to bottom with its own bar and graph, like
     /// Explorer's copy dialog. A new operation adds a panel; a finished one removes its panel.
     pub(crate) fn ui_ops(&mut self, ui: &mut Ui) {
         if self.ops.is_empty() {
-            forget_ops_window_state(ui.ctx());
+            forget_tool_window(ui.ctx(), "file-ops");
             return;
         }
         self.ui.request_repaint_after(Duration::from_millis(100));
         let (m, pal) = (self.m, self.pal);
         let now = Instant::now();
         let ctx = ui.ctx().clone();
-        let transparency = self.backdrop_transparency;
         let width = m.accessibility_scale * 440.0;
 
         // Operations that currently get a panel (hidden ones keep running without one, and very
@@ -307,115 +300,38 @@ impl Explorer {
             any_cancelable |= op.cancelable;
         }
         if shown == 0 {
-            forget_ops_window_state(&ctx);
+            forget_tool_window(&ctx, "file-ops");
             return;
         }
-        let (backdrop_key, height_key) = ops_window_keys();
 
-        let win_w = width + m.pad * 4.0;
-        let bar_h = (m.accessibility_scale * 32.0).round();
-        let max_h = m.accessibility_scale * 640.0; // taller than this scrolls
         let title = if shown == 1 { first_title } else { format!("{shown} operations") };
-        let win_title = format!("{title} – FileFly");
-        // Same look as the main window: no native frame, transparent so the Mica backdrop
-        // shows, with our own caption buttons.
-        let builder = egui::ViewportBuilder::default()
-            .with_title(win_title.clone())
-            .with_inner_size([win_w, m.accessibility_scale * 220.0])
-            .with_resizable(false)
-            .with_maximize_button(false)
-            .with_decorations(!self.settings.custom_frame)
-            .with_transparent(true);
-        let pad = (m.pad * 2.0) as i8;
-        let frame = egui::Frame::new().fill(Color32::TRANSPARENT).inner_margin(Margin {
-            left: pad,
-            right: pad,
-            top: (bar_h + m.pad) as i8,
-            bottom: pad,
-        });
-        let vid = egui::ViewportId::from_hash_of("file-ops");
-        let max_content_h = (max_h - bar_h - m.pad * 3.0).max(m.accessibility_scale * 120.0);
-
+        let spec = ToolWindow {
+            key: "file-ops",
+            caption: &title,
+            width,
+            max_height: m.accessibility_scale * 640.0,
+            transparency: self.backdrop_transparency.expect("A transparency effect should always be set"),
+            custom_frame: self.settings.custom_frame,
+            // The window's own close button / Alt+F4 cancels every cancelable operation in it (the window
+            // then stays until they have really stopped); without any, it just hides them.
+            hold_open: any_cancelable,
+        };
         let mut results: Vec<(usize, OpUi)> = Vec::new();
-        let mut close_requested = false;
-        ctx.show_viewport_immediate(vid, builder, |ui, _class| {
-            // Backdrop over the whole window (the native window only exists once it has been
-            // shown, so this is retried until it works and redone when the theme changes).
-            let want = (pal.dark, transparency.expect("A transparency effect should always be set"));
-            if ui.ctx().data(|d| d.get_temp::<(bool, TransparencyEffect)>(backdrop_key)) != Some(want)
-                && backdrop_by_title(&win_title, pal.dark, transparency.expect("A transparency effect should always be set"))
-            {
-                ui.ctx().data_mut(|d| d.insert_temp(backdrop_key, want));
-            }
-            let full = ui.max_rect();
-            ui.layer_painter(egui::LayerId::background())
-                .rect_filled(full, 0.0, pal.layer);
-
-            // Custom title bar: caption text, drag area, minimize / close.
-            let caption = Rect::from_min_size(
-                pos2(full.right() - m.accessibility_scale * 46.0 * 2.0, full.top()),
-                vec2(m.accessibility_scale * 46.0 * 2.0, bar_h),
-            );
-            let drag = ui.interact(
-                Rect::from_min_max(full.min, pos2(caption.left(), full.top() + bar_h)),
-                Id::unique("file-ops-drag"),
-                Sense::click_and_drag(),
-            );
-            if drag.drag_started_by(egui::PointerButton::Primary) {
-                ui.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-            }
-            ui.painter().text(
-                pos2(full.left() + m.pad * 2.0, full.top() + bar_h * 0.5),
-                Align2::LEFT_CENTER,
-                &title,
-                FontId::proportional(m.font * 0.95),
-                pal.text,
-            );
-            if self.settings.custom_frame {
-                caption_buttons(ui, &m, &pal, false, false);
-            }
-
-            // The window's own close button / Alt+F4 cancels every cancelable operation in it (the
-            // window then stays until they have really stopped); without any, it just hides them.
-            close_requested = ui.ctx().input(|i| i.viewport().close_requested());
-            if close_requested && any_cancelable {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            }
-
-            let panel = egui::CentralPanel::default().frame(frame.clone()).show(ui, |ui| {
-                ui.set_width(width);
-                // `CentralPanel` stretches to fill the window, so the content height comes from the
-                // scroll area (otherwise the window could only ever grow).
-                let scroll = egui::ScrollArea::vertical()
-                    .max_height(max_content_h)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        ui.set_width(width);
-                        ui.add_space(m.pad * 0.5);
-                        let mut first = true;
-                        for (i, op) in self.ops.iter_mut().enumerate() {
-                            if !is_shown(op) {
-                                continue;
-                            }
-                            if !first {
-                                let y = ui.cursor().top() + m.pad * 0.5;
-                                ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0_f32, pal.divider));
-                                ui.add_space(m.pad * 1.5);
-                            }
-                            first = false;
-                            let r = op_panel(ui, &m, &pal, op, width);
-                            results.push((i, r));
-                        }
-                    });
-                scroll.content_size.y
-            });
-            // Fit the window to its content (it grows with each operation and "More details").
-            let need = (panel.inner + bar_h + m.pad * 3.0).min(max_h);
-            let last = ui.ctx().data(|d| d.get_temp::<f32>(height_key)).unwrap_or(0.0);
-            if (need - last).abs() > 1.0 {
-                ui.ctx().data_mut(|d| d.insert_temp(height_key, need));
-                ui.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(win_w, need)));
+        let close_requested = tool_window(&ctx, &m, &pal, &spec, |ui| {
+            ui.add_space(m.pad * 0.5);
+            let mut first = true;
+            for (i, op) in self.ops.iter_mut().enumerate() {
+                if !is_shown(op) {
+                    continue;
+                }
+                if !first {
+                    let y = ui.cursor().top() + m.pad * 0.5;
+                    ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0_f32, pal.divider));
+                    ui.add_space(m.pad * 1.5);
+                }
+                first = false;
+                let r = op_panel(ui, &m, &pal, op, width);
+                results.push((i, r));
             }
         });
 

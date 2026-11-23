@@ -65,7 +65,7 @@ impl ActiveOp {
             return;
         }
         let by_items =
-            self.progress.total_bytes.load(AO::Relaxed) == 0 && self.progress.total_items.load(AO::Relaxed) > 0;
+            self.progress.total_bytes.load(AO::Relaxed) == 0 && self.progress.total_items.load(AO::Relaxed) > 1;
         let done = if by_items {
             self.progress.done_items.load(AO::Relaxed)
         } else {
@@ -94,7 +94,7 @@ impl ActiveOp {
         self.last_bytes = done;
     }
 
-    /// 0..=1, or None while the amount of work isn't known (preparing, or a job without progress).
+    /// 0..=1, or None while the amount of work isn't known (preparing, a single item, or a job without progress).
     pub(crate) fn fraction(&self) -> Option<f32> {
         let p = &self.progress;
         if p.preparing.load(AO::Relaxed) {
@@ -103,7 +103,8 @@ impl ActiveOp {
         let (tb, ti) = (p.total_bytes.load(AO::Relaxed), p.total_items.load(AO::Relaxed));
         if tb > 0 {
             Some((p.done_bytes.load(AO::Relaxed) as f64 / tb as f64).clamp(0.0, 1.0) as f32)
-        } else if ti > 0 {
+        } else if ti > 1 {
+            // (a single item has no steps to count: the sliding bar says "working")
             Some((p.done_items.load(AO::Relaxed) as f64 / ti as f64).clamp(0.0, 1.0) as f32)
         } else {
             None

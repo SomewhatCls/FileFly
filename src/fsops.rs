@@ -147,6 +147,56 @@ pub fn attributes(_md: &fs::Metadata) -> u32 {
     0
 }
 
+/// An attribute the Properties window can change.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Attribute {
+    ReadOnly,
+    Hidden,
+}
+
+/// Turns `attribute` of `path` on or off, leaving the other attributes as they are.
+#[cfg(windows)]
+pub fn set_attribute(path: &Path, attribute: Attribute, on: bool) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileAttributesW(path: *const u16) -> u32;
+        fn SetFileAttributesW(path: *const u16, attributes: u32) -> i32;
+    }
+    const INVALID: u32 = 0xFFFF_FFFF;
+    let bit = match attribute {
+        Attribute::ReadOnly => 0x1,
+        Attribute::Hidden => 0x2,
+    };
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives both calls.
+    unsafe {
+        let current = GetFileAttributesW(wide.as_ptr());
+        if current == INVALID {
+            return Err(io::Error::last_os_error());
+        }
+        let wanted = if on { current | bit } else { current & !bit };
+        if wanted != current && SetFileAttributesW(wide.as_ptr(), wanted) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Turns `attribute` of `path` on or off. Only "read-only" exists here (a file's mode); hiding is a
+/// Windows attribute.
+#[cfg(not(windows))]
+pub fn set_attribute(path: &Path, attribute: Attribute, on: bool) -> io::Result<()> {
+    match attribute {
+        Attribute::ReadOnly => {
+            let mut permissions = fs::metadata(path)?.permissions();
+            permissions.set_readonly(on);
+            fs::set_permissions(path, permissions)
+        }
+        Attribute::Hidden => Err(io::Error::new(io::ErrorKind::Unsupported, "hiding is not supported here")),
+    }
+}
+
 /// Uses the attributes already delivered by `read_dir` (no extra syscall per entry, and correct for
 /// junctions such as "Application Data", which `fs::metadata` can't follow).
 pub fn is_hidden_entry(name: &str, md: &fs::Metadata) -> bool {
@@ -210,6 +260,30 @@ fn is_link(md: &fs::Metadata) -> bool {
     }
 }
 
+/// Sums file sizes below `p` without following links, but stops early once `limit` is exceeded or
+/// `cancelled` fires (so the result is only exact when it is at most `limit`).
+pub fn size_up_to(p: &Path, limit: u64, cancelled: &dyn Fn() -> bool) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![p.to_path_buf()];
+    while let Some(cur) = stack.pop() {
+        if total > limit || cancelled() {
+            break;
+        }
+        let Ok(md) = fs::symlink_metadata(&cur) else { continue };
+        if is_link(&md) {
+            continue;
+        }
+        if md.is_dir() {
+            if let Ok(rd) = fs::read_dir(&cur) {
+                stack.extend(rd.flatten().map(|e| e.path()));
+            }
+        } else {
+            total += md.len();
+        }
+    }
+    total
+}
+
 /// Runs `op`; when Windows refuses it (a read-only flag is in the way), clears the flag and runs it once more.
 /// (On Unix the file's own mode has no say in deleting it.)
 fn retry_clearing_readonly(path: &Path, op: impl Fn() -> io::Result<()>) -> io::Result<()> {
@@ -246,10 +320,11 @@ pub fn remove_existing(path: &Path) -> io::Result<()> {
 /// Deletes a file or folder for good (no Recycle Bin), file by file, so that `cancelled` can stop it in the
 /// middle of a big folder. Every file is removed whole: what a cancel leaves is a smaller folder, never a
 /// broken file. Folders that have become empty are removed as well.
-/// `Ok(true)` = everything is gone, `Ok(false)` = cancelled part-way. `on_file` gets each file about to go.
-pub fn delete_for_good(path: &Path, cancelled: &dyn Fn() -> bool, on_file: &dyn Fn(&Path)) -> io::Result<bool> {
+/// `Ok(true)` = everything is gone, `Ok(false)` = cancelled part-way. `on_file` gets each file about to go and its size.
+pub fn delete_for_good(path: &Path, cancelled: &dyn Fn() -> bool, on_file: &dyn Fn(&Path, u64)) -> io::Result<bool> {
     let md = fs::symlink_metadata(path)?;
     if !md.is_dir() || is_link(&md) {
+        on_file(path, md.len());
         remove_file_or_link(path, &md)?;
         return Ok(true);
     }
@@ -287,7 +362,7 @@ pub fn delete_for_good(path: &Path, cancelled: &dyn Fn() -> bool, on_file: &dyn 
                 dirs.push(p.clone());
                 stack.push(p);
             } else {
-                on_file(&p);
+                on_file(&p, md.len());
                 if let Err(e) = remove_file_or_link(&p, &md) {
                     first_err.get_or_insert(e);
                 }

@@ -30,12 +30,8 @@ pub(crate) use imp::split;
 #[cfg(windows)]
 mod imp {
     use super::{Path, PathBuf};
-    use crate::fsops::format_size;
-    use std::{
-        fs,
-        os::windows::fs::MetadataExt,
-        path::{Component, Prefix},
-    };
+    use crate::fsops::{format_size, size_up_to};
+    use std::path::{Component, Prefix};
     use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
     // Edition 2024: extern blocks are `unsafe extern`. These are plain kernel32 exports.
@@ -52,7 +48,6 @@ mod imp {
     }
 
     const DRIVE_FIXED: u32 = 3; // removable, network and optical drives have no Recycle Bin
-    const REPARSE_POINT: u32 = 0x400; // symlinks / junctions: never followed
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -82,29 +77,6 @@ mod imp {
 
     fn reg_dword(subkey: &str, name: &str) -> Option<u32> {
         RegKey::predef(HKEY_CURRENT_USER).open_subkey(subkey).ok()?.get_value::<u32, _>(name).ok()
-    }
-
-    /// Sums file sizes below `p`, but stops early once `limit` is exceeded or `cancelled` fires.
-    fn size_up_to(p: &Path, limit: u64, cancelled: &dyn Fn() -> bool) -> u64 {
-        let mut total = 0u64;
-        let mut stack = vec![p.to_path_buf()];
-        while let Some(cur) = stack.pop() {
-            if total > limit || cancelled() {
-                break;
-            }
-            let Ok(md) = fs::symlink_metadata(&cur) else { continue };
-            if md.file_attributes() & REPARSE_POINT != 0 {
-                continue;
-            }
-            if md.is_dir() {
-                if let Ok(rd) = fs::read_dir(&cur) {
-                    stack.extend(rd.flatten().map(|e| e.path()));
-                }
-            } else {
-                total += md.len();
-            }
-        }
-        total
     }
 
     /// What applies to all items on one volume.
