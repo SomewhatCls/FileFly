@@ -12,31 +12,11 @@ pub(super) const MAX_BITS: u32 = 26;
 /// Double the table when it holds more than this many entries per slot on average.
 pub(super) const GROW_AVG: u64 = 190;
 /// Pending (not yet written) entries that trigger a write.
-pub const FLUSH_AT: usize = 32 * 1024;
+pub const FLUSH_AT: usize = 32 * 1024; // smallest flush batch; larger tables use bigger ones (`flush_at_for`)
 /// Subtree invalidations remembered (and persisted in the header).
 pub(super) const MAX_TOMBS: usize = 64;
 /// Entries are pruned at most this often.
 pub(super) const PRUNE_EVERY: u64 = 24 * 3600;
-
-#[derive(Clone, Copy)]
-pub struct Rec {
-    pub(super) size: u64,
-    pub(super) modified: u32,
-    pub(super) scanned: u32,
-}
-
-impl Rec {
-    pub(super) fn from_cf(v: &CachedFolder) -> Rec {
-        Rec {
-            size: v.size,
-            modified: v.modified_ns as u32,
-            scanned: v.scanned_at.min(u32::MAX as u64) as u32,
-        }
-    }
-    pub(super) fn to_cf(self) -> CachedFolder {
-        CachedFolder { size: self.size, modified_ns: self.modified as u64, scanned_at: self.scanned as u64 }
-    }
-}
 
 pub(super) fn bucket_of(key: u64, bits: u32) -> u64 {
     key >> (KEY_BITS - bits)
@@ -49,7 +29,7 @@ pub(super) fn slot_off(i: u64) -> u64 {
 /// Slot layout: crc u32 | payload length u16 | entry count u16 | payload.
 /// Payload: base scan time u32, then per entry: key delta, size, mtime u32, scan time - base.
 /// An all-zero slot is an empty slot.
-pub(super) fn encode_payload(entries: &[(u64, Rec)], bits: u32) -> Vec<u8> {
+pub(super) fn encode_payload(entries: &[(u64, CachedFolder)], bits: u32) -> Vec<u8> {
     if entries.is_empty() {
         return Vec::new();
     }
@@ -63,7 +43,7 @@ pub(super) fn encode_payload(entries: &[(u64, Rec)], bits: u32) -> Vec<u8> {
         put_varint(&mut out, low - prev);
         prev = low;
         put_varint(&mut out, r.size);
-        out.extend_from_slice(&r.modified.to_le_bytes());
+        out.extend_from_slice(&r.stamp.to_le_bytes());
         put_varint(&mut out, (r.scanned - base) as u64);
     }
     out
@@ -83,7 +63,7 @@ pub(super) fn fill_slot(buf: &mut [u8], payload: &[u8], count: usize) {
 
 /// Calls `f(key, record)` for the entries of a slot in key order until it returns false.
 /// None = the slot is corrupt (bad CRC or malformed).
-pub(super) fn walk(buf: &[u8], bucket: u64, bits: u32, mut f: impl FnMut(u64, Rec) -> bool) -> Option<()> {
+pub(super) fn walk(buf: &[u8], bucket: u64, bits: u32, mut f: impl FnMut(u64, CachedFolder) -> bool) -> Option<()> {
     let len = u16::from_le_bytes([buf[4], buf[5]]) as usize;
     let count = u16::from_le_bytes([buf[6], buf[7]]) as usize;
     if len == 0 && count == 0 {
@@ -105,18 +85,18 @@ pub(super) fn walk(buf: &[u8], bucket: u64, bits: u32, mut f: impl FnMut(u64, Re
         low = low.checked_add(get_varint(p, &mut pos)?)?;
         let size = get_varint(p, &mut pos)?;
         let m = p.get(pos..pos + 4)?;
-        let modified = u32::from_le_bytes([m[0], m[1], m[2], m[3]]);
+        let stamp = u32::from_le_bytes([m[0], m[1], m[2], m[3]]);
         pos += 4;
         let sd = get_varint(p, &mut pos)?;
         let scanned = base.checked_add(u32::try_from(sd).ok()?)?;
-        if !f((bucket << kw) | low, Rec { size, modified, scanned }) {
+        if !f((bucket << kw) | low, CachedFolder { size, stamp, scanned }) {
             break;
         }
     }
     Some(())
 }
 
-pub(super) fn decode(buf: &[u8], bucket: u64, bits: u32) -> Option<Vec<(u64, Rec)>> {
+pub(super) fn decode(buf: &[u8], bucket: u64, bits: u32) -> Option<Vec<(u64, CachedFolder)>> {
     let mut v = Vec::new();
     walk(buf, bucket, bits, |k, r| {
         v.push((k, r));
@@ -127,7 +107,7 @@ pub(super) fn decode(buf: &[u8], bucket: u64, bits: u32) -> Option<Vec<(u64, Rec
 
 /// Encodes `entries`, dropping the oldest ones until they fit into a slot.
 /// Returns the payload and whether anything had to be dropped.
-pub(super) fn fit(entries: &mut Vec<(u64, Rec)>, bits: u32) -> (Vec<u8>, bool) {
+pub(super) fn fit(entries: &mut Vec<(u64, CachedFolder)>, bits: u32) -> (Vec<u8>, bool) {
     let mut dropped = false;
     loop {
         let enc = encode_payload(entries, bits);
@@ -155,7 +135,7 @@ pub(super) fn fit(entries: &mut Vec<(u64, Rec)>, bits: u32) -> (Vec<u8>, bool) {
 
 /// Merges updates (sorted by key; None = delete) into the sorted entries of a slot.
 /// The bool says whether anything actually changed.
-pub(super) fn merge(old: Vec<(u64, Rec)>, upd: &[(u64, Option<Rec>)]) -> (Vec<(u64, Rec)>, bool) {
+pub(super) fn merge(old: Vec<(u64, CachedFolder)>, upd: &[(u64, Option<CachedFolder>)]) -> (Vec<(u64, CachedFolder)>, bool) {
     let mut out = Vec::with_capacity(old.len() + upd.len());
     let mut changed = false;
     let (mut i, mut j) = (0, 0);

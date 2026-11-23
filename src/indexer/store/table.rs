@@ -1,12 +1,11 @@
 //! The table on disk: header, open / reset / grow, and batched writes.
 
 use super::format::{
-    bucket_of, decode, encode_payload, fill_slot, fit, merge, slot_off, walk, Rec, GROW_AVG, HEADER, MAX_BITS, MIN_BITS,
-    SLOT,
+    bucket_of, decode, encode_payload, fill_slot, fit, merge, slot_off, walk, GROW_AVG, HEADER, MAX_BITS, MIN_BITS, SLOT,
 };
 use super::io::{open_file, read_at, write_at};
 use super::util::{crc32, KeyMap};
-use super::super::model::now_secs;
+use super::super::model::{now_secs, CachedFolder, RwLockExt};
 use std::{
     fs::{self, File},
     io,
@@ -33,7 +32,7 @@ pub(super) struct Table {
 }
 
 impl Table {
-    pub(super) fn get(&self, key: u64) -> Option<Rec> {
+    pub(super) fn get(&self, key: u64) -> Option<CachedFolder> {
         let b = bucket_of(key, self.bits);
         let mut buf = [0u8; SLOT];
         read_at(&self.file, &mut buf, slot_off(b)).ok()?;
@@ -117,15 +116,8 @@ fn parse_header(buf: &[u8]) -> Option<Parsed> {
 }
 
 fn init_table(file: File) -> Option<Table> {
-    file.set_len(0).ok()?;
-    file.set_len(HEADER as u64 + (1u64 << MIN_BITS) * SLOT as u64).ok()?; // reads back as zeros
-    let t = Table {
-        file,
-        bits: MIN_BITS,
-        count: AtomicU64::new(0),
-        last_prune: AtomicU64::new(now_secs()),
-    };
-    write_header(&t, false, &[]).ok()?;
+    let mut t = Table { file, bits: MIN_BITS, count: AtomicU64::new(0), last_prune: AtomicU64::new(now_secs()) };
+    reset(&mut t).ok()?;
     Some(t)
 }
 
@@ -186,27 +178,30 @@ fn double(t: &mut Table, tombs: &[(PathBuf, u64)]) -> io::Result<()> {
     write_header(t, false, tombs)
 }
 
+/// Doubles the table until `extra` more entries fit (at most `GROW_AVG` entries per slot on average).
+fn grow(table: &RwLock<Table>, extra: u64, tombs: &[(PathBuf, u64)]) -> io::Result<()> {
+    let needs = |t: &Table| t.bits < MAX_BITS && t.count.load(Ordering::Relaxed) + extra > (1u64 << t.bits) * GROW_AVG;
+    if !needs(&*table.rd()) {
+        return Ok(());
+    }
+    let mut t = table.wr();
+    while needs(&*t) {
+        double(&mut t, tombs)?;
+    }
+    Ok(())
+}
+
 /// Merges a batch of updates into the slots it touches.
-pub(super) fn apply(table: &RwLock<Table>, batch: &KeyMap<Option<Rec>>, tombs: &[(PathBuf, u64)]) -> io::Result<()> {
+pub(super) fn apply(table: &RwLock<Table>, batch: &KeyMap<Option<CachedFolder>>, tombs: &[(PathBuf, u64)]) -> io::Result<()> {
     // Make room first: a batch merged into a table that is too small overflows its slots, and every
     // overflowing slot loses its oldest entries (the first scan of a big drive lost most of its
     // early results that way).
-    let incoming = batch.values().filter(|v| v.is_some()).count() as u64;
-    let (bits, count) = {
-        let t = table.read().unwrap_or_else(|e| e.into_inner());
-        (t.bits, t.count.load(Ordering::Relaxed))
-    };
-    if bits < MAX_BITS && count + incoming > (1u64 << bits) * GROW_AVG {
-        let mut t = table.write().unwrap_or_else(|e| e.into_inner());
-        while t.bits < MAX_BITS && t.count.load(Ordering::Relaxed) + incoming > (1u64 << t.bits) * GROW_AVG {
-            double(&mut t, tombs)?;
-        }
-    }
-    let mut items: Vec<(u64, Option<Rec>)> = batch.iter().map(|(k, v)| (*k, *v)).collect();
+    grow(table, batch.values().filter(|v| v.is_some()).count() as u64, tombs)?;
+    let mut items: Vec<(u64, Option<CachedFolder>)> = batch.iter().map(|(k, v)| (*k, *v)).collect();
     items.sort_unstable_by_key(|x| x.0);
     let mut overflow = false;
     {
-        let t = table.read().unwrap_or_else(|e| e.into_inner());
+        let t = table.rd();
         let mut buf = vec![0u8; SLOT];
         let mut delta = 0i64;
         let mut i = 0;
@@ -236,18 +231,12 @@ pub(super) fn apply(table: &RwLock<Table>, batch: &KeyMap<Option<Rec>>, tombs: &
         t.count.store(c.max(0) as u64, Ordering::Relaxed);
         write_header(&t, false, tombs)?;
     }
-    let (bits, count) = {
-        let t = table.read().unwrap_or_else(|e| e.into_inner());
-        (t.bits, t.count.load(Ordering::Relaxed))
-    };
-    let slots = 1u64 << bits;
-    // Also grow when slots overflowed and the table is at least a third full by count.
-    if bits < MAX_BITS && (count > slots * GROW_AVG || (overflow && count > slots * 64)) {
-        let mut t = table.write().unwrap_or_else(|e| e.into_inner());
-        double(&mut t, tombs)?;
-        while t.bits < MAX_BITS && t.count.load(Ordering::Relaxed) > (1u64 << t.bits) * GROW_AVG {
+    // Slots overflowed and the table is at least a third full by count: one more doubling.
+    if overflow {
+        let mut t = table.wr();
+        if t.bits < MAX_BITS && t.count.load(Ordering::Relaxed) > (1u64 << t.bits) * 64 {
             double(&mut t, tombs)?;
         }
     }
-    Ok(())
+    grow(table, 0, tombs)
 }
