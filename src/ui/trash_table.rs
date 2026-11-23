@@ -292,10 +292,7 @@ pub(crate) fn trash_table_ui(
                     );
                     // A folder whose size is still being summed: spinner next to the number.
                     if ci == 2 && row.size_pending {
-                        let diameter = m.font * 0.85;
-                        let tw = text_width(ui, text, m.font);
-                        let sx = (cell.right() - tw - diameter * 0.5 - m.pad * 0.5).max(cell.left() + diameter * 0.5);
-                        paint_spinner(ui, pos2(sx, cell.center().y), diameter, pal.accent);
+                        size_cell_spinner(ui, m, pal, cell, text);
                     }
                     cx += widths[ci];
                 }
