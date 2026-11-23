@@ -734,21 +734,6 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                     }
                 },
             );
-            fl_divider(ui, m, pal);
-            fl_row(ui, m, pal, "Cache size (Experimental)",  Some("Sets the maximum ram allowed for caching folder sizes.\n Default: 64MB"), |ui| {
-                ui.add_enabled_ui(!sp.s.unlimited_cache, |ui| {
-                    fl_slider(ui, m, pal, &mut sp.s.index_ram, 64, 1..=10_000, true, 0.0, " MB");
-                });
-            });
-            fl_divider(ui, m, pal);
-            fl_row(
-                ui,
-                m,
-                pal,
-                "Unlimited cache size",
-                Some("Removes the above RAM-limit for loading the cached folder sizes. It is recommended to keep this setting turned on."),
-                |ui| fl_switch(ui, m, pal, &mut sp.s.unlimited_cache),
-            );
         });
     });
 
@@ -762,6 +747,24 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             "Git integration",
             Some("Shows the current branch and allows you to checkout local branches within git repositories. Changing this setting will restart the app."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.git_activated),
+        );
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Restore tabs on launch",
+            Some("Reopens the tabs and split layout of your previous session when the app starts."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.restore_tabs),
+        );
+        fl_divider(ui, m, pal);
+        fl_row(
+            ui,
+            m,
+            pal,
+            "Show \"What's new\" button",
+            Some("Shows a button next to Settings that lists what changed in this version. A dot marks it until you have read the notes. Reading them loads them from GitHub."),
+            |ui| fl_switch(ui, m, pal, &mut sp.s.show_whats_new),
         );
         fl_divider(ui, m, pal);
         fl_row(
@@ -834,12 +837,21 @@ impl Explorer {
     pub(crate) fn open_settings(&mut self) {
         self.default_on = default_app::is_default();
         self.default_error = None;
-        if let Some(i) = self.tabs.iter().position(|t| t.settings) {
+        if let Some(i) = self.tabs.iter().position(|t| t.page == Some(Page::Settings)) {
             if i == self.active && self.tabs.len() > 1 {
                 self.apply(Action::CloseTab(i));
             } else {
                 self.activate_tab(i);
             }
+            return;
+        }
+        self.open_page(Page::Settings);
+    }
+
+    /// Opens `page` in a tab of its own (or focuses the one that is already open).
+    pub(crate) fn open_page(&mut self, page: Page) {
+        if let Some(i) = self.tabs.iter().position(|t| t.page == Some(page)) {
+            self.activate_tab(i);
             return;
         }
         let dir = self.tabs[self.active].dir.clone();
@@ -851,7 +863,7 @@ impl Explorer {
             tree.replace(cur, id);
         }
         let mut tab = Tab::new(id, dir);
-        tab.settings = true;
+        tab.page = Some(page);
         tab.load_gen = 1; // nothing to read: the page is not a folder listing
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
@@ -863,7 +875,7 @@ impl Explorer {
         let SettingsPage { old, s, font_edit, rescan, choose, delete_index, reset_quick, default_request, show_licenses, check_update, download_update, .. } = sp;
         self.font_edit = font_edit;
         if show_licenses {
-            self.licenses_open = true;
+            self.open_page(Page::Licenses);
         }
         if s != old {
             // Only the fields the page edits: window geometry, columns and the session belong to the app.
@@ -917,7 +929,7 @@ impl Explorer {
         }
         if delete_index {
             if let Some(ix) = &self.indexer {
-                ix.delete_index(&self.index_dir);
+                ix.clear();
             }
             for t in &mut self.tabs {
                 for e in t.entries.iter_mut().filter(|e| e.is_dir) {

@@ -104,8 +104,6 @@ pub(crate) struct Settings {
     pub(crate) max_search_results: usize,
     pub(crate) calculate_folder_sizes: bool,
     pub(crate) index_dir: Option<PathBuf>,
-    pub(crate) index_ram: usize,
-    pub(crate) unlimited_cache: bool,
     pub(crate) git_activated: bool,
     /// Widths (at 14 pt text) of Date modified, Type, Size.
     pub(crate) col_widths: [f32; 3],
@@ -122,6 +120,12 @@ pub(crate) struct Settings {
     /// Open tabs and split layout from the last session.
     pub(crate) session: Session,
     pub(crate) startup_update_check: bool,
+    /// Reopen the tabs of the previous session on start.
+    pub(crate) restore_tabs: bool,
+    /// Show the "What's new" button until the release notes of the running version were read.
+    pub(crate) show_whats_new: bool,
+    /// The version whose release notes the user has already seen.
+    pub(crate) whats_new_seen: String,
 }
 
 impl Default for Settings {
@@ -140,10 +144,8 @@ impl Default for Settings {
             max_search_results: 100_000_usize,
             calculate_folder_sizes: true,
             index_dir: None,
-            index_ram: 64,
-            unlimited_cache: true,
             git_activated: false,
-            col_widths: [150.0, 110.0, 90.0],
+            col_widths: [150.0, 110.0, 120.0],
             left_drag_space: true,
             window_size: None,
             window_pos: None,
@@ -155,6 +157,9 @@ impl Default for Settings {
             folder_icons: HashMap::new(),
             transparency_effect: TransparencyEffect::Mica,
             startup_update_check: false,
+            restore_tabs: true,
+            show_whats_new: true,
+            whats_new_seen: String::new(),
         }
     }
 }
@@ -181,8 +186,8 @@ impl Settings {
     page_fields!(
         theme, font_size, follow_text_scale, left_drag_space, custom_frame, use_system_accent,
         custom_accent, transparency_effect, show_hidden, date_format, network_drives,
-        max_search_results, search_threads, index_ram, unlimited_cache, calculate_folder_sizes,
-        git_activated, compact, startup_update_check, blur_paning,
+        max_search_results, search_threads, calculate_folder_sizes,
+        git_activated, compact, startup_update_check, restore_tabs, show_whats_new, blur_paning,
     );
 
     /// Size the UI actually uses. Following the system replaces the custom size.

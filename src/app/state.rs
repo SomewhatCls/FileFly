@@ -49,8 +49,6 @@ pub(crate) struct Explorer {
     pub(crate) default_on: bool,
     /// Last error from changing the default file manager, shown in the Settings page.
     pub(crate) default_error: Option<String>,
-    /// The "Licenses" popup (opened from Settings) is showing.
-    pub(crate) licenses_open: bool,
 
     pub(crate) sys_accent: Option<Accent>,
     pub(crate) text_scale: f32,
@@ -79,8 +77,6 @@ pub(crate) struct Explorer {
     /// What the folder-size indexer was last started for; avoids restarting an identical scan.
     pub(crate) index_sig: Option<(u64, usize)>,
     pub(crate) reindex_force: bool,
-    pub(crate) cache_size: Option<usize>,
-    pub(crate) unlimited_cache: bool,
 
     /// Other FileFly windows (tab hand-over).
     pub(crate) peers: Peers,
@@ -109,6 +105,8 @@ pub(crate) struct Explorer {
     pub(crate) require_restart: bool,
     /// Current state of the update request.
     pub(crate) update: UpdateState,
+    /// The "What's new" popup, while it is open.
+    pub(crate) whats_new: Option<WhatsNew>,
     /// Whether the sidebar is compacted.
     pub(crate) sidebar_collapsed: bool,
     /// Width (points) of the expanded sidebar: restored from the session, kept current by
@@ -124,11 +122,6 @@ pub(crate) struct Explorer {
     /// Holds staged files whose extraction was deferred because the target folder holds
     /// files with the same name.
     pub(crate) deferred_extracts: Vec<PastePlan>,
-}
-
-/// The RAM cache limit handed to the `Indexer` (0 = unlimited).
-fn index_limit_mb(settings: &Settings) -> usize {
-    if settings.unlimited_cache { 0 } else { settings.index_ram }
 }
 
 impl Explorer {
@@ -172,7 +165,7 @@ impl Explorer {
 
         let indexer = settings
             .calculate_folder_sizes
-            .then(|| Indexer::new(ui.clone(), idx_tx.clone(), &index_dir, index_limit_mb(&settings)));
+            .then(|| Indexer::new(ui.clone(), idx_tx.clone(), &index_dir));
         // Without the indexer the watcher only refreshes the listing.
         let watcher = match &indexer {
             Some(ix) => DirWatcher::new(ui.clone(), ix.change_sink()),
@@ -237,7 +230,6 @@ impl Explorer {
             settings_dirty: false,
             default_on: default_app::is_default(),
             default_error: None,
-            licenses_open: false,
             sys_accent: system_accent(),
             text_scale: system_text_scale(),
             last_poll: Instant::now(),
@@ -256,8 +248,6 @@ impl Explorer {
             tab_drag: None,
             index_sig: None,
             reindex_force: false,
-            cache_size: None,
-            unlimited_cache: false,
             peers: Peers::new(ui.clone(), &app_dir()),
             own_info: None,
             info_stamp: Instant::now(),
@@ -282,6 +272,7 @@ impl Explorer {
                     .unwrap_or_else(Instant::now),
             ),
             update: UpdateState::Idle,
+            whats_new: None,
             sidebar_collapsed: false,
             sidebar_width: None,
             probed_icons: HashSet::new(),
@@ -291,7 +282,7 @@ impl Explorer {
         // Independent of the tabs, so it also applies when FileFly is started on a given folder.
         app.sidebar_width = app.settings.session.sidebar_width;
         app.sync_special_icons();
-        if START_DIR.get().is_none() {
+        if START_DIR.get().is_none() && app.settings.restore_tabs {
             app.restore_session();
         }
         if check_for_update {
@@ -309,7 +300,7 @@ impl Explorer {
             return;
         }
         if on {
-            let ix = Indexer::new(self.ui.clone(), self.idx_tx.clone(), &self.index_dir, index_limit_mb(&self.settings));
+            let ix = Indexer::new(self.ui.clone(), self.idx_tx.clone(), &self.index_dir);
             self.watcher = DirWatcher::new(self.ui.clone(), ix.change_sink());
             self.indexer = Some(ix);
         } else {
@@ -317,7 +308,7 @@ impl Explorer {
             if let Some(ix) = self.indexer.take() {
                 // Make the last writes permanent; dropping the indexer then cancels the scans
                 // and retires the live updater.
-                ix.save_if_dirty(&self.index_dir, true);
+                ix.save_if_dirty(true);
             }
             // Sizes that were still on their way no longer belong to anything.
             while self.idx_rx.try_recv().is_ok() {}
@@ -356,8 +347,8 @@ impl Explorer {
     // ------------------------------------------------------------------ session
 
     pub(crate) fn session_snapshot(&self) -> Session {
-        // The Settings tab is not part of the session (it would come back as a plain folder tab).
-        let kept: Vec<&Tab> = self.tabs.iter().filter(|t| !t.settings).collect();
+        // Page tabs (Settings, Licenses) are not part of the session (it would come back as a plain folder tab).
+        let kept: Vec<&Tab> = self.tabs.iter().filter(|t| t.page.is_none()).collect();
         let active_id = self.tabs.get(self.active).map(|t| t.id);
         Session {
             tabs: kept.iter().map(|t| folder_outside(&t.dir).to_string_lossy().into_owned()).collect(),
