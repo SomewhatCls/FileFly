@@ -12,16 +12,20 @@
 //!
 //! The table is small (`MAX_HOT` entries) and nothing is ever polled that has not just changed.
 
+use super::model::{MutexExt, RwLockExt};
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex, MutexGuard, RwLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex, RwLock,
     },
     time::{Duration, Instant},
 };
+
+/// The names of the hot files, grouped by the folder they live in.
+pub type HotDirs = HashMap<PathBuf, Vec<OsString>>;
 
 /// Most files tracked at once; the least recently changed one is dropped for a new one.
 const MAX_HOT: usize = 256;
@@ -56,26 +60,19 @@ pub struct HotFiles {
     map: Mutex<HashMap<PathBuf, Hot>>,
     /// Mirror of `map.len()`, so scan threads can skip the lock while nothing is hot.
     len: AtomicUsize,
-    /// The hot files' names grouped by folder, replaced as a whole whenever `map` changes. Scan
-    /// threads read this once per folder instead of locking `map` once per file.
-    by_dir: RwLock<Arc<HashMap<PathBuf, Vec<OsString>>>>,
+    /// The set of hot files changed since `by_dir` was built.
+    stale: AtomicBool,
+    /// The hot files' names grouped by folder. A scan takes one `snapshot` of this when it starts
+    /// and then reads it without any lock. It is rebuilt (once) by the first reader after the set
+    /// of hot files changed, never by the writers, so a burst of events costs one rebuild, not one each.
+    by_dir: RwLock<Arc<HotDirs>>,
 }
 
 impl HotFiles {
-    fn map(&self) -> MutexGuard<'_, HashMap<PathBuf, Hot>> {
-        self.map.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Mirrors `m` into `len` and `by_dir`. Called with `map` locked after every change of the set.
-    fn publish(&self, m: &HashMap<PathBuf, Hot>) {
+    /// Called with `map` locked after every change of the *set* of hot files (not of a size).
+    fn mark(&self, m: &HashMap<PathBuf, Hot>) {
         self.len.store(m.len(), Ordering::Relaxed);
-        let mut by: HashMap<PathBuf, Vec<OsString>> = HashMap::new();
-        for p in m.keys() {
-            if let (Some(d), Some(n)) = (p.parent(), p.file_name()) {
-                by.entry(d.to_path_buf()).or_default().push(n.to_os_string());
-            }
-        }
-        *self.by_dir.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(by);
+        self.stale.store(true, Ordering::Release);
     }
 
     /// Marks `file` as always-exact (replaces an earlier pin).
@@ -84,39 +81,41 @@ impl HotFiles {
             (Some(d), Some(n)) => Some((d.to_path_buf(), n.to_os_string())),
             _ => None,
         };
-        *self.pinned.lock().unwrap_or_else(|e| e.into_inner()) = v;
+        *self.pinned.lk() = v;
     }
 
-    /// The pinned file's name, if it lives directly in `dir`. Asked once per folder by the scan.
-    pub fn pinned_name_in(&self, dir: &Path) -> Option<OsString> {
-        let g = self.pinned.lock().unwrap_or_else(|e| e.into_inner());
-        let (d, n) = g.as_ref()?;
-        same_name(d.as_os_str(), dir.as_os_str()).then(|| n.clone())
+    /// The pinned file as (folder, name). A scan copies this once at its start.
+    pub fn pinned(&self) -> Option<(PathBuf, OsString)> {
+        self.pinned.lk().clone()
     }
 
-    /// Cheap check for the scan loop: is anything hot at all?
-    pub fn is_active(&self) -> bool {
+    fn is_active(&self) -> bool {
         self.len.load(Ordering::Relaxed) > 0
     }
 
-    /// Names of the hot files that live directly in `dir` (empty almost always). Meant to be asked
-    /// once per folder by the scan; unlike `contains` it never waits for a lock the writers hold.
-    pub fn names_in(&self, dir: &Path) -> Vec<OsString> {
+    /// The hot files' names by folder, as they are now (empty almost always). A scan takes this once
+    /// at its start, so the per-folder work of the scan never touches a lock; a file that turns hot
+    /// during a scan is handled by the live updater's rescan instead.
+    pub fn snapshot(&self) -> Arc<HotDirs> {
         if !self.is_active() {
-            return Vec::new();
+            return Arc::default();
         }
-        let snap = Arc::clone(&self.by_dir.read().unwrap_or_else(|e| e.into_inner()));
-        snap.get(dir).cloned().unwrap_or_default()
-    }
-
-    pub fn contains(&self, p: &Path) -> bool {
-        self.is_active() && self.map().contains_key(p)
+        if self.stale.swap(false, Ordering::Acquire) {
+            let mut by: HotDirs = HashMap::new();
+            for p in self.map.lk().keys() {
+                if let (Some(d), Some(n)) = (p.parent(), p.file_name()) {
+                    by.entry(d.to_path_buf()).or_default().push(n.to_os_string());
+                }
+            }
+            *self.by_dir.wr() = Arc::new(by);
+        }
+        Arc::clone(&self.by_dir.rd())
     }
 
     /// Records that `p` changed and now has `size` bytes. True if this is news (a new hot file or
     /// a different size), false if the size is what we already knew.
     pub fn touch(&self, p: &Path, size: u64, now: Instant) -> bool {
-        let mut m = self.map();
+        let mut m = self.map.lk();
         let news = match m.get_mut(p) {
             Some(h) => {
                 let changed = h.size != size;
@@ -137,24 +136,28 @@ impl HotFiles {
                     p.to_path_buf(),
                     Hot { size, last_change: now, next_poll: now + POLL_MIN, every: POLL_MIN },
                 );
+                self.mark(&m);
                 true
             }
         };
-        self.publish(&m);
         news
     }
 
     pub fn remove(&self, p: &Path) {
-        let mut m = self.map();
-        m.remove(p);
-        self.publish(&m);
+        let mut m = self.map.lk();
+        if m.remove(p).is_some() {
+            self.mark(&m);
+        }
     }
 
     /// Files whose poll time has come. Also forgets files that have been quiet for `LIFETIME`.
     pub fn due(&self, now: Instant) -> Vec<PathBuf> {
-        let mut m = self.map();
+        let mut m = self.map.lk();
+        let before = m.len();
         m.retain(|_, h| now.saturating_duration_since(h.last_change) < LIFETIME);
-        self.publish(&m);
+        if m.len() != before {
+            self.mark(&m);
+        }
         m.iter_mut()
             .filter(|(_, h)| h.next_poll <= now)
             .map(|(p, h)| {
@@ -167,10 +170,11 @@ impl HotFiles {
     /// Result of a poll: `size` is None if the file is gone or is no longer a file.
     /// True if it changed (or vanished), i.e. the folder totals above it are out of date.
     pub fn record(&self, p: &Path, size: Option<u64>, now: Instant) -> bool {
-        let mut m = self.map();
+        let mut m = self.map.lk();
         let Some(size) = size else {
-            m.remove(p);
-            self.publish(&m);
+            if m.remove(p).is_some() {
+                self.mark(&m);
+            }
             return true;
         };
         let Some(h) = m.get_mut(p) else { return false };
@@ -189,6 +193,6 @@ impl HotFiles {
 
     /// When the next poll is due.
     pub fn next_due(&self) -> Option<Instant> {
-        self.map().values().map(|h| h.next_poll).min()
+        self.map.lk().values().map(|h| h.next_poll).min()
     }
 }

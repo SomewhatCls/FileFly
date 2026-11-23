@@ -67,257 +67,296 @@ pub(crate) fn op_line(ui: &mut Ui, m: &Metrics, pal: &Palette, key: &str, value:
     });
 }
 
+/// What the user did in one operation's panel during this frame.
+#[derive(Default)]
+struct OpUi {
+    cancel: bool,
+    hide: bool,
+    pause: bool,
+    more: bool,
+    skip: Vec<u64>,
+    /// The answer to "delete permanently?": Some(true) = delete, Some(false) = cancel.
+    perm: Option<bool>,
+}
+
+/// One operation's section: headline, bar, details, buttons. Several of these are stacked
+/// vertically in the single operations window, like Explorer's copy dialog.
+///
+/// NOTE: `FileOp` stands for whatever type `Explorer::ops` holds; rename it to match.
+fn op_panel(ui: &mut Ui, m: &Metrics, pal: &Palette, op: &mut ActiveOp, width: f32) -> OpUi {
+    let mut out = OpUi::default();
+    let paused = op.progress.paused.load(AO::Relaxed);
+    ui.set_width(width);
+
+    let preparing = op.progress.preparing.load(AO::Relaxed);
+    // While sizes are being calculated the amount of work isn't known: the sliding bar, not an empty one.
+    let frac = if preparing { None } else { op.fraction() };
+    // Set while the worker waits for "delete permanently?" (items the Recycle Bin refused).
+    let question = op.progress.permanent_question();
+    let headline = if op.cancelling {
+        "Cancelling…".to_owned()
+    } else if question.is_some() {
+        "Waiting for your decision…".to_owned()
+    } else if preparing {
+        "Calculating…".to_owned()
+    } else if let Some(f) = frac {
+        format!("{}% complete{}", (f * 100.0) as u32, if paused { "  (paused)" } else { "" })
+    } else {
+        "Working…".to_owned()
+    };
+    // The operation's own title is shown per panel, since the window can hold several.
+    ui.add_space(m.pad * 0.3);
+    ui.label(RichText::new(headline).size(m.font * 1.05));
+    ui.add_space(m.pad * 0.6);
+    progress_bar(ui, m, pal, frac, paused);
+    // Running total under the bar: bytes done of total, or items done of total.
+    let (tb, db, ti, di) = (
+        op.progress.total_bytes.load(AO::Relaxed),
+        op.progress.done_bytes.load(AO::Relaxed),
+        op.progress.total_items.load(AO::Relaxed),
+        op.progress.done_items.load(AO::Relaxed),
+    );
+    let totals = if preparing {
+        None
+    } else if tb > 0 {
+        Some(format!("{} of {}", format_size(db.min(tb)), format_size(tb)))
+    } else if ti > 1 {
+        Some(format!("{} of {} items", di.min(ti), ti))
+    } else {
+        None
+    };
+    ui.add_space(m.pad * 0.5);
+    if let Some(t) = totals {
+        ui.label(RichText::new(t).size(m.font * 0.95).color(pal.text_secondary));
+    }
+    ui.add_space(m.pad * 0.5);
+
+    if !op.from.is_empty() {
+        op_line(ui, m, pal, "From", &op.from);
+    }
+    if !op.to.is_empty() {
+        op_line(ui, m, pal, "To", &op.to);
+    }
+    let running = op.progress.running_items();
+    let many = op.cancelable && op.progress.total_items.load(AO::Relaxed) > 1;
+    if many && !running.is_empty() && !op.cancelling {
+        // Several items at once: each one gets its own cancel button (the others carry on).
+        for (id, name) in running.iter().take(4) {
+            ui.horizontal(|ui| {
+                let w = (ui.available_width() - m.ctl_h * 1.3).max(m.accessibility_scale * 40.0);
+                ui.allocate_ui_with_layout(vec2(w, m.ctl_h), Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(RichText::new(name).size(m.font * 0.95)).truncate());
+                });
+                if icon_button(ui, m, pal, "close", "Cancel this item only", true, false).clicked() {
+                    out.skip.push(*id);
+                }
+            });
+        }
+        if running.len() > 4 {
+            ui.label(
+                RichText::new(format!("+{} more in progress", running.len() - 4))
+                    .size(m.font * 0.9)
+                    .color(pal.text_secondary),
+            );
+        }
+    } else {
+        let current = op.progress.current();
+        if !current.is_empty() {
+            op_line(ui, m, pal, "Name", &current);
+        }
+    }
+
+    // Operations that count items but no bytes (moving to the Recycle Bin, moving within a drive) show
+    // items per second, once there is more than one item; operations that report nothing at all
+    // (`run_job`) have no details to show.
+    let by_items = tb == 0 && ti > 1;
+    let has_details = op.cancelable || tb > 0 || ti > 0;
+    if op.expanded {
+        ui.add_space(m.pad);
+        if by_items || tb > 0 || op.speed > 0.0 {
+            speed_graph(ui, m, pal, &op.history);
+            ui.add_space(m.pad * 0.6);
+            let speed = if by_items {
+                format!("{:.1} items/s", op.speed)
+            } else {
+                format!("{}/s", format_size(op.speed as u64))
+            };
+            op_line(ui, m, pal, "Speed", &speed);
+        }
+        let eta = if preparing {
+            "Calculating…".to_owned()
+        } else if tb > db && op.speed > 1.0 {
+            format_eta((tb - db) as f64 / op.speed as f64)
+        } else if by_items && ti > di && op.speed > 0.05 {
+            format_eta((ti - di) as f64 / op.speed as f64)
+        } else {
+            "—".to_owned()
+        };
+        op_line(ui, m, pal, "Time left", &eta);
+        if ti > 0 {
+            let mut left = format!("{}", ti.saturating_sub(di));
+            if tb > db {
+                left.push_str(&format!("  ({})", format_size(tb - db)));
+            }
+            op_line(ui, m, pal, "Items left", &left);
+        }
+    }
+
+    if let Some((count, example, reason)) = &question {
+        ui.add_space(m.pad);
+        let what = if *count == 1 {
+            format!("“{example}” can't be moved to the Recycle Bin.")
+        } else {
+            format!("{count} items can't be moved to the Recycle Bin, among them “{example}”.")
+        };
+        ui.add(egui::Label::new(RichText::new(what).size(m.font * 0.95)).wrap());
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!(
+                    "{} Delete permanently instead? This can't be undone.",
+                    if reason.is_empty() { "They may be too large for it." } else { reason.as_str() }
+                ))
+                    .size(m.font * 0.9)
+                    .color(pal.text_secondary),
+            )
+            .wrap(),
+        );
+        ui.add_space(m.pad * 1.2);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            // Right to left: Cancel ends up rightmost, like in a Windows dialog.
+            if secondary_button(ui, m, pal, "Cancel").clicked() {
+                out.perm = Some(false);
+            }
+            if primary_button(ui, m, pal, "Delete permanently").clicked() {
+                out.perm = Some(true);
+            }
+        });
+        return out;
+    }
+
+    ui.add_space(m.pad * 1.2);
+    ui.horizontal(|ui| {
+        if has_details {
+            let label = if op.expanded { "Fewer details" } else { "More details" };
+            if Btn::new().label(label).show(ui, m, pal).clicked() {
+                out.more = true;
+            }
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if op.cancelable {
+                let idle = !op.cancelling;
+                if Btn::new().label("Cancel").kind(BtnKind::Standard).enabled(idle).show(ui, m, pal).clicked() {
+                    out.cancel = true;
+                }
+                if !op.progress.unpausable.load(AO::Relaxed)
+                    && Btn::new()
+                        .label(if paused { "Resume" } else { "Pause" })
+                        .kind(BtnKind::Standard)
+                        .enabled(idle)
+                        .show(ui, m, pal)
+                        .clicked()
+                {
+                    out.pause = true;
+                }
+            } else if secondary_button(ui, m, pal, "Hide").clicked() {
+                out.hide = true;
+            }
+        });
+    });
+    out
+}
+
 impl Explorer {
-    /// One progress window per running file operation (a separate OS window): title,
-    /// percent, bar, from/to, current name, Pause/Cancel, and an expandable speed graph.
+    /// One progress window for all running file operations (a separate OS window): every
+    /// operation is a panel of its own, stacked top to bottom with its own bar and graph, like
+    /// Explorer's copy dialog. A new operation adds a panel; a finished one removes its panel.
     pub(crate) fn ui_ops(&mut self, ui: &mut Ui) {
         if self.ops.is_empty() {
+            forget_tool_window(ui.ctx(), "file-ops");
             return;
         }
         self.ui.request_repaint_after(Duration::from_millis(100));
         let (m, pal) = (self.m, self.pal);
         let now = Instant::now();
         let ctx = ui.ctx().clone();
-        let transparency = self.backdrop_transparency;
         let width = m.accessibility_scale * 440.0;
-        for op in self.ops.iter_mut() {
-            if op.hidden || op.started.elapsed() < Duration::from_millis(500) {
-                continue;
-            }
+
+        // Operations that currently get a panel (hidden ones keep running without one, and very
+        // short ones never pop up at all).
+        // An operation that is waiting for the user's answer always gets its panel.
+        let is_shown = |op: &ActiveOp| {
+            op.progress.permanent_question().is_some()
+                || (!op.hidden && op.started.elapsed() >= Duration::from_millis(500))
+        };
+        let mut shown = 0usize;
+        let mut first_title = String::new();
+        let mut any_cancelable = false;
+        for op in self.ops.iter_mut().filter(|o| is_shown(o)) {
             op.sample(now);
-            let (mut cancel, mut hide, mut pause, mut more) = (false, false, false, false);
-            let mut skip: Vec<u64> = Vec::new();
-            let paused = op.progress.paused.load(AO::Relaxed);
-            // Like Explorer's copy dialog, every operation gets a window of its own (a separate OS
-            // window, so it can be moved out of the main window and shows in the taskbar).
-            let win_w = width + m.pad * 4.0;
-            let bar_h = (m.accessibility_scale * 32.0).round();
-            let win_title = format!("{} – FileFly", op.title);
-            // Same look as the main window: no native frame, transparent so the Mica backdrop
-            // shows, with our own caption buttons.
-            let builder = egui::ViewportBuilder::default()
-                .with_title(win_title.clone())
-                .with_inner_size([win_w, m.accessibility_scale * 220.0])
-                .with_resizable(false)
-                .with_maximize_button(false)
-                .with_decorations(if self.settings.custom_frame{false}else{true})
-                .with_transparent(true);
-            let pad = (m.pad * 2.0) as i8;
-            let frame = egui::Frame::new().fill(Color32::TRANSPARENT).inner_margin(Margin {
-                left: pad,
-                right: pad,
-                top: (bar_h + m.pad) as i8,
-                bottom: pad,
-            });
-            let vid = egui::ViewportId::from_hash_of(("file-op", op.id));
-            ctx.show_viewport_immediate(vid, builder, |ui, _class| {
-                // The window is tinted like the central panel (a subtle layer over the Mica).
-                // Backdrop over the whole window (the native window only exists once it has been
-                // shown, so this is retried until it works and redone when the theme changes).
-                let key = Id::unique(("file-op-backdrop", op.id));
-                let want = (pal.dark, transparency.expect("A transparency effect should always be set"));
-                if ui.ctx().data(|d| d.get_temp::<(bool, TransparencyEffect)>(key)) != Some(want)
-                    && backdrop_by_title(&win_title, pal.dark, transparency.expect("A transparency effect should always be set"))
-                {
-                    ui.ctx().data_mut(|d| d.insert_temp(key, want));
+            if shown == 0 {
+                first_title = op.title.clone();
+            }
+            shown += 1;
+            any_cancelable |= op.cancelable;
+        }
+        if shown == 0 {
+            forget_tool_window(&ctx, "file-ops");
+            return;
+        }
+
+        let title = if shown == 1 { first_title } else { format!("{shown} operations") };
+        let spec = ToolWindow {
+            key: "file-ops",
+            caption: &title,
+            width,
+            max_height: m.accessibility_scale * 640.0,
+            transparency: self.backdrop_transparency.expect("A transparency effect should always be set"),
+            custom_frame: self.settings.custom_frame,
+            // The window's own close button / Alt+F4 cancels every cancelable operation in it (the window
+            // then stays until they have really stopped); without any, it just hides them.
+            hold_open: any_cancelable,
+        };
+        let mut results: Vec<(usize, OpUi)> = Vec::new();
+        let close_requested = tool_window(&ctx, &m, &pal, &spec, |ui| {
+            ui.add_space(m.pad * 0.5);
+            let mut first = true;
+            for (i, op) in self.ops.iter_mut().enumerate() {
+                if !is_shown(op) {
+                    continue;
                 }
-                let full = ui.max_rect();
-                ui.layer_painter(egui::LayerId::background())
-                    .rect_filled(full, 0.0, pal.layer);
-
-                // Custom title bar: caption text, drag area, minimize / close.
-                let caption = Rect::from_min_size(
-                    pos2(full.right() - m.accessibility_scale * 46.0 * 2.0, full.top()),
-                    vec2(m.accessibility_scale * 46.0 * 2.0, bar_h),
-                );
-                let drag = ui.interact(
-                    Rect::from_min_max(full.min, pos2(caption.left(), full.top() + bar_h)),
-                    Id::unique("file-op-drag"),
-                    Sense::click_and_drag(),
-                );
-                if drag.drag_started_by(egui::PointerButton::Primary) {
-                    ui.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                if !first {
+                    let y = ui.cursor().top() + m.pad * 0.5;
+                    ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0_f32, pal.divider));
+                    ui.add_space(m.pad * 1.5);
                 }
-                ui.painter().text(
-                    pos2(full.left() + m.pad * 2.0, full.top() + bar_h * 0.5),
-                    Align2::LEFT_CENTER,
-                    &op.title,
-                    FontId::proportional(m.font * 0.95),
-                    pal.text,
-                );
-                if self.settings.custom_frame {
-                    caption_buttons(ui, &m, &pal, false, false);
-                }
+                first = false;
+                let r = op_panel(ui, &m, &pal, op, width);
+                results.push((i, r));
+            }
+        });
 
-                // The window's own close button / Alt+F4: cancels a cancelable operation (the
-                // window then stays until it has really stopped), otherwise just hides the window.
-                if ui.ctx().input(|i| i.viewport().close_requested()) {
-                    if op.cancelable {
-                        cancel = true;
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                    } else {
-                        hide = true;
-                    }
-                }
-                let panel = egui::CentralPanel::default().frame(frame.clone()).show(ui, |ui| {
-                    ui.set_width(width);
-                    // `CentralPanel` stretches to fill the window, so measure the content in a scope
-                    // (otherwise the window could only ever grow).
-                    let content = ui.scope(|ui| {
-                    ui.set_width(width);
-                    ui.add_space(m.pad * 0.5);
-
-                    let preparing = op.progress.preparing.load(AO::Relaxed);
-                    let frac = op.fraction();
-                    let headline = if op.cancelling {
-                        "Cancelling…".to_owned()
-                    } else if preparing {
-                        "Calculating…".to_owned()
-                    } else if let Some(f) = frac {
-                        format!("{}% complete{}", (f * 100.0) as u32, if paused { "  (paused)" } else { "" })
-                    } else {
-                        "Working…".to_owned()
-                    };
-                    ui.label(RichText::new(headline).size(m.font * 1.05));
-                    ui.add_space(m.pad * 0.6);
-                    progress_bar(ui, &m, &pal, frac, paused);
-                    ui.add_space(m.pad);
-
-                    if !op.from.is_empty() {
-                        op_line(ui, &m, &pal, "From", &op.from);
-                    }
-                    if !op.to.is_empty() {
-                        op_line(ui, &m, &pal, "To", &op.to);
-                    }
-                    let running = op.progress.running_items();
-                    let many = op.cancelable && op.progress.total_items.load(AO::Relaxed) > 1;
-                    if many && !running.is_empty() && !op.cancelling {
-                        // Several items at once: each one gets its own cancel button (the others carry on).
-                        for (id, name) in running.iter().take(4) {
-                            ui.horizontal(|ui| {
-                                let w = (ui.available_width() - m.ctl_h * 1.3).max(m.accessibility_scale * 40.0);
-                                ui.allocate_ui_with_layout(
-                                    vec2(w, m.ctl_h),
-                                    Layout::left_to_right(Align::Center),
-                                    |ui| {
-                                        ui.add(egui::Label::new(RichText::new(name).size(m.font * 0.95)).truncate());
-                                    },
-                                );
-                                if icon_button(ui, &m, &pal, "close", "Cancel this item only", true, false).clicked() {
-                                    skip.push(*id);
-                                }
-                            });
-                        }
-                        if running.len() > 4 {
-                            ui.label(
-                                RichText::new(format!("+{} more in progress", running.len() - 4))
-                                    .size(m.font * 0.9)
-                                    .color(pal.text_secondary),
-                            );
-                        }
-                    } else {
-                        let current = op.progress.current();
-                        if !current.is_empty() {
-                            op_line(ui, &m, &pal, "Name", &current);
-                        }
-                    }
-
-                    let (tb, db) = (
-                        op.progress.total_bytes.load(AO::Relaxed),
-                        op.progress.done_bytes.load(AO::Relaxed),
-                    );
-                    let (ti, di) = (
-                        op.progress.total_items.load(AO::Relaxed),
-                        op.progress.done_items.load(AO::Relaxed),
-                    );
-                    // Operations that count items but no bytes (deleting, moving within a drive) show
-                    // items per second; operations that report nothing at all (`run_job`) have no
-                    // details to show.
-                    let by_items = tb == 0 && ti > 0;
-                    let has_details = op.cancelable || tb > 0 || ti > 0;
-                    if op.expanded {
-                        ui.add_space(m.pad);
-                        if by_items || tb > 0 || op.speed > 0.0 {
-                            speed_graph(ui, &m, &pal, &op.history);
-                            ui.add_space(m.pad * 0.6);
-                            let speed = if by_items {
-                                format!("{:.1} items/s", op.speed)
-                            } else {
-                                format!("{}/s", format_size(op.speed as u64))
-                            };
-                            op_line(ui, &m, &pal, "Speed", &speed);
-                        }
-                        let eta = if preparing {
-                            "Calculating…".to_owned()
-                        } else if tb > db && op.speed > 1.0 {
-                            format_eta((tb - db) as f64 / op.speed as f64)
-                        } else if by_items && ti > di && op.speed > 0.05 {
-                            format_eta((ti - di) as f64 / op.speed as f64)
-                        } else {
-                            "—".to_owned()
-                        };
-                        op_line(ui, &m, &pal, "Time left", &eta);
-                        if ti > 0 {
-                            let mut left = format!("{}", ti.saturating_sub(di));
-                            if tb > db {
-                                left.push_str(&format!("  ({})", format_size(tb - db)));
-                            }
-                            op_line(ui, &m, &pal, "Items left", &left);
-                        }
-                    }
-
-                    ui.add_space(m.pad * 1.2);
-                    ui.horizontal(|ui| {
-                        if has_details {
-                            let label = if op.expanded { "Fewer details" } else { "More details" };
-                            if ui
-                                .add(egui::Button::new(RichText::new(label).color(pal.accent)).frame(false))
-                                .clicked()
-                            {
-                                more = true;
-                            }
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if op.cancelable {
-                                if ui.add_enabled(!op.cancelling, egui::Button::new("Cancel")
-                                    .corner_radius(CornerRadius::same(m.radius))
-                                    .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h))).clicked()
-                                {
-                                    cancel = true;
-                                }
-                                if !op.progress.unpausable.load(AO::Relaxed)
-                                    && ui.add_enabled(!op.cancelling, egui::Button::new(if paused { "Resume" } else { "Pause" })
-                                        .corner_radius(CornerRadius::same(m.radius))
-                                        .min_size(vec2(m.accessibility_scale * 92.0, m.ctl_h))).clicked()
-                                {
-                                    pause = true;
-                                }
-                            } else if secondary_button(ui, &m, "Hide").clicked() {
-                                hide = true;
-                            }
-                        });
-                    });
-                    });
-                    content.response.rect.height()
-                });
-                // Fit the window to its content (it grows with "More details").
-                let need = panel.inner + bar_h + m.pad * 3.0;
-                let key = Id::unique(("file-op-height", op.id));
-                let last = ui.ctx().data(|d| d.get_temp::<f32>(key)).unwrap_or(0.0);
-                if (need - last).abs() > 1.0 {
-                    ui.ctx().data_mut(|d| d.insert_temp(key, need));
-                    ui.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(win_w, need)));
-                }
-            });
-            if more {
+        for (i, r) in results {
+            let op = &mut self.ops[i];
+            if r.more {
                 op.expanded = !op.expanded;
             }
-            for id in skip {
+            for id in r.skip {
                 op.progress.skip_item(id);
             }
-            if pause {
+            if let Some(delete) = r.perm {
+                op.progress.answer_permanent(delete);
+            }
+            if r.pause {
+                let paused = op.progress.paused.load(AO::Relaxed);
                 op.progress.paused.store(!paused, AO::Relaxed);
+            }
+            let (mut cancel, mut hide) = (r.cancel, r.hide);
+            if close_requested {
+                if op.cancelable {
+                    cancel = true;
+                } else {
+                    hide = true;
+                }
             }
             if cancel && !op.cancelling {
                 op.cancelling = true;

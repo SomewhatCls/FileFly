@@ -30,10 +30,16 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
+    collections::HashSet,
+    ffi::{OsStr, OsString},
     fs, io,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering as AO},
+    process::{Command, Stdio},
+    sync::{
+        Mutex, MutexGuard,
+        atomic::{AtomicBool, AtomicU64, Ordering as AO},
+    },
     time::{Duration, SystemTime},
 };
 
@@ -141,14 +147,241 @@ pub fn attributes(_md: &fs::Metadata) -> u32 {
     0
 }
 
+/// An attribute the Properties window can change.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Attribute {
+    ReadOnly,
+    Hidden,
+}
+
+/// Turns `attribute` of `path` on or off, leaving the other attributes as they are.
+#[cfg(windows)]
+pub fn set_attribute(path: &Path, attribute: Attribute, on: bool) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileAttributesW(path: *const u16) -> u32;
+        fn SetFileAttributesW(path: *const u16, attributes: u32) -> i32;
+    }
+    const INVALID: u32 = 0xFFFF_FFFF;
+    let bit = match attribute {
+        Attribute::ReadOnly => 0x1,
+        Attribute::Hidden => 0x2,
+    };
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives both calls.
+    unsafe {
+        let current = GetFileAttributesW(wide.as_ptr());
+        if current == INVALID {
+            return Err(io::Error::last_os_error());
+        }
+        let wanted = if on { current | bit } else { current & !bit };
+        if wanted != current && SetFileAttributesW(wide.as_ptr(), wanted) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Turns `attribute` of `path` on or off. Only "read-only" exists here (a file's mode); hiding is a
+/// Windows attribute.
+#[cfg(not(windows))]
+pub fn set_attribute(path: &Path, attribute: Attribute, on: bool) -> io::Result<()> {
+    match attribute {
+        Attribute::ReadOnly => {
+            let mut permissions = fs::metadata(path)?.permissions();
+            permissions.set_readonly(on);
+            fs::set_permissions(path, permissions)
+        }
+        Attribute::Hidden => Err(io::Error::new(io::ErrorKind::Unsupported, "hiding is not supported here")),
+    }
+}
+
 /// Uses the attributes already delivered by `read_dir` (no extra syscall per entry, and correct for
 /// junctions such as "Application Data", which `fs::metadata` can't follow).
 pub fn is_hidden_entry(name: &str, md: &fs::Metadata) -> bool {
     attributes(md) & (0x2 | 0x4) != 0 || name.starts_with('.')
 }
 
+/// Locks `m`. A poisoned lock (a worker panicked) is still usable: what these hold are names and counters.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Telling errors apart: always by kind or OS code, never by message text (the system translates
+// that, and it contains file names).
+// ---------------------------------------------------------------------------------------------
+
+/// Platform error codes that mean "no access rights", i.e. what administrator rights could fix.
+pub fn is_denied_os_code(code: i32) -> bool {
+    #[cfg(windows)]
+    {
+        // A Win32 error, or the same error wrapped as an HRESULT (0x8007xxxx, e.g. E_ACCESSDENIED).
+        let c = code as u32;
+        let win32 = if (c >> 16) == 0x8007 { c & 0xFFFF } else { c };
+        matches!(win32, 5 | 1314) // ERROR_ACCESS_DENIED, ERROR_PRIVILEGE_NOT_HELD
+    }
+    #[cfg(not(windows))]
+    {
+        matches!(code, 1 | 13) // EPERM, EACCES (note that 5 is EIO here, not "denied")
+    }
+}
+
+pub fn is_denied_io(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error().is_some_and(is_denied_os_code)
+}
+
+/// A file that another program holds for a moment (antivirus, indexer, sync client): Windows only.
+pub fn is_sharing_violation(e: &io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33)) // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+}
+
+/// A rename across drives, which has to become a copy.
+pub fn is_cross_device(e: &io::Error) -> bool {
+    // ERROR_NOT_SAME_DEVICE on Windows, EXDEV elsewhere
+    e.kind() == io::ErrorKind::CrossesDevices || e.raw_os_error() == Some(if cfg!(windows) { 17 } else { 18 })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Deleting. These are the only places that delete anything for good.
+// ---------------------------------------------------------------------------------------------
+
+/// A symlink or junction: deleted as a link, never followed into what it points to.
+fn is_link(md: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        md.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
+    }
+    #[cfg(not(windows))]
+    {
+        md.file_type().is_symlink()
+    }
+}
+
+/// Sums file sizes below `p` without following links, but stops early once `limit` is exceeded or
+/// `cancelled` fires (so the result is only exact when it is at most `limit`).
+pub fn size_up_to(p: &Path, limit: u64, cancelled: &dyn Fn() -> bool) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![p.to_path_buf()];
+    while let Some(cur) = stack.pop() {
+        if total > limit || cancelled() {
+            break;
+        }
+        let Ok(md) = fs::symlink_metadata(&cur) else { continue };
+        if is_link(&md) {
+            continue;
+        }
+        if md.is_dir() {
+            if let Ok(rd) = fs::read_dir(&cur) {
+                stack.extend(rd.flatten().map(|e| e.path()));
+            }
+        } else {
+            total += md.len();
+        }
+    }
+    total
+}
+
+/// Runs `op`; when Windows refuses it (a read-only flag is in the way), clears the flag and runs it once more.
+/// (On Unix the file's own mode has no say in deleting it.)
+fn retry_clearing_readonly(path: &Path, op: impl Fn() -> io::Result<()>) -> io::Result<()> {
+    match op() {
+        Err(e) if cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied => {
+            if let Ok(m) = fs::symlink_metadata(path) {
+                let mut perm = m.permissions();
+                perm.set_readonly(false);
+                let _ = fs::set_permissions(path, perm);
+            }
+            op()
+        }
+        r => r,
+    }
+}
+
+/// Removes one file or link (a link to a folder needs `remove_dir`).
+fn remove_file_or_link(path: &Path, md: &fs::Metadata) -> io::Result<()> {
+    retry_clearing_readonly(path, || {
+        if is_link(md) { fs::remove_file(path).or_else(|_| fs::remove_dir(path)) } else { fs::remove_file(path) }
+    })
+}
+
+fn remove_empty_dir(path: &Path) -> io::Result<()> {
+    retry_clearing_readonly(path, || fs::remove_dir(path))
+}
+
+/// Removes a file, a link or a whole folder, without following links.
 pub fn remove_existing(path: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(path)?.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
+    let md = fs::symlink_metadata(path)?;
+    if md.is_dir() && !is_link(&md) { fs::remove_dir_all(path) } else { remove_file_or_link(path, &md) }
+}
+
+/// Deletes a file or folder for good (no Recycle Bin), file by file, so that `cancelled` can stop it in the
+/// middle of a big folder. Every file is removed whole: what a cancel leaves is a smaller folder, never a
+/// broken file. Folders that have become empty are removed as well.
+/// `Ok(true)` = everything is gone, `Ok(false)` = cancelled part-way. `on_file` gets each file about to go and its size.
+pub fn delete_for_good(path: &Path, cancelled: &dyn Fn() -> bool, on_file: &dyn Fn(&Path, u64)) -> io::Result<bool> {
+    let md = fs::symlink_metadata(path)?;
+    if !md.is_dir() || is_link(&md) {
+        on_file(path, md.len());
+        remove_file_or_link(path, &md)?;
+        return Ok(true);
+    }
+    // Pass 1: files and links, depth first. `dirs` lists the folders, parents before their children.
+    // A failure (a locked file, an unreadable folder) does not abort the walk: the first error is kept and
+    // reported at the end, so everything that can be deleted still is and no emptied folders are left behind.
+    let mut dirs = vec![path.to_path_buf()];
+    let mut stack = vec![path.to_path_buf()];
+    let mut completed = true;
+    let mut first_err: Option<io::Error> = None;
+    'walk: while let Some(dir) = stack.pop() {
+        // Collected first: deleting while the listing is still being read is asking for trouble.
+        let entries = match fs::read_dir(&dir).and_then(|rd| rd.collect::<Result<Vec<_>, _>>()) {
+            Ok(v) => v,
+            Err(e) => {
+                first_err.get_or_insert(e);
+                continue;
+            }
+        };
+        for entry in entries {
+            if cancelled() {
+                completed = false;
+                break 'walk;
+            }
+            let p = entry.path();
+            let md = match entry.metadata() {
+                // metadata of the entry itself, links not followed
+                Ok(m) => m,
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                    continue;
+                }
+            };
+            if md.is_dir() && !is_link(&md) {
+                dirs.push(p.clone());
+                stack.push(p);
+            } else {
+                on_file(&p, md.len());
+                if let Err(e) = remove_file_or_link(&p, &md) {
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+    }
+    // Pass 2: folders, children before parents. After a cancel or an earlier failure only the folders that
+    // are empty now go (the others fail harmlessly); no empty shell of folders is left behind.
+    for d in dirs.iter().rev() {
+        if let Err(e) = remove_empty_dir(d) {
+            if completed && first_err.is_none() {
+                first_err = Some(e);
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(completed),
+    }
 }
 
 /// Removes the half-written temp item of a failed or cancelled operation, and makes sure its disk
@@ -185,27 +418,54 @@ fn remove_temp(path: &Path) {
     });
 }
 
-pub fn unique_copy_name(destination: &Path) -> PathBuf {
-    if !destination.exists() {
-        return destination.to_path_buf();
-    }
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    // Built from OsStrings, so a name that is not valid Unicode is kept byte for byte.
-    let stem = destination.file_stem().map(|s| s.to_os_string()).unwrap_or_else(|| "Copy".into());
-    let ext = destination.extension().map(|e| e.to_os_string());
+/// True if something (even a broken link) is at `p`.
+pub fn occupied(p: &Path) -> bool {
+    fs::symlink_metadata(p).is_ok()
+}
+
+/// "name (n).ext" (a folder: "name (n)") with the lowest n >= 1 for which `free` holds.
+fn numbered_name(dest: &Path, is_dir: bool, free: impl Fn(&Path) -> bool) -> PathBuf {
+    let parent = dest.parent().map(Path::to_path_buf).unwrap_or_default();
+    // OsStrings throughout, so a name that is not valid Unicode is kept byte for byte.
+    let name = dest.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    let (stem, ext) = if is_dir {
+        (name.clone(), None)
+    } else {
+        let p = Path::new(&name);
+        (
+            p.file_stem().map(|s| s.to_os_string()).unwrap_or_else(|| name.clone()),
+            p.extension().map(|e| e.to_os_string()),
+        )
+    };
     for n in 1u64.. {
-        let mut name = stem.clone();
-        name.push(format!(" ({n})"));
+        let mut file = stem.clone();
+        file.push(format!(" ({n})"));
         if let Some(e) = &ext {
-            name.push(".");
-            name.push(e);
+            file.push(".");
+            file.push(e);
         }
-        let candidate = parent.join(name);
-        if !candidate.exists() {
-            return candidate;
+        let cand = parent.join(file);
+        if free(&cand) {
+            return cand;
         }
     }
     unreachable!()
+}
+
+/// `dest` itself when it is free, otherwise the free "name (n).ext" next to it.
+pub fn unique_copy_name(dest: &Path) -> PathBuf {
+    if occupied(dest) { numbered_name(dest, false, |p| !occupied(p)) } else { dest.to_path_buf() }
+}
+
+/// `unique_copy_name` for a folder: a dot in its name is not an extension.
+pub fn unique_folder_name(dest: &Path) -> PathBuf {
+    if occupied(dest) { numbered_name(dest, true, |p| !occupied(p)) } else { dest.to_path_buf() }
+}
+
+/// "name (n).ext" with the lowest n that is free on disk and not claimed (`taken`) by this paste. Always
+/// numbered, even when `dest` itself is free.
+pub fn lowest_free_name(dest: &Path, taken: &HashSet<PathBuf>, is_dir: bool) -> PathBuf {
+    numbered_name(dest, is_dir, |p| !occupied(p) && !taken.contains(p))
 }
 
 /// A free name next to `path` for something that is only temporary: the leading dot hides it from
@@ -217,7 +477,7 @@ fn free_sibling(path: &Path, tag: &str) -> PathBuf {
         file.push(&name);
         file.push(format!(".{tag}-{}-{n}", std::process::id()));
         let candidate = path.with_file_name(file);
-        if fs::symlink_metadata(&candidate).is_err() {
+        if !occupied(&candidate) {
             return candidate;
         }
     }
@@ -246,7 +506,7 @@ fn rename_retry(from: &Path, to: &Path) -> io::Result<()> {
     loop {
         match fs::rename(from, to) {
             Ok(()) => return Ok(()),
-            Err(e) if attempt < 5 && (e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(32)) => {
+            Err(e) if attempt < 5 && (e.kind() == io::ErrorKind::PermissionDenied || is_sharing_violation(&e)) => {
                 attempt += 1;
                 std::thread::sleep(Duration::from_millis(60 * attempt));
             }
@@ -273,12 +533,23 @@ pub struct OpProgress {
     pub paused: AtomicBool,
     /// The worker cannot pause (it runs an external ZIP tool): the dialog then has no Pause button.
     pub unpausable: AtomicBool,
-    current: std::sync::Mutex<String>,
+    current: Mutex<String>,
     /// Items being worked on right now (id, name). The dialog lists them, each with its own cancel button.
-    running: std::sync::Mutex<Vec<(u64, String)>>,
+    running: Mutex<Vec<(u64, String)>>,
     /// Running items the user cancelled one by one: only they stop, the rest of the operation carries on.
-    skipped: std::sync::Mutex<std::collections::HashSet<u64>>,
+    skipped: Mutex<std::collections::HashSet<u64>>,
     any_skipped: AtomicBool,
+    /// "Delete permanently?" question of a delete the Recycle Bin can't fully take; the dialog answers it.
+    perm: Mutex<PermPrompt>,
+}
+
+#[derive(Default)]
+enum PermPrompt {
+    #[default]
+    Idle,
+    Asking { count: usize, example: String, reason: String },
+    Delete,
+    Keep,
 }
 
 thread_local! {
@@ -289,24 +560,83 @@ thread_local! {
     static ITEM_TOTAL: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-const CANCELLED: &str = "cancelled";
+/// What a cancelled operation stops with. A type of its own, so that it is recognized by what it is
+/// and not by comparing message text.
+#[derive(Debug)]
+struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+fn cancelled_error() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, Cancelled)
+}
 
 /// True for the error a cancelled operation stops with (not something to show the user).
 pub fn is_cancelled(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::Interrupted && e.to_string() == CANCELLED
+    e.get_ref().is_some_and(|inner| inner.is::<Cancelled>())
 }
 
 impl OpProgress {
     pub fn set_current(&self, name: &str) {
-        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = name.to_owned();
+        *lock(&self.current) = name.to_owned();
     }
 
     pub fn current(&self) -> String {
-        self.current.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        lock(&self.current).clone()
     }
 
     pub fn cancelled(&self) -> bool {
         self.cancel.load(AO::Relaxed)
+    }
+
+    /// Worker thread: shows the question "delete these items permanently?" in the operation's panel and
+    /// blocks until the user answers or the operation is cancelled. `true` = delete permanently,
+    /// `false` = leave the items alone. `reason` may be empty (the dialog then words it generically).
+    pub fn ask_permanent(&self, count: usize, example: String, reason: String) -> bool {
+        *lock(&self.perm) = PermPrompt::Asking { count, example, reason };
+        loop {
+            {
+                let mut p = lock(&self.perm);
+                if self.cancelled() {
+                    *p = PermPrompt::Idle;
+                    return false;
+                }
+                match *p {
+                    PermPrompt::Delete => {
+                        *p = PermPrompt::Idle;
+                        return true;
+                    }
+                    PermPrompt::Keep => {
+                        *p = PermPrompt::Idle;
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Dialog: the pending question, if any, as (item count, example name, reason).
+    pub fn permanent_question(&self) -> Option<(usize, String, String)> {
+        match &*lock(&self.perm) {
+            PermPrompt::Asking { count, example, reason } => Some((*count, example.clone(), reason.clone())),
+            _ => None,
+        }
+    }
+
+    /// Dialog: the user's answer (`true` = delete permanently).
+    pub fn answer_permanent(&self, delete: bool) {
+        let mut p = lock(&self.perm);
+        if matches!(*p, PermPrompt::Asking { .. }) {
+            *p = if delete { PermPrompt::Delete } else { PermPrompt::Keep };
+        }
     }
 
     /// Worker thread: starts item `id` (ids are unique within one operation, never 0).
@@ -314,26 +644,26 @@ impl OpProgress {
         ITEM_ID.with(|c| c.set(id));
         ITEM_DONE.with(|c| c.set(0));
         ITEM_TOTAL.with(|c| c.set(0));
-        self.running.lock().unwrap_or_else(|e| e.into_inner()).push((id, name.to_owned()));
+        lock(&self.running).push((id, name.to_owned()));
     }
 
     /// Worker thread: ends the item started with `begin_item`; returns the bytes it had added to
     /// (done, total) while it ran.
     pub fn end_item(&self, id: u64) -> (u64, u64) {
-        self.running.lock().unwrap_or_else(|e| e.into_inner()).retain(|r| r.0 != id);
-        self.skipped.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        lock(&self.running).retain(|r| r.0 != id);
+        lock(&self.skipped).remove(&id);
         ITEM_ID.with(|c| c.set(0));
         (ITEM_DONE.with(|c| c.replace(0)), ITEM_TOTAL.with(|c| c.replace(0)))
     }
 
     /// The items being worked on right now, in the order they started.
     pub fn running_items(&self) -> Vec<(u64, String)> {
-        self.running.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        lock(&self.running).clone()
     }
 
     /// Dialog: stop just this item (its partial result is removed); everything else carries on.
     pub fn skip_item(&self, id: u64) {
-        self.skipped.lock().unwrap_or_else(|e| e.into_inner()).insert(id);
+        lock(&self.skipped).insert(id);
         self.any_skipped.store(true, AO::Relaxed);
     }
 
@@ -341,7 +671,7 @@ impl OpProgress {
         let id = ITEM_ID.with(|c| c.get());
         id != 0
             && self.any_skipped.load(AO::Relaxed)
-            && self.skipped.lock().unwrap_or_else(|e| e.into_inner()).contains(&id)
+            && lock(&self.skipped).contains(&id)
     }
 
     /// Takes back bytes a cancelled item had contributed (`done`) or announced (`total`).
@@ -367,7 +697,7 @@ impl OpProgress {
             std::thread::sleep(Duration::from_millis(50));
         }
         if self.cancelled() || self.this_item_skipped() {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, CANCELLED));
+            return Err(cancelled_error());
         }
         Ok(())
     }
@@ -576,11 +906,6 @@ pub fn get_clipboard() -> Option<(Vec<PathBuf>, bool)> {
     Some((paths, cut))
 }
 
-fn is_cross_device(e: &io::Error) -> bool {
-    // ERROR_NOT_SAME_DEVICE on Windows, EXDEV elsewhere
-    e.raw_os_error() == Some(if cfg!(windows) { 17 } else { 18 })
-}
-
 /// Rename when possible (atomic on one drive); copy + delete only when the rename failed because
 /// the destination is on another drive. Any other failure (item in use, access denied, ...) is
 /// reported as is, without half-moving anything. Never replaces an existing destination.
@@ -614,12 +939,12 @@ pub fn open_recycle_bin() -> io::Result<()> {
     {
         let trash = dirs::home_dir()
             .map(|h| h.join(".Trash"))
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found"))?;
-        return open::that(trash).map_err(std::io::Error::other);
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home directory not found"))?;
+        return open::that(trash).map_err(io::Error::other);
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        return open::that("trash:///").map_err(std::io::Error::other);
+        return open::that("trash:///").map_err(io::Error::other);
     }
     #[allow(unreachable_code)]
     Err(io::Error::new(io::ErrorKind::Unsupported, "Recycle Bin is not available here"))
@@ -643,11 +968,11 @@ pub fn open_terminal(dir: &Path) -> io::Result<()> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         for term in ["kgx", "gnome-terminal", "konsole", "xfce4-terminal", "alacritty", "xterm"] {
-            if std::process::Command::new(term).current_dir(dir).spawn().is_ok() {
+            if Command::new(term).current_dir(dir).spawn().is_ok() {
                 return Ok(());
             }
         }
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no terminal emulator found"));
+        return Err(io::Error::new(io::ErrorKind::NotFound, "no terminal emulator found"));
     }
     #[allow(unreachable_code)]
     Err(io::Error::new(io::ErrorKind::Unsupported, "not supported here"))
@@ -726,9 +1051,6 @@ pub fn folder_stats(root: &Path, cancelled: &dyn Fn() -> bool) -> FolderStats {
 //   Linux    zip / unzip, then bsdtar, then 7z, whichever is installed
 // ---------------------------------------------------------------------------------------------
 
-use std::ffi::{OsStr, OsString};
-use std::process::{Command, Stdio};
-
 const OK0: &[i32] = &[0];
 /// unzip exits with 1 for "finished, with warnings".
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -780,7 +1102,6 @@ fn run_tool(mut cmd: Command, ok_codes: &[i32], prog: Option<&OpProgress>) -> io
 /// `Command::output` that stops early: when the operation is cancelled the tool is killed and the
 /// error that follows is the "cancelled" one (see `is_cancelled`).
 fn output_cancellable(cmd: &mut Command, prog: &OpProgress) -> io::Result<std::process::Output> {
-    use std::io::Read;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
     // A tool may print a line per file: its pipes are emptied while we wait, or it would block.
@@ -801,7 +1122,7 @@ fn output_cancellable(cmd: &mut Command, prog: &OpProgress) -> io::Result<std::p
         if prog.cancelled() {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(io::Error::new(io::ErrorKind::Interrupted, CANCELLED));
+            return Err(cancelled_error());
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -1026,10 +1347,10 @@ struct Journal {
     pending: Vec<PathBuf>,
 }
 
-static JOURNAL: std::sync::Mutex<Journal> = std::sync::Mutex::new(Journal { file: None, path: None, pending: Vec::new() });
+static JOURNAL: Mutex<Journal> = Mutex::new(Journal { file: None, path: None, pending: Vec::new() });
 
-fn journal() -> std::sync::MutexGuard<'static, Journal> {
-    JOURNAL.lock().unwrap_or_else(|e| e.into_inner())
+fn journal() -> MutexGuard<'static, Journal> {
+    lock(&JOURNAL)
 }
 
 fn line_safe(p: &Path) -> Option<&str> {
@@ -1177,20 +1498,20 @@ struct Mount {
     modified: Option<SystemTime>,
 }
 
-static MOUNTS: std::sync::Mutex<Vec<Mount>> = std::sync::Mutex::new(Vec::new());
+static MOUNTS: Mutex<Vec<Mount>> = Mutex::new(Vec::new());
 static MOUNT_SEQ: AtomicU64 = AtomicU64::new(0);
 const CACHE_PREFIX: &str = "FileFly-archives-";
 
-fn mounts() -> std::sync::MutexGuard<'static, Vec<Mount>> {
-    MOUNTS.lock().unwrap_or_else(|e| e.into_inner())
+fn mounts() -> MutexGuard<'static, Vec<Mount>> {
+    lock(&MOUNTS)
 }
 
 /// Held (exclusively locked) for as long as this process lives; see `sweep_old_archive_caches`.
-static CACHE_LOCK: std::sync::Mutex<Option<fs::File>> = std::sync::Mutex::new(None);
+static CACHE_LOCK: Mutex<Option<fs::File>> = Mutex::new(None);
 const CACHE_LOCK_NAME: &str = ".in-use";
 
 fn hold_cache_lock() {
-    let mut g = CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = lock(&CACHE_LOCK);
     if g.is_none() {
         if let Ok(f) = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(cache_root().join(CACHE_LOCK_NAME)) {
             if f.try_lock().is_ok() {
@@ -1336,7 +1657,7 @@ pub fn folder_outside(real: &Path) -> PathBuf {
 
 /// Deletes everything unpacked by this process (called on exit).
 pub fn remove_archive_cache() {
-    drop(CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner()).take());
+    drop(lock(&CACHE_LOCK).take());
     let _ = fs::remove_dir_all(cache_root());
 }
 

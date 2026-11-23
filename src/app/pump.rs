@@ -221,7 +221,17 @@ impl Explorer {
                         }
                     }
                 }
+                AppMsg::PropsMeta { id, meta } => self.props_meta_arrived(id, meta),
                 AppMsg::UpdateChecked { announce, result } => self.update_checked(announce, result),
+                AppMsg::ReleaseNotes(result) => {
+                    // (ignored when the popup was closed while loading)
+                    if self.whats_new.is_some() {
+                        self.whats_new = Some(match result {
+                            Ok((version, notes)) => WhatsNew::Ready { version, notes },
+                            Err(e) => WhatsNew::Failed(e),
+                        });
+                    }
+                }
                 AppMsg::ShortcutTarget { tab, result } => self.shortcut_resolved(tab, result),
                 AppMsg::QuickKind { path, is_dir } => {
                     self.probed_icons.remove(&path);
@@ -264,7 +274,7 @@ impl Explorer {
                                 _ => size,
                             };
                             r.set_dir_size(bytes, partial);
-                            if !partial && tr.sort_col == TrashSort::Size {
+                            if tr.sort_col == TrashSort::Size {
                                 tr.needs_sort = true;
                             }
                             in_trash = true;
@@ -280,13 +290,14 @@ impl Explorer {
                         // size from the index): the row keeps it, with a spinner, until the final size
                         // arrives.
                         let shown = t.entries[i].dir_size;
-                        t.entries[i].dir_size = Some(match shown {
+                        let new = match shown {
                             Some(old) if partial => old.max(size),
                             _ => size,
-                        });
+                        };
+                        t.entries[i].dir_size = Some(new);
                         t.entries[i].dir_partial = partial;
-                        // no re-sort for running totals, or rows would jump around while scanning
-                        if !partial && t.sort_col == SortColumn::Size {
+                        // Sorting by size: the order may have changed with this size.
+                        if shown != Some(new) && t.sort_col == SortColumn::Size {
                             t.view_dirty = true;
                         }
                     }
@@ -363,10 +374,13 @@ impl Explorer {
         // The drive watcher thread polls on its own; it only needs to know whether the window is in use.
         let focused = self.ui.input(|i| i.focused);
         self.drive_ctl.set_focused(focused);
+        if let Some(ix) = &self.indexer {
+            ix.set_focused(focused);
+        }
         if self.indexer.as_ref().is_some_and(|ix| ix.is_dirty()) {
             if self.last_save.elapsed() > Duration::from_secs(15) {
                 if let Some(ix) = &self.indexer {
-                    ix.save_if_dirty(&self.index_dir, false);
+                    ix.save_if_dirty(false);
                 }
                 self.last_save = Instant::now();
             } else {
@@ -426,7 +440,7 @@ impl Explorer {
             hide_window(frame);
             save_settings(&self.settings);
             self.peers.shutdown();
-            if let Some(ix) = &self.indexer { ix.save_if_dirty(&self.index_dir, true); }
+            if let Some(ix) = &self.indexer { ix.save_if_dirty(true); }
             remove_archive_cache();
             finish_journal();
             terminate_now();
@@ -453,22 +467,6 @@ impl Explorer {
         } else {
             false
         };
-
-        // Sets the cache size for folder indexing to the new value, if it was changed
-        // If cache size hasn't been set yet, set it to the settings value.
-        let cache_change = Some(self.settings.index_ram) != self.cache_size;
-        let cache_unlimited_change = self.unlimited_cache != self.settings.unlimited_cache;
-        if  cache_change || cache_unlimited_change {
-            if cache_change {
-                self.cache_size = Some(self.settings.index_ram);
-            }
-            if cache_unlimited_change {
-                self.unlimited_cache = self.settings.unlimited_cache;
-            }
-            if let Some(ix) = &self.indexer {
-                ix.set_limit_mb(self.cache_size.expect("The cache size will always be set for an existing indexer."), self.unlimited_cache);
-            }
-        }
 
         let changed_backdrop = if self.backdrop_transparency != wanted_transparency {
             self.backdrop_transparency = wanted_transparency;

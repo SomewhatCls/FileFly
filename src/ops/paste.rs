@@ -100,8 +100,17 @@ pub(crate) const PASTE_WORKERS: usize = 4;
 pub(crate) enum Pasted {
     Done,
     Failed(String),
+    /// Refused for lack of access rights: what "Try as administrator" can redo.
+    Denied(String),
     /// Stopped by a cancel (of the whole operation or of just this item).
     Stopped,
+}
+
+impl Pasted {
+    /// A failure with `msg` as its text; `cause` decides whether it counts as "denied".
+    pub(crate) fn from_io(msg: String, cause: &io::Error) -> Self {
+        if is_denied_io(cause) { Pasted::Denied(msg) } else { Pasted::Failed(msg) }
+    }
 }
 
 /// Pastes one item (with the park-and-restore dance for "Replace").
@@ -120,7 +129,7 @@ pub(crate) fn paste_one(it: &PasteItem, cut: bool, prog: &OpProgress) -> Pasted 
             Ok(()) => backup = Some(aside),
             Err(e) => {
                 backup_settled(&aside);
-                return Pasted::Failed(format!("Could not replace “{name}”: {e}"));
+                return Pasted::from_io(format!("Could not replace “{name}”: {e}"), &e);
             }
         }
     }
@@ -144,40 +153,6 @@ pub(crate) fn paste_one(it: &PasteItem, cut: bool, prog: &OpProgress) -> Pasted 
     match r {
         Ok(()) => Pasted::Done,
         Err(e) if is_cancelled(&e) => Pasted::Stopped,
-        Err(e) => Pasted::Failed(format!("Could not paste “{name}”: {e}")),
-    }
-}
-
-pub(crate) fn occupied(p: &Path) -> bool {
-    fs::symlink_metadata(p).is_ok()
-}
-
-/// "name (n).ext" with the lowest n that is free on disk and not claimed by this paste.
-pub(crate) fn lowest_free_name(dest: &Path, taken: &HashSet<PathBuf>, is_dir: bool) -> PathBuf {
-    let parent = dest.parent().map(Path::to_path_buf).unwrap_or_default();
-    // OsStrings throughout, so a name that is not valid Unicode is kept byte for byte.
-    let name = dest.file_name().map(|n| n.to_os_string()).unwrap_or_default();
-    let (stem, ext) = if is_dir {
-        (name.clone(), None)
-    } else {
-        let p = Path::new(&name);
-        (
-            p.file_stem().map(|s| s.to_os_string()).unwrap_or_else(|| name.clone()),
-            p.extension().map(|e| e.to_os_string()),
-        )
-    };
-    let mut n = 1u32;
-    loop {
-        let mut file = stem.clone();
-        file.push(format!(" ({n})"));
-        if let Some(e) = &ext {
-            file.push(".");
-            file.push(e);
-        }
-        let cand = parent.join(file);
-        if !occupied(&cand) && !taken.contains(&cand) {
-            return cand;
-        }
-        n += 1;
+        Err(e) => Pasted::from_io(format!("Could not paste “{name}”: {e}"), &e),
     }
 }

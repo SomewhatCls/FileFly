@@ -34,19 +34,25 @@ pub(crate) enum AdminRetry {
     RunFile(PathBuf),
 }
 
-pub(crate) fn is_denied_io(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(5)
-}
-
-/// Whether an error message (already formatted) says "access denied".
-pub(crate) fn is_denied_text(s: &str) -> bool {
-    let l = s.to_lowercase();
-    l.contains("os error 5)")
-        || l.contains("os error 5:")
-        || l.contains("os error: 5")
-        || l.contains("access is denied")
-        || l.contains("permission denied")
-        || l.contains("toegang geweigerd")
+/// Whether the Recycle Bin refused for lack of access rights. Decided from the error's OS code and
+/// the `io::Error` it wraps, never from its message (that is localized and contains the file name).
+pub(crate) fn is_denied_trash(e: &trash::Error) -> bool {
+    if let trash::Error::Os { code, .. } = e {
+        if is_denied_os_code(*code) {
+            return true;
+        }
+    }
+    // `FileSystem { source, .. }` and any other variant that carries an `io::Error` as its cause.
+    let mut cause = std::error::Error::source(e);
+    while let Some(c) = cause {
+        if let Some(io_err) = c.downcast_ref::<io::Error>() {
+            if is_denied_io(io_err) {
+                return true;
+            }
+        }
+        cause = c.source();
+    }
+    false
 }
 
 /// A program that Windows refused to start because it needs elevation (error 740).
@@ -74,7 +80,7 @@ fn execute(op: AdminOp) -> Result<(), String> {
             for (src, dst, replace) in items {
                 match paste_one(&PasteItem { src, dst, replace }, cut, &prog) {
                     Pasted::Done | Pasted::Stopped => {}
-                    Pasted::Failed(e) => return Err(e),
+                    Pasted::Failed(e) | Pasted::Denied(e) => return Err(e),
                 }
             }
             Ok(())

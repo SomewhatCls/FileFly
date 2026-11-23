@@ -20,8 +20,8 @@ impl Explorer {
             .map(|t| {
                 if t.trash.is_some() {
                     (t.id, t.title(), "Recycle Bin".to_owned(), "recycle_bin")
-                } else if t.settings {
-                    (t.id, t.title(), "Settings".to_owned(), "settings")
+                } else if let Some(page) = t.page {
+                    (t.id, t.title(), page.title().to_owned(), page.icon())
                 } else {
                     (t.id, t.title(), t.shown_dir().display().to_string(), "folder")
                 }

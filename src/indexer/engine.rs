@@ -1,13 +1,11 @@
 //! `Indexer`: the object the rest of the app talks to. It owns the store, the scan workers and the
 //! live updater, and keeps the public API of the old single-file indexer.
 
-//TODO: The Indexer gets stuck in rescan loops sometimes.
-
 use super::{
     hot::HotFiles,
     live::{self, ChangeSink, LiveCtx},
-    model::{entries_for_mb, is_fresh, ns, now_secs, IndexMsg, PRUNE_SECS, WORKERS},
-    scan::scan_many,
+    model::{is_fresh, now_secs, stamp_of, Cancel, IndexMsg, MutexExt, PRUNE_SECS, WORKERS},
+    scan::{scan_many, RootSpec},
     store::{self, Cache, Store},
 };
 use eframe::egui;
@@ -20,6 +18,7 @@ use std::{
         mpsc::Sender,
         Arc, Mutex,
     },
+    time::{Duration, SystemTime},
 };
 
 /// Files of the earlier index formats; removed at startup (including the oversized redb file).
@@ -36,17 +35,17 @@ impl Drop for Live {
 
 /// Opens the index in `dir`, clears out leftovers of older formats and starts the background
 /// pruning of entries that haven't been refreshed for `PRUNE_SECS`.
-fn open_store(dir: &Path, max_entries: usize, sink: &Arc<ChangeSink>, hot: &HotFiles) -> Cache {
+fn open_store(dir: &Path, sink: &Arc<ChangeSink>, hot: &HotFiles) -> Cache {
     for old in OLD_FILES {
         let _ = fs::remove_file(dir.join(old));
     }
-    let store = Arc::new(Store::open(dir, max_entries));
+    let store = Arc::new(Store::open(dir));
+    store::spawn_flusher(&store);
     // The index file is open for as long as we run, so its listed size is never refreshed: always
     // read it exactly, and when it changes size, invalidate the folders above it right away.
-    let file = dir.join(store::DB_FILE);
-    hot.pin(&file);
+    hot.pin(&dir.join(store::DB_FILE));
     let s = Arc::clone(sink);
-    store.set_on_resize(move || s.push([file.clone()]));
+    store.set_on_resize(move || s.index_resized());
     // Read the index file once, sequentially: that fills the system's file cache and the store's
     // lookup filter, after which a folder that was never stored costs no disk read in a scan.
     let warmer = Arc::clone(&store);
@@ -64,7 +63,8 @@ pub struct Indexer {
     /// Folder the index file lives in.
     dir: PathBuf,
     generation: Arc<AtomicU64>,
-    cache_dirty: Arc<AtomicBool>,
+    /// Whether the app window has focus (see `set_focused`).
+    focused: Arc<AtomicBool>,
     live: Arc<AtomicUsize>,
     tx: Sender<IndexMsg>,
     ctx: egui::Context,
@@ -77,17 +77,16 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    /// `dir` is where the index file lives. `limit_mb` is the RAM cache limit (0 = unlimited).
-    pub fn new(ctx: egui::Context, tx: Sender<IndexMsg>, dir: &Path, limit_mb: usize) -> Self {
-        let max_entries = if limit_mb == 0 { usize::MAX } else { entries_for_mb(limit_mb) };
+    /// `dir` is where the index file lives.
+    pub fn new(ctx: egui::Context, tx: Sender<IndexMsg>, dir: &Path) -> Self {
         let sink = ChangeSink::new();
         sink.set_ignored_dir(dir);
         let hot = Arc::new(HotFiles::default());
         let ix = Self {
-            cache: open_store(dir, max_entries, &sink, &hot),
+            cache: open_store(dir, &sink, &hot),
             dir: dir.to_path_buf(),
             generation: Arc::new(AtomicU64::new(0)),
-            cache_dirty: Arc::new(AtomicBool::new(false)),
+            focused: Arc::new(AtomicBool::new(true)),
             live: Arc::new(AtomicUsize::new(0)),
             tx,
             ctx,
@@ -95,8 +94,17 @@ impl Indexer {
             sink,
             tracked: Arc::new(Mutex::new(Arc::new(HashSet::new()))),
         };
+        ix.invalidate_above_index();
         ix.spawn_live();
         ix
+    }
+
+    /// The folders above the index file were summed when the file may have had another size (it only
+    /// changes size while the app runs, and a change right before exit may not have been processed),
+    /// so they are dropped once whenever an index is opened. Later size changes are reported by
+    /// the store itself (see `open_store`).
+    fn invalidate_above_index(&self) {
+        self.cache.remove_with_ancestors(&self.dir.join(store::DB_FILE));
     }
 
     /// (Re)starts the live updater for the current store. Any earlier one retires itself.
@@ -106,7 +114,6 @@ impl Indexer {
             LiveCtx {
                 cache: Arc::clone(&self.cache),
                 generation: Arc::clone(&self.generation),
-                dirty: Arc::clone(&self.cache_dirty),
                 tracked: Arc::clone(&self.tracked),
                 hot: Arc::clone(&self.hot),
                 sink: Arc::clone(&self.sink),
@@ -132,20 +139,11 @@ impl Indexer {
         }
         self.generation.fetch_add(1, Ordering::SeqCst); // stop scans that still write to the old index
         self.cache.sync(); // make the old index's last writes permanent
-        let max_entries = self.cache.max_ram.load(Ordering::Relaxed);
-        self.cache = open_store(dir, max_entries, &self.sink, &self.hot);
+        self.cache = open_store(dir, &self.sink, &self.hot);
         self.dir = dir.to_path_buf();
-        self.cache_dirty.store(false, Ordering::Relaxed);
         self.sink.set_ignored_dir(dir);
+        self.invalidate_above_index();
         self.spawn_live(); // the old updater still holds the old store; this retires it
-    }
-
-    /// Changes the RAM cache limit and trims RAM if it is now over the limit.
-    pub fn set_limit_mb(&self, mb: usize, unlimited_cache: bool) {
-        let n = if unlimited_cache { usize::MAX } else { entries_for_mb(mb) };
-        self.cache.max_ram.store(n, Ordering::Relaxed);
-        self.cache.shrink();
-        eprintln!("Cache limit set to {} MB", if unlimited_cache { usize::MAX } else { mb });
     }
 
     /// Number of indexed folders (all of them, not just the ones currently in RAM; approximate).
@@ -163,28 +161,18 @@ impl Indexer {
     /// Drop the path and every ancestor: their totals are no longer correct.
     pub fn invalidate(&self, path: &Path) {
         self.cache.remove_with_ancestors(path);
-        self.cache_dirty.store(true, Ordering::Relaxed);
-        self.kick_flush();
     }
 
     /// Drop `dir`, everything below it and all its ancestors (used when too many changes happened
     /// to list them individually).
     pub fn invalidate_tree(&self, dir: &Path) {
         self.cache.remove_tree(dir);
-        self.cache_dirty.store(true, Ordering::Relaxed);
-        self.kick_flush();
     }
 
-    /// Writes the buffered changes in a background thread once enough have piled up. (Scan
-    /// threads do this themselves; this covers invalidations coming from the UI thread.)
-    fn kick_flush(&self) {
-        if self.cache.pending_len() >= store::FLUSH_AT && !self.cache.bg_flush.swap(true, Ordering::SeqCst) {
-            let s = Arc::clone(&self.cache);
-            std::thread::spawn(move || {
-                s.flush();
-                s.bg_flush.store(false, Ordering::SeqCst);
-            });
-        }
+    /// Tells the indexer whether the window has focus. Rescans that are only due because the
+    /// entry outlived its TTL wait for focus, so they never start while the user is elsewhere.
+    pub fn set_focused(&self, focused: bool) {
+        self.focused.store(focused, Ordering::Relaxed);
     }
 
     /// True while a scan started by `start()` still has a live worker thread.
@@ -194,40 +182,32 @@ impl Indexer {
 
     /// Forgets everything: stops a running scan and empties the index (RAM and file).
     /// (The file stays open, so it is reset rather than deleted.)
-    pub fn delete_index(&self, _dir: &Path) {
+    pub fn clear(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.cache.clear();
-        self.cache_dirty.store(false, Ordering::Relaxed);
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.cache_dirty.load(Ordering::Relaxed)
-    }
-
-    pub fn clear(&self) {
-        self.cache.clear();
-        self.cache_dirty.store(true, Ordering::Relaxed);
+        self.cache.dirty.load(Ordering::Relaxed)
     }
 
     /// Cancels any running scan and starts a new one for `folders`. Up-to-date folders return instantly.
-    /// `folders` also become the set the live updater keeps correct while files change.
-    pub fn start(&self, folders: Vec<PathBuf>) {
+    /// `folders` also become the set the live updater keeps correct while files change. Each comes with
+    /// its last-modified time (`Metadata::modified`) where the caller already has it from its listing,
+    /// which saves a `stat` per folder before the scan can begin.
+    pub fn start_with(&self, folders: Vec<(PathBuf, Option<SystemTime>)>) {
         let my_gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        // Catch-up: if the index file has a different size than last time (e.g. it grew while the
-        // app was closed), the folders above it are out of date.
-        if let Some((p, _)) = self.sink.index_file_changed() {
-            self.cache.remove_with_ancestors(&p);
-        }
-        *self.tracked.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(folders.iter().cloned().collect());
+        *self.tracked.lk() = Arc::new(folders.iter().map(|(p, _)| p.clone()).collect());
         if folders.is_empty() {
             return;
         }
         // One shared walk: all threads work on all listed folders at once, and on the sub-folders
         // of each, so a single huge folder (Windows, AppData, ...) is spread over them too.
         let cache = Arc::clone(&self.cache);
-        let generation = Arc::clone(&self.generation);
-        let dirty = Arc::clone(&self.cache_dirty);
+        let cancel = Cancel::new(&self.generation, my_gen);
         let hot = Arc::clone(&self.hot);
+        let focused = Arc::clone(&self.focused);
+        let sink = Arc::clone(&self.sink);
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
         self.live.fetch_add(1, Ordering::SeqCst);
@@ -235,44 +215,76 @@ impl Indexer {
         std::thread::spawn(move || {
             let _guard = guard;
             let now = now_secs();
+            // False = the UI is gone.
+            let send = |msg: IndexMsg| {
+                let alive = tx.send(msg).is_ok();
+                if alive {
+                    ctx.request_repaint();
+                }
+                alive
+            };
             // Up-to-date folders are answered right away, the rest goes into the walk.
             let mut todo = Vec::new();
-            for folder in folders {
-                if generation.load(Ordering::Relaxed) != my_gen {
+            // Unchanged folders whose entry merely aged past the TTL: they keep showing their size
+            // and are re-scanned once the window has focus.
+            let mut aged = Vec::new();
+            for (folder, mtime) in folders {
+                if cancel.is_set() {
                     return;
                 }
-                let stamp = fs::metadata(&folder).and_then(|m| m.modified()).map(ns).unwrap_or(0);
-                let cached = cache.get(&folder);
-                match cached.as_ref().filter(|c| is_fresh(c, stamp, now)) {
+                let stamp = mtime
+                    .or_else(|| fs::metadata(&folder).and_then(|m| m.modified()).ok())
+                    .map(stamp_of)
+                    .unwrap_or(0);
+                let watched_since = sink.watched_since(&folder);
+                let alive = match cache.get(&folder) {
+                    Some(c) if is_fresh(&c, stamp, now, watched_since) => send(IndexMsg::Size(folder, c.size)),
+                    Some(c) if c.stamp == stamp => {
+                        let alive = send(IndexMsg::Size(folder.clone(), c.size));
+                        aged.push(RootSpec { path: folder, stamp, watched_since });
+                        alive
+                    }
+                    // Not up to date: the row keeps the old size, with a spinner, until the walk
+                    // has the new one.
                     Some(c) => {
-                        if tx.send(IndexMsg::Size(folder, c.size)).is_err() {
-                            return;
-                        }
-                        ctx.request_repaint();
+                        let alive = send(IndexMsg::Partial(folder.clone(), c.size));
+                        todo.push(RootSpec { path: folder, stamp, watched_since });
+                        alive
                     }
                     None => {
-                        // Not up to date: the row keeps the old size, with a spinner, until the walk
-                        // has the new one.
-                        if let Some(old) = &cached {
-                            if tx.send(IndexMsg::Partial(folder.clone(), old.size)).is_err() {
-                                return;
-                            }
-                            ctx.request_repaint();
-                        }
-                        todo.push((folder, stamp));
+                        todo.push(RootSpec { path: folder, stamp, watched_since });
+                        true
                     }
+                };
+                if !alive {
+                    return;
                 }
             }
             // live running totals for the rows while the walk is still going
             let progress = |p: &Path, n: u64| {
-                let _ = tx.send(IndexMsg::Partial(p.to_path_buf(), n));
-                ctx.request_repaint();
+                send(IndexMsg::Partial(p.to_path_buf(), n));
             };
             let done = |p: &Path, n: u64| {
-                let _ = tx.send(IndexMsg::Size(p.to_path_buf(), n));
-                ctx.request_repaint();
+                send(IndexMsg::Size(p.to_path_buf(), n));
             };
-            scan_many(todo, &cache, &generation, my_gen, &dirty, &hot, WORKERS, &progress, &done);
+            if !todo.is_empty() {
+                scan_many(todo, &cache, &cancel, &hot, WORKERS, &progress, &done);
+            }
+            if aged.is_empty() {
+                return;
+            }
+            // Once started a scan may run in the background; only the start waits for focus.
+            while !focused.load(Ordering::Relaxed) {
+                if cancel.is_set() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            // The watches may have changed while this waited for focus.
+            for r in &mut aged {
+                r.watched_since = sink.watched_since(&r.path);
+            }
+            scan_many(aged, &cache, &cancel, &hot, WORKERS, &progress, &done);
         });
     }
 
@@ -281,8 +293,8 @@ impl Indexer {
     /// Results are buffered in RAM and written in batches while scanning; this writes what is
     /// left and makes it permanent (fsync), in a background thread unless `wait` is set
     /// (use that on exit).
-    pub fn save_if_dirty(&self, _dir: &Path, wait: bool) {
-        if !self.cache_dirty.swap(false, Ordering::Relaxed) {
+    pub fn save_if_dirty(&self, wait: bool) {
+        if !self.cache.dirty.swap(false, Ordering::Relaxed) {
             return;
         }
         let store = Arc::clone(&self.cache);

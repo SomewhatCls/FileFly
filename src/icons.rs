@@ -462,6 +462,7 @@ pub fn icon_source(name: &str) -> egui::ImageSource<'static> {
         "sort_ascending" => egui::include_image!("../assets/sort_ascending.svg"),
         "sort_descending" => egui::include_image!("../assets/sort_descending.svg"),
         "up" => egui::include_image!("../assets/up.svg"),
+        "whats_new" => egui::include_image!("../assets/whats_new.svg"),
         "video" => egui::include_image!("../assets/video.svg"),
         "videos" => egui::include_image!("../assets/videos.svg"),
         "restore" => egui::include_image!("../assets/restore.svg"),

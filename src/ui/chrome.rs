@@ -272,38 +272,16 @@ pub(crate) fn caption_buttons_windows(ui: &mut Ui, m: &Metrics, pal: &Palette, m
     }
 }
 
-/// Undecorated windows have no native resize border, so handle the edges ourselves.
-pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
+/// Which resize edge / corner of the undecorated window `pos` is on, with its cursor.
+fn resize_edge(r: Rect, pos: egui::Pos2, m: &Metrics) -> Option<(egui::viewport::ResizeDirection, egui::CursorIcon)> {
     use egui::viewport::ResizeDirection as D;
-    // A new press starts afresh; set below when a resize begins (see `caption_buttons_windows`).
-    if ctx.input(|i| i.pointer.primary_pressed()) {
-        ctx.data_mut(|d| d.remove_temp::<bool>(Id::unique("resize_started")));
-    }
-    let (maximized, fullscreen) = ctx.input(|i| {
-        (
-            i.viewport().maximized.unwrap_or(false),
-            i.viewport().fullscreen.unwrap_or(false),
-        )
-    });
-    if maximized || fullscreen {
-        return;
-    }
-    let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else {
-        return;
-    };
-    let r = ctx.content_rect();
     let (b, c) = (m.accessibility_scale * 5.0, m.accessibility_scale * 12.0);
-    let (el, er, et, eb) = (
-        pos.x - r.left(),
-        r.right() - pos.x,
-        pos.y - r.top(),
-        r.bottom() - pos.y,
-    );
+    let (el, er, et, eb) = (pos.x - r.left(), r.right() - pos.x, pos.y - r.top(), r.bottom() - pos.y);
     let left = el < b || (el < c && (et < b || eb < b));
     let right = er < b || (er < c && (et < b || eb < b));
     let top = et < b || (et < c && (el < b || er < b));
     let bottom = eb < b || (eb < c && (el < b || er < b));
-    let (dir, cursor) = match (left, right, top, bottom) {
+    Some(match (left, right, top, bottom) {
         (true, _, true, _) => (D::NorthWest, egui::CursorIcon::ResizeNorthWest),
         (_, true, true, _) => (D::NorthEast, egui::CursorIcon::ResizeNorthEast),
         (true, _, _, true) => (D::SouthWest, egui::CursorIcon::ResizeSouthWest),
@@ -312,18 +290,66 @@ pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
         (_, true, ..) => (D::East, egui::CursorIcon::ResizeEast),
         (_, _, true, _) => {
             if pos.x > r.right() - m.accessibility_scale * 46.0 * 3.0 {
-                return; // don't steal clicks from the caption buttons
+                return None; // don't steal clicks from the caption buttons
             }
             (D::North, egui::CursorIcon::ResizeNorth)
         }
         (_, _, _, true) => (D::South, egui::CursorIcon::ResizeSouth),
-        _ => return,
+        _ => return None,
+    })
+}
+
+fn can_resize(ctx: &egui::Context) -> bool {
+    !ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false))
+}
+
+/// Undecorated windows have no native resize border, so handle the edges ourselves: shows the resize
+/// cursor and (for windows whose input is not filtered by `begin_resize_on_press`) starts the resize.
+pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
+    // A new press starts afresh; set below when a resize begins (see `caption_buttons_windows`).
+    if ctx.input(|i| i.pointer.primary_pressed()) {
+        ctx.data_mut(|d| d.remove_temp::<bool>(Id::unique("resize_started")));
+    }
+    if !can_resize(ctx) {
+        return;
+    }
+    let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else {
+        return;
+    };
+    let Some((dir, cursor)) = resize_edge(ctx.content_rect(), pos, m) else {
+        return;
     };
     ctx.set_cursor_icon(cursor);
     if ctx.input(|i| i.pointer.primary_pressed()) {
         ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
         ctx.data_mut(|d| d.insert_temp(Id::unique("resize_started"), true));
         // The OS resize loop swallows the button/touch release (see `raw_input_hook`).
+        ctx.data_mut(|d| d.insert_temp(Id::unique("pointer_reset"), true));
+        ctx.request_repaint();
+    }
+}
+
+/// Call from `raw_input_hook`: a press on a resize edge starts the resize and is removed from the
+/// input, so the widgets underneath the edge (sidebar items, tabs, ...) never see it.
+pub(crate) fn begin_resize_on_press(ctx: &egui::Context, raw_input: &mut egui::RawInput, m: &Metrics) {
+    if !can_resize(ctx) {
+        return;
+    }
+    let rect = ctx.content_rect();
+    let mut started = false;
+    raw_input.events.retain(|e| {
+        let egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } = e else {
+            return true;
+        };
+        let Some((dir, _)) = resize_edge(rect, *pos, m) else {
+            return true;
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+        started = true;
+        false
+    });
+    if started {
+        // The OS resize loop swallows the button release (re-injected by `raw_input_hook`).
         ctx.data_mut(|d| d.insert_temp(Id::unique("pointer_reset"), true));
         ctx.request_repaint();
     }

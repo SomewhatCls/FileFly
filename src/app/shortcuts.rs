@@ -6,14 +6,13 @@ impl Explorer {
     pub(crate) fn collect_shortcuts(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         use egui::{Key, Modifiers as M};
         let typing = ui.egui_wants_keyboard_input();
-        let modal = self.props.is_some()
-            || self.conflict.is_some()
+        let modal = self.conflict.is_some()
             || self.confirm.is_some()
             || self.picker.is_some()
-            || self.licenses_open;
+            || self.whats_new.is_some();
 
         let in_trash = self.tabs[self.active].trash.is_some();
-        let in_settings = self.tabs[self.active].settings;
+        let in_settings = self.tabs[self.active].page.is_some();
         let sel: Vec<PathBuf> = if in_trash || in_settings {
             Vec::new()
         } else {
@@ -109,6 +108,10 @@ impl Explorer {
                 if ev_cut || (i.modifiers.command && i.key_pressed(Key::X)) {
                     actions.push(Action::Cut(sel.clone()));
                 }
+                // Before plain Enter, which would otherwise take Alt+Enter as well.
+                if i.consume_key(M::ALT, Key::Enter) {
+                    actions.push(Action::Properties(sel[0].clone()));
+                }
                 if i.consume_key(M::NONE, Key::Enter) {
                     if sel.len() == 1 {
                         actions.push(Action::Open(sel[0].clone()));
@@ -124,9 +127,6 @@ impl Explorer {
                 }
                 if i.consume_key(M::NONE, Key::Delete) {
                     actions.push(Action::Delete(sel.clone()));
-                }
-                if i.consume_key(M::ALT, Key::Enter) {
-                    actions.push(Action::Properties(sel[0].clone()));
                 }
             }
             if (ev_paste || (paste_edge && i.focused))

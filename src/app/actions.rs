@@ -33,9 +33,15 @@ impl Explorer {
             return;
         }
         match action {
-            Action::Navigate(p) => self.navigate(ti, p),
+            Action::Navigate(p) => self.navigate_or_bin(ti, p),
             Action::NewTabAt(p) => {
-                if has_zip_ext(&p) && p.is_file() {
+                if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
+                    // The raw folder is shown as the Recycle Bin view, in a tab of its own.
+                    let home = dirs::home_dir().unwrap_or_else(|| self.tabs[ti].dir.clone());
+                    self.new_tab(home);
+                    let tab = self.active;
+                    self.open_trash(tab);
+                } else if has_zip_ext(&p) && p.is_file() {
                     // A zip gets its own tab next to its folder, then opens like a folder.
                     let home = p.parent().map(Path::to_path_buf).unwrap_or_else(|| p.clone());
                     self.new_tab(home);
@@ -87,29 +93,29 @@ impl Explorer {
             Action::Back => {
                 let tab = &mut self.tabs[ti];
                 if let Some(p) = tab.back.pop() {
-                    let cur = tab.dir.clone();
+                    let cur = tab.place();
                     tab.fwd.push(cur);
-                    self.set_dir(ti, p);
+                    self.goto_place(ti, p);
                 }
             }
             Action::Forward => {
                 let tab = &mut self.tabs[ti];
                 if let Some(p) = tab.fwd.pop() {
-                    let cur = tab.dir.clone();
+                    let cur = tab.place();
                     tab.back.push(cur);
-                    self.set_dir(ti, p);
+                    self.goto_place(ti, p);
                 }
             }
             Action::Up => {
                 // From the top of an opened zip, "Up" leaves the zip (its parent as shown, not the cache).
                 if let Some(parent) = self.tabs[ti].shown_dir().parent().map(Path::to_path_buf) {
-                    self.navigate(ti, parent);
+                    self.navigate_or_bin(ti, parent);
                 }
             }
             Action::Refresh => {
                 if self.tabs[ti].trash.is_some() {
                     self.load_trash(ti);
-                } else if self.tabs[ti].settings {
+                } else if self.tabs[ti].page == Some(Page::Settings) {
                     self.refresh_drives();
                 } else {
                     self.reindex_force = true; // F5 also recalculates folder sizes
@@ -119,7 +125,7 @@ impl Explorer {
             Action::GoToAddress(s) => {
                 let typed = expand_env(s.trim().trim_matches('"'));
                 if !typed.is_empty() {
-                    self.navigate(ti, PathBuf::from(typed));
+                    self.navigate_or_bin(ti, PathBuf::from(typed));
                 }
             }
             Action::FocusAddress => {
@@ -131,7 +137,13 @@ impl Explorer {
             Action::FocusSearch => self
                 .ui
                 .memory_mut(|m| m.request_focus(Id::unique("search_box"))),
-            Action::Open(p) => self.open_path(&p),
+            Action::Open(p) => {
+                if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
+                    self.open_trash(ti);
+                } else {
+                    self.open_path(&p);
+                }
+            }
             Action::Compress(p) => self.compress(ti, p),
             Action::Extract(p) => self.extract(ti, p),
             Action::ExtractTo(p) => self.open_extract_to(ti, p),
@@ -198,10 +210,9 @@ impl Explorer {
                 let Some(parent) = p.parent() else { return };
                 let dest = parent.join(&new_name);
                 // fs::rename silently replaces an existing file on Windows, so check first.
-                // (Changing only the letter case is the same file and stays allowed.)
-                if fs::symlink_metadata(&dest).is_ok()
-                    && !p.as_os_str().eq_ignore_ascii_case(dest.as_os_str())
-                {
+                // (Changing only the letter case is the same file and stays allowed: the file system
+                // decides what "the same" is, not an ASCII-only comparison of the names.)
+                if fs::symlink_metadata(&dest).is_ok() && !is_same_entry(&p, &dest) {
                     self.tabs[ti].error(format!("An item named “{new_name}” already exists here."));
                     return;
                 }
@@ -238,26 +249,116 @@ impl Explorer {
                 self.run_op(spec, move |prog| {
                     use std::sync::atomic::Ordering::Relaxed;
                     // Batches: progress between them and Cancel in the gaps. One call per file would be much
-                    // slower, because each starts its own shell operation.
+                    // slower, because each starts its own shell operation. A running shell operation
+                    // itself cannot be interrupted, so Cancel takes effect at the next gap.
                     const BATCH: usize = 32;
+                    let name_of = |x: &Path| x.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     prog.unpausable.store(true, Relaxed); // a running batch cannot be paused
                     prog.total_items.store(p.len() as u64, Relaxed);
-                    for (i, batch) in p.chunks(BATCH).enumerate() {
+
+                    // Like Explorer, find out up front what the Recycle Bin can't take (no bin on this
+                    // drive, bin turned off, single items bigger than its limit). Summing sizes can take a
+                    // moment: the panel shows "Calculating…" with the item being measured.
+                    prog.preparing.store(true, Relaxed);
+                    let (bin_ok, forced, forced_reason) = crate::recycle_check::split(&p, &|| prog.cancelled(), &|x| prog.set_current(&name_of(x)));
+                    prog.preparing.store(false, Relaxed);
+                    if prog.cancelled() {
+                        return Ok(String::new());
+                    }
+                    // The question is shown in this operation's panel in the ops window and this thread
+                    // waits for the answer. Cancel there (or cancelling the operation) changes nothing.
+                    if !forced.is_empty() && !prog.ask_permanent(forced.len(), name_of(&forced[0]), forced_reason) {
+                        return Ok(String::new());
+                    }
+
+                    // Items the bin refused anyway (the check above is an approximation).
+                    let mut denied: Vec<PathBuf> = Vec::new(); // no access rights -> offer administrator retry
+                    let mut refused: Vec<PathBuf> = Vec::new(); // -> ask: delete permanently?
+                    let mut denied_msg = String::new();
+
+                    for batch in bin_ok.chunks(BATCH) {
                         if prog.cancelled() {
-                            return Ok(String::new()); // what is already in the bin stays there
+                            break; // what is already in the bin stays there
                         }
-                        prog.set_current(&batch[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-                        if let Err(e) = trash::delete_all(batch) {
-                            let msg = format!("Could not move item to the Recycle Bin: {e}");
-                            if is_denied_text(&msg) {
-                                // retry as administrator with what is still left
-                                let retry = AdminRetry::Op(AdminOp::Delete { paths: p[i * BATCH..].to_vec() });
-                                let _ = tx.send(AppMsg::AdminOffer { msg: msg.clone(), retry });
-                                ui.request_repaint();
+                        prog.set_current(&name_of(&batch[0]));
+                        if trash::delete_all(batch).is_ok() {
+                            prog.done_items.fetch_add(batch.len() as u64, Relaxed);
+                            continue;
+                        }
+                        // A batch fails as a whole and may have been partly done, so find the culprit
+                        // by going item by item. This is the only case that pays the per-item cost.
+                        for path in batch {
+                            if prog.cancelled() {
+                                break;
                             }
-                            return Err(msg);
+                            prog.set_current(&name_of(path));
+                            // Already in the bin (done by the failed batch before it stopped).
+                            if fs::symlink_metadata(path).is_err() {
+                                prog.done_items.fetch_add(1, Relaxed);
+                                continue;
+                            }
+                            if let Err(e) = trash::delete(path) {
+                                let msg = format!("Could not move item to the Recycle Bin: {e}"); // shown to the user only
+                                if cfg!(debug_assertions) {
+                                    eprintln!("trash::delete({path:?}) failed: {e:?}");
+                                }
+                                if is_denied_trash(&e) {
+                                    denied.push(path.clone());
+                                    denied_msg = msg;
+                                } else {
+                                    refused.push(path.clone());
+                                }
+                            }
+                            prog.done_items.fetch_add(1, Relaxed);
                         }
-                        prog.done_items.fetch_add(batch.len() as u64, Relaxed);
+                    }
+
+                    // Whatever the user agreed to delete permanently: the items found up front, plus
+                    // any the bin refused after all (those need their own question).
+                    let mut for_good = forced;
+                    if !refused.is_empty()
+                        && !prog.cancelled()
+                        && prog.ask_permanent(refused.len(), name_of(&refused[0]), String::new())
+                    {
+                        for_good.extend(refused);
+                    }
+                    // Permanent deletion counts bytes: measure first, then every deleted file adds its size.
+                    if !for_good.is_empty() {
+                        prog.preparing.store(true, Relaxed);
+                        let total: u64 = for_good.iter().map(|x| size_up_to(x, u64::MAX, &|| prog.cancelled())).sum();
+                        prog.total_bytes.store(total, Relaxed);
+                        prog.preparing.store(false, Relaxed);
+                    }
+                    let mut failed = 0usize;
+                    let mut failed_msg = String::new();
+                    for path in &for_good {
+                        if prog.cancelled() {
+                            break;
+                        }
+                        prog.set_current(&name_of(path));
+                        // File by file, so Cancel also stops in the middle of a big folder.
+                        match delete_for_good(path, &|| prog.cancelled(), &|f, bytes| {
+                            prog.set_current(&name_of(f));
+                            prog.done_bytes.fetch_add(bytes, Relaxed);
+                        }) {
+                            Ok(true) => {}
+                            Ok(false) => break, // cancelled: what is left of this folder stays as it is
+                            Err(e) => {
+                                failed += 1;
+                                failed_msg = format!("Could not delete “{}”: {e}", name_of(path));
+                            }
+                        }
+                        prog.done_items.fetch_add(1, Relaxed);
+                    }
+
+                    if !denied.is_empty() {
+                        let retry = AdminRetry::Op(AdminOp::Delete { paths: denied });
+                        let _ = tx.send(AppMsg::AdminOffer { msg: denied_msg.clone(), retry });
+                        ui.request_repaint();
+                        return Err(denied_msg);
+                    }
+                    if failed > 0 {
+                        return Err(if failed == 1 { failed_msg } else { format!("{failed} items could not be deleted. Last error: {failed_msg}") });
                     }
                     Ok(String::new())
                 });
@@ -294,7 +395,7 @@ impl Explorer {
                 }
             }
             Action::NewFolder => {
-                let target = unique_copy_name(&self.tabs[ti].dir.join("New folder"));
+                let target = unique_folder_name(&self.tabs[ti].dir.join("New folder"));
                 match fs::create_dir(&target) {
                     Ok(()) => {
                         self.tabs[ti].pending_rename = Some(target);
@@ -331,30 +432,10 @@ impl Explorer {
                     }
                 }
             }
-            Action::Properties(p) => {
-                let seq = self.props_gen.fetch_add(1, AO::SeqCst) + 1;
-                let mut props = build_props(&p);
-                props.stats_gen = seq;
-                if props.is_dir {
-                    let (tx, ui, g) = (
-                        self.msg_tx.clone(),
-                        self.ui.clone(),
-                        Arc::clone(&self.props_gen),
-                    );
-                    let root = p.clone();
-                    std::thread::spawn(move || {
-                        let stats = folder_stats(&root, &|| g.load(AO::Relaxed) != seq);
-                        if g.load(AO::Relaxed) == seq {
-                            let _ = tx.send(AppMsg::Stats(seq, stats));
-                            ui.request_repaint();
-                        }
-                    });
-                }
-                self.props = Some(props);
-            }
+            Action::Properties(p) => self.open_properties(p),
             Action::OpenContaining(p) => {
                 if let Some(parent) = p.parent().map(Path::to_path_buf) {
-                    self.navigate(ti, parent);
+                    self.navigate_or_bin(ti, parent);
                     self.tabs[ti].select_only(p);
                 }
             }
@@ -379,6 +460,7 @@ impl Explorer {
                 self.reload_all();
             }
             Action::OpenSettings => self.open_settings(),
+            Action::OpenWhatsNew => self.open_whats_new(),
             Action::PinQuick(p) => self.pin_quick(p),
             Action::UnpinQuick(p) => self.unpin_quick(&p),
             Action::OpenRecycleBin => {
@@ -474,5 +556,31 @@ impl Explorer {
             Action::CheckForUpdate => self.check_for_update(false),
             Action::DownloadUpdate => self.open_update_download(),
         }
+    }
+}
+
+/// Whether `a` and `b` are the same directory entry, which is what a rename that only changes the
+/// letter case of a name is. Never a text comparison: that would be wrong for every non-ASCII letter
+/// and for case-sensitive file systems.
+fn is_same_entry(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!(
+            (fs::symlink_metadata(a), fs::symlink_metadata(b)),
+            (Ok(x), Ok(y)) if x.dev() == y.dev() && x.ino() == y.ino()
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        // Both names resolve to the one stored path (with the case it is really stored in). Links are
+        // left out: a link and its target resolve to the same path but are two entries.
+        let is_link = |p: &Path| fs::symlink_metadata(p).map(|m| m.file_type().is_symlink()).unwrap_or(true);
+        !is_link(a)
+            && !is_link(b)
+            && matches!((dunce::canonicalize(a), dunce::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
     }
 }

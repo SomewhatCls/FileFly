@@ -90,7 +90,7 @@ impl Explorer {
             let (Some(parent), Some(stem)) = (zip.parent(), zip.file_stem()) else {
                 continue;
             };
-            let dest = unique_copy_name(&folder_outside(parent).join(stem));
+            let dest = unique_folder_name(&folder_outside(parent).join(stem));
             jobs.push((zip, dest));
         }
         self.run_extract_new_folder(ti, jobs);

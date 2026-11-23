@@ -20,9 +20,9 @@
 
 use super::{
     hot::HotFiles,
-    model::{ns, IndexMsg},
+    model::{now_secs, stamp_of, wait_for, Cancel, IndexMsg, MutexExt},
     priority::lower_priority,
-    scan::scan,
+    scan::scan_one,
     store::Cache,
 };
 use eframe::egui;
@@ -31,9 +31,9 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         mpsc::Sender,
-        Arc, Condvar, Mutex, MutexGuard,
+        Arc, Condvar, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -86,6 +86,7 @@ pub struct Batch {
     paths: Vec<PathBuf>,
     trees: Vec<PathBuf>,
     overflow: bool,
+    index_resized: bool,
 }
 
 #[derive(Default)]
@@ -93,11 +94,13 @@ struct SinkState {
     paths: HashSet<PathBuf>,
     trees: HashSet<PathBuf>,
     overflow: bool,
+    /// The index file changed size since the last batch.
+    index_resized: bool,
 }
 
 impl SinkState {
     fn is_empty(&self) -> bool {
-        self.paths.is_empty() && self.trees.is_empty() && !self.overflow
+        self.paths.is_empty() && self.trees.is_empty() && !self.overflow && !self.index_resized
     }
 }
 
@@ -108,8 +111,9 @@ pub struct ChangeSink {
     cv: Condvar,
     /// The folder of the index file: its own writes must not count as changes.
     index_dir: Mutex<Option<PathBuf>>,
-    /// Last seen size of the index file (see `index_file_changed`).
-    index_size: Mutex<Option<u64>>,
+    /// Active recursive watches, with the second from which on they are known to be running. A
+    /// folder scanned after that is vouched for by the live updater (see `watched_since`).
+    deep: Mutex<Vec<(PathBuf, u64)>>,
     /// Bumped to retire an updater thread (new index folder, shutdown).
     epoch: AtomicU64,
 }
@@ -120,34 +124,61 @@ impl ChangeSink {
             state: Mutex::new(SinkState::default()),
             cv: Condvar::new(),
             index_dir: Mutex::new(None),
-            index_size: Mutex::new(None),
+            deep: Mutex::new(Vec::new()),
             epoch: AtomicU64::new(0),
         })
     }
 
-    fn state(&self) -> MutexGuard<'_, SinkState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     pub fn set_ignored_dir(&self, dir: &Path) {
-        *self.index_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.to_path_buf());
-        *self.index_size.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.index_dir.lk() = Some(dir.to_path_buf());
     }
 
-    /// The index file's events are ignored (its own writes would cause endless rescans), but its
-    /// *size* matters: it is part of the folder it lives in. The store reports every size change
-    /// (`Store::set_on_resize`); this comparison is only the catch-up for changes made while the
-    /// app was closed. Returns (path, new size) if it changed since the last call.
-    pub fn index_file_changed(&self) -> Option<(PathBuf, u64)> {
-        let dir = self.index_dir.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-        let path = dir.join(super::store::DB_FILE);
-        let size = file_size(&path)?;
-        let mut last = self.index_size.lock().unwrap_or_else(|e| e.into_inner());
-        if *last == Some(size) {
+    /// The index file's path. Its events are ignored (its own writes would cause endless rescans),
+    /// but its *size* matters: it is part of the folder it lives in. The store reports every size
+    /// change (`Store::set_on_resize`, see `index_resized`).
+    fn index_file(&self) -> Option<PathBuf> {
+        self.index_dir.lk().as_ref().map(|d| d.join(super::store::DB_FILE))
+    }
+
+    /// The index file changed size (`Store::set_on_resize`): the folders above it are out of date.
+    /// Unlike `push` this does not make the file "hot": its size is always read exactly anyway
+    /// (`HotFiles::pin`), and it stays the same until the next resize.
+    pub fn index_resized(&self) {
+        self.state.lk().index_resized = true;
+        self.cv.notify_one();
+    }
+
+    /// A recursive watch of `dir` is running now. (Only whole seconds are compared with scan times,
+    /// so "from the next second on" is the safe reading of "now".)
+    pub fn watch_deep(&self, dir: &Path) {
+        let mut g = self.deep.lk();
+        g.retain(|(p, _)| p != dir);
+        g.push((dir.to_path_buf(), now_secs() + 1));
+    }
+
+    /// The recursive watch of `dir` has been stopped.
+    pub fn unwatch_deep(&self, dir: &Path) {
+        self.deep.lk().retain(|(p, _)| p != dir);
+    }
+
+    /// From when on the live updater has been watching everything below `dir`: entries scanned
+    /// earlier are only trusted for the short TTL, later ones for the long one (`is_fresh`). None =
+    /// not under a recursive watch. Nothing is vouched for inside the index folder, because its
+    /// events are ignored (`accepts`).
+    pub fn watched_since(&self, dir: &Path) -> Option<u64> {
+        if self.index_dir.lk().as_deref().is_some_and(|d| dir.starts_with(d)) {
             return None;
         }
-        *last = Some(size);
-        Some((path, size))
+        self.deep.lk().iter().filter(|(p, _)| dir.starts_with(p)).map(|(_, since)| *since).min()
+    }
+
+    /// Events may have been lost: withdraw the trust of everything scanned so far. (Entries
+    /// scanned from now on are trusted again.) Also called for watcher errors.
+    pub fn revoke_trust(&self) {
+        let now = now_secs() + 1;
+        for (_, since) in self.deep.lk().iter_mut() {
+            *since = now;
+        }
     }
 
     /// False for paths that must not be reported (index file, system noise).
@@ -155,7 +186,7 @@ impl ChangeSink {
         if is_noisy(p) {
             return false;
         }
-        match &*self.index_dir.lock().unwrap_or_else(|e| e.into_inner()) {
+        match &*self.index_dir.lk() {
             Some(d) => !p.starts_with(d),
             None => true,
         }
@@ -163,39 +194,49 @@ impl ChangeSink {
 
     /// Files or folders that changed (already filtered with `accepts`).
     pub fn push(&self, paths: impl IntoIterator<Item = PathBuf>) {
-        let mut g = self.state();
+        let mut g = self.state.lk();
+        let mut lost = false;
         for p in paths {
             if g.paths.len() >= MAX_PATHS {
                 g.overflow = true;
+                lost = true;
                 break;
             }
             g.paths.insert(p);
         }
         drop(g);
+        if lost {
+            self.revoke_trust();
+        }
         self.cv.notify_one();
     }
 
     /// Everything below `dir` may have changed (a watch was dropped, events were lost, ...).
     pub fn push_tree(&self, dir: PathBuf) {
-        let mut g = self.state();
-        if g.trees.len() < MAX_TREES {
-            g.trees.insert(dir);
-        } else {
+        let mut g = self.state.lk();
+        let lost = g.trees.len() >= MAX_TREES;
+        if lost {
             g.overflow = true;
+        } else {
+            g.trees.insert(dir);
         }
         drop(g);
+        if lost {
+            self.revoke_trust();
+        }
         self.cv.notify_one();
     }
 
     /// The watcher lost events: any path might have changed.
     pub fn push_overflow(&self) {
-        self.state().overflow = true;
+        self.state.lk().overflow = true;
+        self.revoke_trust();
         self.cv.notify_one();
     }
 
     /// Retires the running updater thread (if any) and returns the number for the next one.
     pub(super) fn new_epoch(&self) -> u64 {
-        let mut g = self.state();
+        let mut g = self.state.lk();
         *g = SinkState::default();
         let e = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         drop(g);
@@ -207,7 +248,7 @@ impl ChangeSink {
     /// that a burst arrives as one batch. An empty batch means "timed out". None = retire.
     fn wait(&self, epoch: u64, timeout: Duration) -> Option<Batch> {
         let deadline = Instant::now() + timeout;
-        let mut g = self.state();
+        let mut g = self.state.lk();
         loop {
             if self.epoch.load(Ordering::SeqCst) != epoch {
                 return None;
@@ -219,18 +260,20 @@ impl ChangeSink {
             if left.is_zero() {
                 return Some(Batch::default());
             }
-            g = match self.cv.wait_timeout(g, left) {
-                Ok((g, _)) => g,
-                Err(e) => e.into_inner().0,
-            };
+            g = wait_for(&self.cv, g, left);
         }
         drop(g);
         std::thread::sleep(DEBOUNCE);
         if self.epoch.load(Ordering::SeqCst) != epoch {
             return None;
         }
-        let s = std::mem::take(&mut *self.state());
-        Some(Batch { paths: s.paths.into_iter().collect(), trees: s.trees.into_iter().collect(), overflow: s.overflow })
+        let s = std::mem::take(&mut *self.state.lk());
+        Some(Batch {
+            paths: s.paths.into_iter().collect(),
+            trees: s.trees.into_iter().collect(),
+            overflow: s.overflow,
+            index_resized: s.index_resized,
+        })
     }
 }
 
@@ -241,7 +284,6 @@ impl ChangeSink {
 pub struct LiveCtx {
     pub cache: Cache,
     pub generation: Arc<AtomicU64>,
-    pub dirty: Arc<AtomicBool>,
     /// The folders of the current listing (set by `Indexer::start`); only these are rescanned.
     pub tracked: Arc<Mutex<Arc<HashSet<PathBuf>>>>,
     pub hot: Arc<HotFiles>,
@@ -306,7 +348,7 @@ fn run(lc: LiveCtx, epoch: u64) {
         let wait = next_wakeup(&lc.hot, &queue, &allowed, Instant::now());
         let Some(batch) = lc.sink.wait(epoch, wait) else { return };
         let now = Instant::now();
-        let tracked: Arc<HashSet<PathBuf>> = lc.tracked.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let tracked: Arc<HashSet<PathBuf>> = lc.tracked.lk().clone();
         queue.retain(|t| tracked.contains(t));
         allowed.retain(|_, at| *at > now);
 
@@ -331,6 +373,9 @@ fn run(lc: LiveCtx, epoch: u64) {
             let parents: HashSet<PathBuf> = batch.paths.iter().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();
             changed.extend(parents);
         }
+        if batch.index_resized {
+            changed.extend(lc.sink.index_file());
+        }
         // Files that are being written without producing events.
         for p in lc.hot.due(now) {
             let size = file_size(&p);
@@ -341,8 +386,8 @@ fn run(lc: LiveCtx, epoch: u64) {
 
         // 2. Invalidate them and everything above, and note which listed folders are affected.
         if !changed.is_empty() || !trees.is_empty() {
+            lc.cache.remove_many_with_ancestors(&changed);
             for p in &changed {
-                lc.cache.remove_with_ancestors(p);
                 for a in p.ancestors() {
                     if tracked.contains(a) {
                         queue.insert(a.to_path_buf());
@@ -358,21 +403,20 @@ fn run(lc: LiveCtx, epoch: u64) {
                     }
                 }
             }
-            lc.dirty.store(true, Ordering::Relaxed);
         }
 
         // 3. Rescan the affected listed folders whose turn has come. Only the folders on the path
         //    to the change are walked again; their untouched sub-folders are cache hits.
-        let g = lc.generation.load(Ordering::Relaxed);
+        let cancel = Cancel::new(&lc.generation, lc.generation.load(Ordering::Relaxed));
         let ready: Vec<PathBuf> =
             queue.iter().filter(|t| allowed.get(*t).map_or(true, |at| *at <= now)).cloned().collect();
         for t in ready {
-            if lc.generation.load(Ordering::Relaxed) != g {
+            if cancel.is_set() {
                 break; // a new listing took over and rescans on its own
             }
             queue.remove(&t);
-            let stamp = fs::metadata(&t).and_then(|m| m.modified()).map(ns).unwrap_or(0);
-            match scan(&t, stamp, &lc.cache, &lc.generation, g, &lc.dirty, &lc.hot) {
+            let stamp = fs::metadata(&t).and_then(|m| m.modified()).map(stamp_of).unwrap_or(0);
+            match scan_one(&t, stamp, lc.sink.watched_since(&t), &lc.cache, &cancel, &lc.hot) {
                 Some(size) => {
                     allowed.insert(t.clone(), Instant::now() + gap);
                     if lc.tx.send(IndexMsg::Size(t, size)).is_err() {
@@ -386,5 +430,28 @@ fn run(lc: LiveCtx, epoch: u64) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watched_since_rules() {
+        let s = ChangeSink::new();
+        assert_eq!(s.watched_since(Path::new("/a/b")), None);
+        s.watch_deep(Path::new("/a"));
+        assert!(s.watched_since(Path::new("/a/b")).is_some());
+        assert!(s.watched_since(Path::new("/a")).is_some());
+        assert_eq!(s.watched_since(Path::new("/c")), None);
+        // Events inside the index folder are ignored, so nothing there is vouched for ...
+        s.set_ignored_dir(Path::new("/a/idx"));
+        assert_eq!(s.watched_since(Path::new("/a/idx")), None);
+        assert_eq!(s.watched_since(Path::new("/a/idx/sub")), None);
+        // ... but its ancestors still are.
+        assert!(s.watched_since(Path::new("/a")).is_some());
+        s.unwatch_deep(Path::new("/a"));
+        assert_eq!(s.watched_since(Path::new("/a/b")), None);
     }
 }

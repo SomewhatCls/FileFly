@@ -1,11 +1,20 @@
 //! The folder walk: sums file sizes, reuses fresh cached sub-folders, stores what it finishes.
+//!
+//! Every thread walks depth first through a stack of its own and hands half of it to the shared
+//! queue when another thread has run out of work. Depth first keeps the directory handle of a
+//! folder alive just long enough for its sub-folders to be opened relative to it (Windows), which
+//! is much cheaper than resolving the whole path for every folder again.
 
 use super::{
-    hot::{same_name, HotFiles},
-    model::{is_fresh, ns, now_secs, CachedFolder},
+    hot::{same_name, HotDirs, HotFiles},
+    model::{is_fresh, now_secs, stamp_of, wait_for, Cancel, CachedFolder, MutexExt},
     priority::lower_priority,
-    store::Cache,
+    store::{finish_key, key_state, Cache},
 };
+#[cfg(not(windows))]
+use super::store::extend_name;
+#[cfg(windows)]
+use super::store::extend_wide;
 use std::{
     collections::VecDeque,
     ffi::{OsStr, OsString},
@@ -15,9 +24,8 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Condvar, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
-use std::time::Instant;
 
 /// A folder with no sub-folders, less than this much data and fewer than `SMALL_LEAF_FILES` files is
 /// not stored in the index: listing it again costs about as much as looking it up, and such folders
@@ -27,163 +35,12 @@ use std::time::Instant;
 const SMALL_LEAF_BYTES: u64 = 1 << 20;
 const SMALL_LEAF_FILES: usize = 64;
 
-struct Frame {
-    path: PathBuf,
-    rd: fs::ReadDir,
-    total: u64,
-    stamp: u64,
-    /// Name of a file in this folder that must be read exactly (the index file), if any.
-    exact: Option<OsString>,
-    /// Whether the folder has sub-folders, and how many files it has (see `SMALL_LEAF_BYTES`).
-    has_dirs: bool,
-    files: usize,
-}
+/// Folders a thread keeps for itself; beyond this the oldest ones go to the shared queue.
+const LOCAL_MAX: usize = 256;
 
-enum Step {
-    Add(u64),
-    Descend(PathBuf, u64),
-    Skip,
-    End,
-}
-
-/// Size of one file. A file that changed a moment ago ("hot", see `hot.rs`) is asked directly,
-/// because the size that came with the directory listing may be stale; everything else uses the
-/// listing, which costs no extra system call.
-fn file_len(de: &fs::DirEntry, hot: &HotFiles, pinned: Option<&OsStr>) -> u64 {
-    if let Some(n) = pinned {
-        if same_name(&de.file_name(), n) {
-            return exact_len(de);
-        }
-    }
-    if hot.is_active() && hot.contains(&de.path()) {
-        return exact_len(de);
-    }
-    de.metadata().map(|m| m.len()).unwrap_or(0)
-}
-
-/// Asks the file itself (a handle-based stat); falls back to the listing if that is refused.
-fn exact_len(de: &fs::DirEntry) -> u64 {
-    fs::symlink_metadata(de.path()).or_else(|_| de.metadata()).map(|m| m.len()).unwrap_or(0)
-}
-
-/// Helper function to identify the device a file is on.
-#[cfg(unix)]
-fn dev_of(m: &fs::Metadata) -> u64 { use std::os::unix::fs::MetadataExt; m.dev() }
-#[cfg(not(unix))]
-fn dev_of(_: &fs::Metadata) -> u64 { 0 }
-
-/// Iterative post-order walk. Returns None if cancelled. Every folder that is finished is stored.
-pub fn scan(
-    root: &Path,
-    root_stamp: u64,
-    cache: &Cache,
-    generation: &AtomicU64,
-    my_gen: u64,
-    dirty: &AtomicBool,
-    hot: &HotFiles,
-) -> Option<u64> {
-    let now = now_secs();
-    let mut pending: Vec<(PathBuf, CachedFolder)> = Vec::new();
-    let flush = |pending: &mut Vec<(PathBuf, CachedFolder)>| {
-        if pending.is_empty() {
-            return;
-        }
-        cache.put_many(std::mem::take(pending));
-        dirty.store(true, Ordering::Relaxed);
-    };
-
-    let Ok(rd) = fs::read_dir(root) else { return Some(0) };
-    let mut stack = vec![Frame { path: root.to_path_buf(), rd, total: 0, stamp: root_stamp, exact: hot.pinned_name_in(root), has_dirs: false, files: 0 }];
-    let root_dev = fs::metadata(root).map(|m| dev_of(&m)).unwrap_or(0);
-    // Time since last scan pause to limit system impact.
-    let mut scan_slice = Instant::now();
-
-    loop {
-        if generation.load(Ordering::Relaxed) != my_gen {
-            flush(&mut pending); // keep the completed sub-folders
-            return None;
-        }
-
-        // Limiting the system load with intermittent sleeps.
-        if scan_slice.elapsed() >= Duration::from_millis(8) {
-            std::thread::sleep(Duration::from_millis(4));
-            scan_slice = Instant::now();
-            if pending.len() >= 4000 {
-                flush(&mut pending);
-            }
-        }
-
-        let step = {
-            let top = stack.last_mut()?;
-            match top.rd.next() {
-                None => Step::End,
-                Some(Err(_)) => Step::Skip,
-                Some(Ok(de)) => match de.file_type() {
-                    Ok(ft) if ft.is_symlink() => Step::Skip, // symlinks & junctions: avoid loops/double counting
-                    Ok(ft) if ft.is_file() => Step::Add(file_len(&de, hot, top.exact.as_deref())),
-                    Ok(ft) if ft.is_dir() => {
-                        let md = de.metadata().ok();
-                        let path = de.path();
-                        if super::live::is_pseudo(&path)
-                            || md.as_ref().is_some_and(|m| dev_of(m) != root_dev)
-                        {
-                            Step::Skip
-                        } else {
-                            let stamp = md.and_then(|m| m.modified().ok()).map(ns).unwrap_or(0);
-                            Step::Descend(path, stamp)
-                        }
-                    }
-                    _ => Step::Skip,
-                },
-            }
-        };
-
-        match step {
-            Step::Skip => {}
-            Step::Add(n) => {
-                if let Some(top) = stack.last_mut() {
-                    top.total = top.total.saturating_add(n);
-                    top.files += 1;
-                }
-            }
-            Step::Descend(path, stamp) => {
-                if let Some(top) = stack.last_mut() {
-                    top.has_dirs = true;
-                }
-                let hit = cache.get(&path).filter(|c| is_fresh(c, stamp, now));
-                if let Some(hit) = hit {
-                    if let Some(top) = stack.last_mut() {
-                        top.total = top.total.saturating_add(hit.size);
-                    }
-                } else if let Ok(rd) = fs::read_dir(&path) {
-                    let exact = hot.pinned_name_in(&path);
-                    stack.push(Frame { path, rd, total: 0, stamp, exact, has_dirs: false, files: 0 });
-                }
-            }
-            Step::End => {
-                let done = stack.pop()?;
-                if stack.is_empty() || done.has_dirs || done.total >= SMALL_LEAF_BYTES || done.files >= SMALL_LEAF_FILES {
-                    pending.push((done.path, CachedFolder { size: done.total, modified_ns: done.stamp, scanned_at: now }));
-                }
-                match stack.last_mut() {
-                    Some(parent) => parent.total = parent.total.saturating_add(done.total),
-                    None => {
-                        flush(&mut pending);
-                        return Some(done.total);
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ----------------------------------------------------------------------------------------------
-// Parallel walk: many threads, several trees at once.
-//
-// Every thread walks depth first through a stack of its own and hands half of it to the shared
-// queue when another thread has run out of work. Depth first keeps the directory handle of a
-// folder alive just long enough for its sub-folders to be opened relative to it (Windows), which
-// is much cheaper than resolving the whole path for every folder again.
+/// A folder handed to a queue shorter than this keeps its parent's handle, so that it can still be
+/// opened relative to it. In a longer queue the handles would pile up, so they are released.
+const QUEUE_KEEP_HANDLES: usize = 4096;
 
 /// How a folder can be opened without its full path: relative to the still open handle of its
 /// parent (Windows only).
@@ -192,17 +49,39 @@ type Rel = Option<(Arc<win::Dir>, Box<[u16]>)>;
 #[cfg(not(windows))]
 type Rel = ();
 
-/// Folders a thread keeps for itself; beyond this the oldest ones go to the shared queue.
-const LOCAL_MAX: usize = 256;
+/// Device of a folder; the walk does not cross into other file systems (Unix; on Windows mount
+/// points are reparse points and skipped as links).
+#[cfg(unix)]
+fn dev_of(m: &fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    m.dev()
+}
 
-/// A folder handed to a queue shorter than this keeps its parent's handle, so that it can still be
-/// opened relative to it. In a longer queue the handles would pile up, so they are released.
-const QUEUE_KEEP_HANDLES: usize = 4096;
+/// Size of a file asked from the file itself (a handle-based stat) instead of the directory
+/// listing, which may be stale for a file that is being written. `fallback` if that fails.
+fn exact_len(p: &Path, fallback: u64) -> u64 {
+    fs::symlink_metadata(p).map(|m| m.len()).unwrap_or(fallback)
+}
+
+/// Does the file `name` have to be read exactly: it is the pinned file or a hot one (see `hot.rs`)?
+fn needs_exact(name: &OsStr, pinned: Option<&OsStr>, hot_here: &[OsString]) -> bool {
+    pinned.is_some_and(|p| same_name(name, p)) || hot_here.iter().any(|h| same_name(name, h))
+}
+
+/// A folder to scan: where, the fingerprint of its mtime, and since when a recursive watch has been
+/// covering it (`ChangeSink::watched_since`), which decides how long its cached sub-folders are trusted.
+pub struct RootSpec {
+    pub path: PathBuf,
+    pub stamp: u32,
+    pub watched_since: Option<u64>,
+}
 
 /// One tree that is being summed.
 struct Root {
     path: PathBuf,
-    #[cfg_attr(windows, allow(dead_code))]
+    /// Inherited by every folder below the root (see `is_fresh`).
+    watched_since: Option<u64>,
+    #[cfg(unix)]
     dev: u64,
     /// Everything counted so far under this root (for the live display).
     running: AtomicU64,
@@ -214,7 +93,9 @@ struct Root {
 /// sub-folders are finished; whoever finishes it last adds its total to the parent.
 struct Node {
     path: PathBuf,
-    stamp: u64,
+    /// Running hash of `path` (see `store::key_state`); a child extends it with its own name.
+    state: u64,
+    stamp: u32,
     parent: Option<Arc<Node>>,
     root: Arc<Root>,
     /// 1 for the folder's own listing + 1 per sub-folder that is not finished yet.
@@ -225,15 +106,13 @@ struct Node {
     /// The folder has sub-folders, and this many files (see `SMALL_LEAF_BYTES`).
     has_dirs: AtomicBool,
     files: AtomicUsize,
-    /// Parent handle and own name. Taken (and so released) when the folder is opened or when it
-    /// is handed to a long shared queue, so handles never pile up.
-    rel: Mutex<Rel>,
 }
 
 impl Node {
-    fn new(path: PathBuf, stamp: u64, parent: Option<Arc<Node>>, root: Arc<Root>) -> Node {
+    fn new(path: PathBuf, state: u64, stamp: u32, parent: Option<Arc<Node>>, root: Arc<Root>) -> Node {
         Node {
             path,
+            state,
             stamp,
             parent,
             root,
@@ -242,24 +121,41 @@ impl Node {
             failed: AtomicBool::new(false),
             has_dirs: AtomicBool::new(false),
             files: AtomicUsize::new(0),
-            rel: Mutex::new(Rel::default()),
         }
     }
+}
+
+/// A folder waiting to be listed, with the handle of its parent (if it still holds one). The handle
+/// is released when the folder is handed to a long shared queue, so handles never pile up.
+struct Job {
+    node: Arc<Node>,
+    rel: Rel,
+}
+
+/// What listing one folder produces.
+#[derive(Default)]
+struct Acc {
+    /// Files and fresh cached sub-folders of the folder.
+    sum: u64,
+    /// The part of `sum` that has not been reported to the live display yet.
+    unreported: u64,
+    /// Sub-folders that are not in the index (or not fresh) and still have to be walked.
+    spawned: Vec<Job>,
 }
 
 /// What one worker thread keeps to itself.
 struct Local {
     /// Folders waiting for this thread, the newest last (depth first).
-    stack: Vec<Arc<Node>>,
+    stack: Vec<Job>,
     /// Read buffer of the directory calls (8-byte aligned), reused for every folder.
     #[cfg(windows)]
     buf: Vec<u64>,
 }
 
-type Finished = Vec<(PathBuf, CachedFolder)>;
+type Finished = Vec<(u64, CachedFolder)>;
 
 struct Walk<'a> {
-    queue: Mutex<VecDeque<Arc<Node>>>,
+    queue: Mutex<VecDeque<Job>>,
     wake: Condvar,
     /// Folders that exist but are not finished listing (queued, on a thread's stack, or being
     /// listed right now). 0 = nothing left to do.
@@ -271,10 +167,10 @@ struct Walk<'a> {
     ctl: Condvar,
     ctl_lock: Mutex<()>,
     cache: &'a Cache,
-    generation: &'a AtomicU64,
-    my_gen: u64,
-    dirty: &'a AtomicBool,
-    hot: &'a HotFiles,
+    cancel: &'a Cancel,
+    /// The pinned file and the hot files, copied once when the walk starts (see `HotFiles`).
+    pinned: Option<(PathBuf, OsString)>,
+    hot_dirs: Arc<HotDirs>,
     now: u64,
     began: Instant,
     progress: &'a (dyn Fn(&Path, u64) + Sync),
@@ -283,13 +179,30 @@ struct Walk<'a> {
 
 impl Walk<'_> {
     fn cancelled(&self) -> bool {
-        self.stop.load(Ordering::Relaxed) || self.generation.load(Ordering::Relaxed) != self.my_gen
+        self.stop.load(Ordering::Relaxed) || self.cancel.is_set()
+    }
+
+    /// Name of the pinned file, if it lives directly in `dir`.
+    fn pinned_in(&self, dir: &Path) -> Option<&OsStr> {
+        let (d, n) = self.pinned.as_ref()?;
+        same_name(d.as_os_str(), dir.as_os_str()).then_some(n.as_os_str())
+    }
+
+    /// Names of the hot files that live directly in `dir` (almost always none).
+    fn hot_in(&self, dir: &Path) -> &[OsString] {
+        if self.hot_dirs.is_empty() {
+            return &[];
+        }
+        match self.hot_dirs.get(dir) {
+            Some(v) => v.as_slice(),
+            None => &[],
+        }
     }
 
     /// Puts a root into the shared queue.
-    fn push(&self, n: Arc<Node>) {
+    fn push(&self, node: Arc<Node>) {
         self.open.fetch_add(1, Ordering::SeqCst);
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(n);
+        self.queue.lk().push_back(Job { node, rel: Rel::default() });
         self.wake.notify_one();
     }
 
@@ -297,34 +210,30 @@ impl Walk<'_> {
     fn close(&self) {
         if self.open.fetch_sub(1, Ordering::SeqCst) == 1 {
             // Last one: wake the idle workers and the controller so they can leave.
-            let _g = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            drop(self.queue.lk());
             self.wake.notify_all();
-            drop(_g);
-            let _c = self.ctl_lock.lock().unwrap_or_else(|e| e.into_inner());
+            drop(self.ctl_lock.lk());
             self.ctl.notify_all();
         }
     }
 
     /// Next folder from the shared queue. None = everything is done or the walk was cancelled.
-    fn next(&self) -> Option<Arc<Node>> {
-        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+    fn next(&self) -> Option<Job> {
+        let mut q = self.queue.lk();
         loop {
             if self.cancelled() {
                 self.stop.store(true, Ordering::Relaxed);
                 self.wake.notify_all();
                 return None;
             }
-            if let Some(n) = q.pop_front() {
-                return Some(n);
+            if let Some(j) = q.pop_front() {
+                return Some(j);
             }
             if self.open.load(Ordering::SeqCst) == 0 {
                 return None;
             }
             self.waiting.fetch_add(1, Ordering::Relaxed);
-            q = match self.wake.wait_timeout(q, Duration::from_millis(50)) {
-                Ok((g, _)) => g,
-                Err(e) => e.into_inner().0,
-            };
+            q = wait_for(&self.wake, q, Duration::from_millis(50));
             self.waiting.fetch_sub(1, Ordering::Relaxed);
         }
     }
@@ -343,12 +252,25 @@ impl Walk<'_> {
         }
     }
 
-    fn store(&self, finished: &mut Finished) {
-        if finished.is_empty() {
-            return;
+    /// Called for every directory entry: now and then looks for a cancel and reports progress.
+    /// False = cancelled.
+    fn tick(&self, seen: &mut u32, root: &Root, unreported: &mut u64) -> bool {
+        *seen = seen.wrapping_add(1);
+        if *seen % 1024 == 0 {
+            if self.cancelled() {
+                return false;
+            }
+            if *seen % 4096 == 0 {
+                self.bump(root, std::mem::take(unreported));
+            }
         }
-        self.cache.put_many(std::mem::take(finished));
-        self.dirty.store(true, Ordering::Relaxed);
+        true
+    }
+
+    fn store(&self, finished: &mut Finished) {
+        if !finished.is_empty() {
+            self.cache.put_many(std::mem::take(finished));
+        }
     }
 
     /// Marks the listing of `node` as done and walks up the tree while that finishes folders.
@@ -363,7 +285,8 @@ impl Walk<'_> {
                 || total >= SMALL_LEAF_BYTES
                 || node.files.load(Ordering::Relaxed) >= SMALL_LEAF_FILES;
             if keep && !node.failed.load(Ordering::Relaxed) {
-                finished.push((node.path.clone(), CachedFolder { size: total, modified_ns: node.stamp, scanned_at: self.now }));
+                let rec = CachedFolder { size: total, stamp: node.stamp, scanned: self.now as u32 };
+                finished.push((finish_key(node.state), rec));
             }
             match node.parent.clone() {
                 Some(p) => {
@@ -379,37 +302,36 @@ impl Walk<'_> {
         }
     }
 
-    /// A sub-folder: taken from the index if it is up to date, otherwise it becomes a new node
-    /// in `spawned`.
+    /// A sub-folder of `node` whose path state is `state`: taken from the index if it is up to
+    /// date, otherwise it becomes a new job in `acc.spawned`. The path (`path`) and the parent's
+    /// handle (`rel`) are only built for the folders that are not taken from the index.
     fn sub_folder(
         &self,
         node: &Arc<Node>,
-        path: PathBuf,
-        stamp: u64,
-        rel: Rel,
-        sum: &mut u64,
-        unreported: &mut u64,
-        spawned: &mut Vec<Arc<Node>>,
+        state: u64,
+        stamp: u32,
+        path: &dyn Fn() -> PathBuf,
+        rel: impl FnOnce() -> Rel,
+        acc: &mut Acc,
     ) {
         node.has_dirs.store(true, Ordering::Relaxed);
-        match self.cache.get(&path).filter(|c| is_fresh(c, stamp, self.now)) {
+        match self.cache.get_key(finish_key(state), path).filter(|c| is_fresh(c, stamp, self.now, node.root.watched_since)) {
             Some(hit) => {
-                *sum = sum.saturating_add(hit.size);
-                *unreported = unreported.saturating_add(hit.size);
+                acc.sum += hit.size;
+                acc.unreported += hit.size;
             }
             None => {
                 node.pending.fetch_add(1, Ordering::SeqCst);
                 self.open.fetch_add(1, Ordering::SeqCst);
-                let mut child = Node::new(path, stamp, Some(Arc::clone(node)), Arc::clone(&node.root));
-                *child.rel.get_mut().unwrap_or_else(|e| e.into_inner()) = rel;
-                spawned.push(Arc::new(child));
+                let child = Node::new(path(), state, stamp, Some(Arc::clone(node)), Arc::clone(&node.root));
+                acc.spawned.push(Job { node: Arc::new(child), rel: rel() });
             }
         }
     }
 
     /// Takes the sub-folders found by a listing onto the thread's own stack. If other threads
     /// are out of work, or the stack grows large, the oldest folders go to the shared queue.
-    fn dispatch(&self, lc: &mut Local, spawned: Vec<Arc<Node>>) {
+    fn dispatch(&self, lc: &mut Local, spawned: Vec<Job>) {
         if spawned.is_empty() {
             return;
         }
@@ -425,83 +347,79 @@ impl Walk<'_> {
         if give == 0 {
             return;
         }
-        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        for n in lc.stack.drain(..give) {
+        let mut q = self.queue.lk();
+        for mut job in lc.stack.drain(..give) {
             // In a long queue a folder may wait a long time: it must not hold its parent's handle.
             if q.len() >= QUEUE_KEEP_HANDLES {
-                drop(std::mem::take(&mut *n.rel.lock().unwrap_or_else(|e| e.into_inner())));
+                job.rel = Rel::default();
             }
-            q.push_back(n);
+            q.push_back(job);
         }
         drop(q);
         self.wake.notify_all();
     }
 
-    /// Lists one folder: sums its files, takes fresh sub-folders from the index and creates nodes
+    /// Lists one folder: sums its files, takes fresh sub-folders from the index and creates jobs
     /// for the others. False = cancelled half-way (this folder is then not stored).
-    fn list(&self, node: &Arc<Node>, finished: &mut Finished, lc: &mut Local) -> bool {
-        let mut sum = 0u64; // files and fresh cached sub-folders of this folder
-        let mut unreported = 0u64;
-        let mut spawned: Vec<Arc<Node>> = Vec::new();
-        match self.read_folder(node, &mut sum, &mut unreported, lc, &mut spawned) {
+    fn list(&self, job: Job, finished: &mut Finished, lc: &mut Local) -> bool {
+        let Job { node, rel } = job;
+        let mut acc = Acc::default();
+        match self.read_folder(&node, rel, &mut acc, lc) {
             None => {
                 node.failed.store(true, Ordering::Relaxed);
-                self.finish(Arc::clone(node), finished);
+                self.finish(node, finished);
                 return true;
             }
             Some(false) => return false,
             Some(true) => {}
         }
-        node.total.fetch_add(sum, Ordering::SeqCst);
-        self.bump(&node.root, unreported);
-        self.finish(Arc::clone(node), finished);
-        self.dispatch(lc, spawned);
+        node.total.fetch_add(acc.sum, Ordering::SeqCst);
+        self.bump(&node.root, acc.unreported);
+        self.finish(node, finished);
+        self.dispatch(lc, acc.spawned);
         true
     }
 
     /// The directory read behind `list`. None = the folder cannot be listed, Some(false) = cancelled.
+    /// Links and junctions are skipped (loops, double counting); sizes come from the listing, except
+    /// for the pinned file and hot files, which are asked directly.
     #[cfg(not(windows))]
-    fn read_folder(
-        &self,
-        node: &Arc<Node>,
-        sum: &mut u64,
-        unreported: &mut u64,
-        _lc: &mut Local,
-        spawned: &mut Vec<Arc<Node>>,
-    ) -> Option<bool> {
+    fn read_folder(&self, node: &Arc<Node>, _rel: Rel, acc: &mut Acc, _lc: &mut Local) -> Option<bool> {
         let rd = fs::read_dir(&node.path).ok()?;
-        let exact = self.hot.pinned_name_in(&node.path);
-        let hot_here = if self.hot.is_active() { self.hot.names_in(&node.path) } else { Vec::new() };
+        let exact = self.pinned_in(&node.path);
+        let hot_here = self.hot_in(&node.path);
         let mut seen = 0u32;
         let mut files = 0usize;
         for entry in rd {
-            seen = seen.wrapping_add(1);
-            if seen % 1024 == 0 {
-                if self.cancelled() {
-                    return Some(false);
-                }
-                if seen % 4096 == 0 {
-                    self.bump(&node.root, std::mem::take(unreported));
-                }
+            if !self.tick(&mut seen, &node.root, &mut acc.unreported) {
+                return Some(false);
             }
             let Ok(de) = entry else { continue };
             let Ok(ft) = de.file_type() else { continue };
             if ft.is_symlink() {
-                continue; // symlinks & junctions: avoid loops/double counting
+                continue;
             }
             if ft.is_file() {
-                let n = file_len_in(&de, exact.as_deref(), &hot_here);
+                let mut n = de.metadata().map(|m| m.len()).unwrap_or(0);
                 files += 1;
-                *sum = sum.saturating_add(n);
-                *unreported = unreported.saturating_add(n);
+                if exact.is_some() || !hot_here.is_empty() {
+                    let name = de.file_name();
+                    if needs_exact(&name, exact, hot_here) {
+                        n = exact_len(&node.path.join(&name), n);
+                    }
+                }
+                acc.sum += n;
+                acc.unreported += n;
             } else if ft.is_dir() {
                 let md = de.metadata().ok();
-                let path = de.path();
+                let name = de.file_name();
+                let path = node.path.join(&name);
                 if super::live::is_pseudo(&path) || md.as_ref().is_some_and(|m| dev_of(m) != node.root.dev) {
                     continue;
                 }
-                let stamp = md.and_then(|m| m.modified().ok()).map(ns).unwrap_or(0);
-                self.sub_folder(node, path, stamp, (), sum, unreported, spawned);
+                let stamp = md.and_then(|m| m.modified().ok()).map(stamp_of).unwrap_or(0);
+                let state = extend_name(node.state, &name);
+                self.sub_folder(node, state, stamp, &|| path.clone(), || (), acc);
             }
         }
         node.files.store(files, Ordering::Relaxed);
@@ -509,22 +427,13 @@ impl Walk<'_> {
     }
 
     /// Windows: the folder is opened relative to its parent's handle (or by path) and read with
-    /// `NtQueryDirectoryFile` into the thread's reusable buffer. Same rules as everywhere: links and
-    /// junctions are skipped, sizes come from the listing, except for the pinned file and hot
-    /// files, which are asked directly.
+    /// `NtQueryDirectoryFile` into the thread's reusable buffer. Same rules as everywhere else.
+    /// A sub-folder that is found in the index costs no allocation at all: its key is the parent's
+    /// path state extended with the name from the listing.
     #[cfg(windows)]
-    fn read_folder(
-        &self,
-        node: &Arc<Node>,
-        sum: &mut u64,
-        unreported: &mut u64,
-        lc: &mut Local,
-        spawned: &mut Vec<Arc<Node>>,
-    ) -> Option<bool> {
-        let exact = self.hot.pinned_name_in(&node.path);
-        let hot_here = if self.hot.is_active() { self.hot.names_in(&node.path) } else { Vec::new() };
-
-        let rel = std::mem::take(&mut *node.rel.lock().unwrap_or_else(|e| e.into_inner()));
+    fn read_folder(&self, node: &Arc<Node>, rel: Rel, acc: &mut Acc, lc: &mut Local) -> Option<bool> {
+        let exact = self.pinned_in(&node.path);
+        let hot_here = self.hot_in(&node.path);
         let opened = match &rel {
             Some((parent, name)) => win::open_in(parent, name),
             None => win::open_path(&node.path),
@@ -536,31 +445,32 @@ impl Walk<'_> {
         let mut files = 0usize;
         let mut cancelled = false;
         let mut visit = |e: win::Ent<'_>| -> bool {
-            seen = seen.wrapping_add(1);
-            if seen % 1024 == 0 {
-                if self.cancelled() {
-                    cancelled = true;
-                    return false;
-                }
-                if seen % 4096 == 0 {
-                    self.bump(&node.root, std::mem::take(unreported));
-                }
+            if !self.tick(&mut seen, &node.root, &mut acc.unreported) {
+                cancelled = true;
+                return false;
             }
             if e.is_dir {
-                let stamp = win::systime(e.written).map(ns).unwrap_or(0);
-                let rel: Rel = Some((Arc::clone(&dir), Box::from(e.name)));
-                self.sub_folder(node, node.path.join(win::name(&e)), stamp, rel, sum, unreported, spawned);
+                let stamp = win::systime(e.written).map(stamp_of).unwrap_or(0);
+                let state = extend_wide(node.state, e.name);
+                self.sub_folder(
+                    node,
+                    state,
+                    stamp,
+                    &|| node.path.join(win::name(&e)),
+                    || Some((Arc::clone(&dir), Box::from(e.name))),
+                    acc,
+                );
             } else {
                 let mut n = e.len;
                 files += 1;
                 if exact.is_some() || !hot_here.is_empty() {
                     let name = win::name(&e);
-                    if exact.as_deref().is_some_and(|x| same_name(&name, x)) || hot_here.iter().any(|h| same_name(&name, h)) {
-                        n = fs::symlink_metadata(node.path.join(&name)).map(|m| m.len()).unwrap_or(n);
+                    if needs_exact(&name, exact, hot_here) {
+                        n = exact_len(&node.path.join(&name), n);
                     }
                 }
-                *sum = sum.saturating_add(n);
-                *unreported = unreported.saturating_add(n);
+                acc.sum += n;
+                acc.unreported += n;
             }
             true
         };
@@ -568,19 +478,6 @@ impl Walk<'_> {
         node.files.store(files, Ordering::Relaxed);
         Some(!cancelled)
     }
-}
-
-/// `file_len` for a folder whose hot file names were fetched once (see `HotFiles::names_in`):
-/// no path is built and no lock is taken per file.
-#[cfg(not(windows))]
-fn file_len_in(de: &fs::DirEntry, pinned: Option<&OsStr>, hot_here: &[OsString]) -> u64 {
-    if pinned.is_some() || !hot_here.is_empty() {
-        let name = de.file_name();
-        if pinned.is_some_and(|n| same_name(&name, n)) || hot_here.iter().any(|n| same_name(&name, n)) {
-            return exact_len(de);
-        }
-    }
-    de.metadata().map(|m| m.len()).unwrap_or(0)
 }
 
 fn worker(w: &Walk<'_>) {
@@ -598,14 +495,8 @@ fn worker(w: &Walk<'_>) {
             break;
         }
         // Own stack first (depth first), then the shared queue.
-        let node = match lc.stack.pop() {
-            Some(n) => n,
-            None => match w.next() {
-                Some(n) => n,
-                None => break,
-            },
-        };
-        if !w.list(&node, &mut finished, &mut lc) {
+        let Some(job) = lc.stack.pop().or_else(|| w.next()) else { break };
+        if !w.list(job, &mut finished, &mut lc) {
             w.stop.store(true, Ordering::Relaxed); // cancelled
             w.wake.notify_all();
             break;
@@ -618,17 +509,15 @@ fn worker(w: &Walk<'_>) {
     w.store(&mut finished); // keep the completed folders, also after a cancel
 }
 
-/// Walks all `roots` ((folder, mtime fingerprint) pairs) at once with `threads` threads, so even
+/// Walks all `roots` at once with `threads` threads, so even
 /// a single huge tree is spread over all of them. Every finished folder is stored in the index.
 /// `progress(root, bytes_so_far)` is called about ten times a second per root while it is being
 /// walked; `done(root, size)` once when it is complete. Returns when everything is done or the
-/// walk was cancelled (`generation` changed).
+/// walk was cancelled.
 pub fn scan_many(
-    roots: Vec<(PathBuf, u64)>,
+    roots: Vec<RootSpec>,
     cache: &Cache,
-    generation: &AtomicU64,
-    my_gen: u64,
-    dirty: &AtomicBool,
+    cancel: &Cancel,
     hot: &HotFiles,
     threads: usize,
     progress: &(dyn Fn(&Path, u64) + Sync),
@@ -647,19 +536,25 @@ pub fn scan_many(
         ctl: Condvar::new(),
         ctl_lock: Mutex::new(()),
         cache,
-        generation,
-        my_gen,
-        dirty,
-        hot,
+        cancel,
+        pinned: hot.pinned(),
+        hot_dirs: hot.snapshot(),
         now: now_secs(),
         began: Instant::now(),
         progress,
         done,
     };
-    for (path, stamp) in roots {
-        let dev = fs::metadata(&path).map(|m| dev_of(&m)).unwrap_or(0);
-        let root = Arc::new(Root { path: path.clone(), dev, running: AtomicU64::new(0), last_report: AtomicU64::new(0) });
-        walk.push(Arc::new(Node::new(path, stamp, None, root)));
+    for RootSpec { path, stamp, watched_since } in roots {
+        let root = Arc::new(Root {
+            path: path.clone(),
+            watched_since,
+            #[cfg(unix)]
+            dev: fs::metadata(&path).map(|m| dev_of(&m)).unwrap_or(0),
+            running: AtomicU64::new(0),
+            last_report: AtomicU64::new(0),
+        });
+        let state = key_state(&path);
+        walk.push(Arc::new(Node::new(path, state, stamp, None, root)));
     }
     let base = threads.max(1);
     std::thread::scope(|s| {
@@ -672,20 +567,20 @@ pub fn scan_many(
         // A warm, CPU-bound scan is not affected: there the threads keep the cores busy.
         #[cfg(windows)]
         s.spawn(move || {
+            if base <= 1 {
+                return; // a single-thread walk (see `scan_one`) stays single-threaded
+            }
             let max = (base * 4).min(32).max(base);
             let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
             let mut started = base;
             let mut last = Instant::now();
             let mut last_cpu = win::process_cpu();
-            let mut g = w.ctl_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let mut g = w.ctl_lock.lk();
             loop {
                 if w.cancelled() || w.open.load(Ordering::SeqCst) == 0 {
                     break;
                 }
-                g = match w.ctl.wait_timeout(g, Duration::from_millis(200)) {
-                    Ok((g, _)) => g,
-                    Err(e) => e.into_inner().0,
-                };
+                g = wait_for(&w.ctl, g, Duration::from_millis(200));
                 let wall = last.elapsed();
                 if wall < Duration::from_millis(200) {
                     continue;
@@ -707,6 +602,26 @@ pub fn scan_many(
     if cfg!(debug_assertions) {
         eprintln!("scan_many: {count} root(s), {:?}", walk.began.elapsed());
     }
+}
+
+/// Walks one folder on one thread (the live updater's rescans). None = cancelled.
+pub fn scan_one(
+    root: &Path,
+    stamp: u32,
+    watched_since: Option<u64>,
+    cache: &Cache,
+    cancel: &Cancel,
+    hot: &HotFiles,
+) -> Option<u64> {
+    let result = AtomicU64::new(0);
+    let finished = AtomicBool::new(false);
+    let done = |_: &Path, n: u64| {
+        result.store(n, Ordering::Relaxed);
+        finished.store(true, Ordering::Relaxed);
+    };
+    let spec = RootSpec { path: root.to_path_buf(), stamp, watched_since };
+    scan_many(vec![spec], cache, cancel, hot, 1, &|_, _| {}, &done);
+    finished.load(Ordering::Relaxed).then(|| result.load(Ordering::Relaxed))
 }
 
 /// Windows directory listing: folders are opened with `NtOpenFile`, optionally relative to their

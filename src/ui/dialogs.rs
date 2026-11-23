@@ -7,7 +7,7 @@ impl Explorer {
         let Some(c) = self.confirm.take() else { return };
         let (m, pal) = (self.m, self.pal);
         let mut choice = 0;
-        let closed = dialog_shell(
+        let closed = dialog_shell_with_footer(
             ui,
             &m,
             &pal,
@@ -17,16 +17,16 @@ impl Explorer {
             m.accessibility_scale * 420.0,
             |ui| {
                 ui.label(&c.text);
-                ui.add_space(m.pad * 1.5);
-                ui.horizontal(|ui| {
-                    if danger_button(ui, &m, "Delete").clicked() {
-                        choice = 1;
-                    }
-                    if secondary_button(ui, &m, "Cancel").clicked() {
-                        choice = 2;
-                    }
-                });
             },
+            Some(Box::new(|ui| {
+                // Right to left: Cancel ends up rightmost, like in a Windows dialog.
+                if secondary_button(ui, &m, &pal, "Cancel").clicked() {
+                    choice = 2;
+                }
+                if danger_button(ui, &m, &pal, "Delete").clicked() {
+                    choice = 1;
+                }
+            })),
         );
         match (choice, closed) {
             (1, _) => {
@@ -37,6 +37,56 @@ impl Explorer {
             }
             (2, _) | (_, true) => {}
             _ => self.confirm = Some(c),
+        }
+    }
+
+    /// "What's new": the release notes of this version from GitHub.
+    pub(crate) fn ui_whats_new(&mut self, ui: &mut Ui) {
+        let Some(state) = &self.whats_new else { return };
+        let (m, pal) = (self.m, self.pal);
+        let height = (ui.content_rect().height() * 0.6).clamp(m.accessibility_scale * 160.0, m.accessibility_scale * 520.0);
+        let (mut retry, mut close) = (false, false);
+        let failed = matches!(state, WhatsNew::Failed(_));
+        let mut closed = dialog_shell_with_footer(
+            ui,
+            &m,
+            &pal,
+            "whats_new",
+            "What's new",
+            true,
+            (ui.content_rect().width() * 0.9).clamp(m.accessibility_scale * 300.0, m.accessibility_scale * 560.0),
+            |ui| match state {
+                WhatsNew::Loading => {
+                    ui.horizontal(|ui| {
+                        spinner(ui, m.font, pal.text_secondary);
+                        ui.label(RichText::new("Loading the release notes…").color(pal.text_secondary));
+                    });
+                }
+                WhatsNew::Failed(e) => {
+                    ui.label(RichText::new(format!("The release notes could not be loaded: {e}.")).color(pal.text_secondary));
+                }
+                WhatsNew::Ready { version, notes } => {
+                    ui.label(RichText::new(format!("Version {version}")).color(pal.text_secondary));
+                    ui.add_space(m.pad * 0.3);
+                    egui::ScrollArea::vertical().max_height(height).auto_shrink([false, true]).show(ui, |ui| {
+                        changelog_text(ui, &m, &pal, notes);
+                    });
+                }
+            },
+            Some(Box::new(|ui| {
+                if primary_button(ui, &m, &pal, "Close").clicked() {
+                    close = true;
+                }
+                if failed && secondary_button(ui, &m, &pal, "Try again").clicked() {
+                    retry = true;
+                }
+            })),
+        );
+        closed |= close;
+        if retry {
+            self.open_whats_new();
+        } else if closed {
+            self.close_whats_new();
         }
     }
 
@@ -109,14 +159,14 @@ impl Explorer {
                         if primary_button(ui, &m, &pal, "Replace").clicked() {
                             choice = 1;
                         }
-                        if secondary_button(ui, &m, "Keep both").clicked() {
+                        if secondary_button(ui, &m, &pal, "Keep both").clicked() {
                             choice = 2;
                         }
                     }
-                    if secondary_button(ui, &m, "Skip").clicked() {
+                    if secondary_button(ui, &m, &pal, "Skip").clicked() {
                         choice = 3;
                     }
-                    if secondary_button(ui, &m, "Cancel").clicked() {
+                    if secondary_button(ui, &m, &pal, "Cancel").clicked() {
                         choice = 4;
                     }
                 });
@@ -164,6 +214,36 @@ impl Explorer {
                     self.conflict = Some(c);
                 }
             }
+        }
+    }
+}
+
+/// Draws GitHub release notes (Markdown) as plain text: headings, bullets and paragraphs. Emphasis marks
+/// and inline code ticks are dropped.
+fn changelog_text(ui: &mut Ui, m: &Metrics, pal: &Palette, notes: &str) {
+    if notes.trim().is_empty() {
+        ui.label(RichText::new("This release has no description.").color(pal.text_secondary));
+        return;
+    }
+    for line in notes.lines() {
+        let line = line.trim_end();
+        let plain = |t: &str| t.replace("**", "").replace('`', "");
+        if line.trim().is_empty() {
+            ui.add_space(m.pad * 0.5);
+        } else if let Some(h) = line.trim_start().strip_prefix('#') {
+            ui.add_space(m.pad * 0.4);
+            ui.label(RichText::new(plain(h.trim_start_matches('#').trim())).size(m.font * 1.1).color(pal.text));
+        } else if let Some(item) = line.trim_start().strip_prefix("- ").or_else(|| line.trim_start().strip_prefix("* ")) {
+            // A bullet with a hanging indent: wrapped lines stay under the text, not under the dot.
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = m.pad * 0.6;
+                ui.label(RichText::new("•").color(pal.text_secondary));
+                ui.add(egui::Label::new(plain(item)).wrap());
+            });
+        } else if line.trim_start().starts_with("Full Changelog") || line.trim_start().starts_with("http") {
+            ui.add(egui::Label::new(RichText::new(plain(line)).size(m.font * 0.9).color(pal.text_secondary)).wrap());
+        } else {
+            ui.add(egui::Label::new(plain(line)).wrap());
         }
     }
 }

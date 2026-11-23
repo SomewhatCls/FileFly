@@ -238,7 +238,7 @@ pub struct Palette {
 fn grey(luminance: u8, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(luminance, luminance, luminance, (alpha * 255.0).round() as u8)
 }
-fn with_alpha(c: Color32, alpha: f32) -> Color32 {
+pub fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (alpha * 255.0).round() as u8)
 }
 

@@ -86,7 +86,13 @@ impl DirWatcher {
         let ui_set = Arc::clone(&pending);
         let live = sink.clone();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            let Ok(ev) = res else { return };
+            let Ok(ev) = res else {
+                // An error may mean lost events: stop trusting what the watches vouched for.
+                if let Some(s) = &live {
+                    s.revoke_trust();
+                }
+                return;
+            };
             if matches!(ev.kind, EventKind::Access(_)) {
                 return;
             }
@@ -151,7 +157,7 @@ impl DirWatcher {
 
     /// Call whenever the listed folder changes. Returns immediately; the watches are set up in
     /// the background.
-    pub fn watch(&mut self, dir: &Path) {
+    pub fn watch(&self, dir: &Path) {
         let _ = self.tx.send(dir.to_path_buf());
     }
 }
@@ -162,7 +168,9 @@ impl Inner {
             return;
         }
         // Without a sink nobody needs deep size changes, so every watch is shallow.
-        let shallow = self.sink.is_none() || dir.parent().is_none() || crate::drives::is_network_path(dir);
+        let root = dir.parent().is_none();
+        let network = crate::drives::is_network_path(dir);
+        let shallow = self.sink.is_none() || root || network;
 
         if !shallow {
             // Already inside a recursive watch from an earlier visit? Then there is nothing to do.
@@ -177,7 +185,14 @@ impl Inner {
             self.drop_group(&old, false);
         }
 
-        let Some(group) = self.open_group(dir, shallow) else { return };
+        let Some(group) = self.open_group(dir, shallow, root && !network) else { return };
+        if let Some(s) = &self.sink {
+            for (p, deep) in &group.watches {
+                if *deep {
+                    s.watch_deep(p); // from now on a folder scanned below it is vouched for
+                }
+            }
+        }
 
         if !shallow {
             // The new recursive watch covers every older watch inside it.
@@ -213,14 +228,15 @@ impl Inner {
         }
     }
 
-    fn open_group(&mut self, dir: &Path, shallow: bool) -> Option<Group> {
+    /// `with_children`: also watch the root's sub-folders recursively (a local drive root).
+    fn open_group(&mut self, dir: &Path, shallow: bool, with_children: bool) -> Option<Group> {
         let mut watches: Vec<(PathBuf, bool)> = Vec::new();
         if shallow {
             self.watcher.watch(dir, RecursiveMode::NonRecursive).ok()?;
             watches.push((dir.to_path_buf(), false));
             // The recursive file watcher causes crashing on Linux, so only use it on WIndows.
             // (Also only with an indexer: the children are watched for size changes.)
-            if dir.parent().is_none() && !crate::drives::is_network_path(dir) && cfg!(windows) && self.sink.is_some() {
+            if with_children && cfg!(windows) && self.sink.is_some() {
                 for child in child_dirs(dir) {
                     if watches.len() > MAX_CHILD_WATCHES {
                         break;
@@ -240,13 +256,12 @@ impl Inner {
     /// Stops the watches of `g`. With `lost_coverage` the folders they covered are reported as
     /// "may have changed", because from now on nobody is looking at them.
     fn drop_group(&mut self, g: &Group, lost_coverage: bool) {
-        for (p, _) in &g.watches {
+        for (p, deep) in &g.watches {
             let _ = self.watcher.unwatch(p);
-        }
-        if lost_coverage {
-            if let Some(s) = &self.sink {
-                for (p, deep) in &g.watches {
-                    if *deep {
+            if *deep {
+                if let Some(s) = &self.sink {
+                    s.unwatch_deep(p);
+                    if lost_coverage {
                         s.push_tree(p.clone());
                     }
                 }

@@ -474,10 +474,10 @@ impl Explorer {
                         Some(NavCmd::Refresh) => actions.push(Action::Refresh),
                         None => {}
                     }
-                    if tab.settings {
+                    if let Some(page) = tab.page {
                         ui.add_space(m.pad * 0.5);
                         let w = ui.available_width().max(m.accessibility_scale * 120.0);
-                        static_address(ui, &m, &pal, w, "settings", "Settings");
+                        static_address(ui, &m, &pal, w, page.icon(), page.title());
                         return;
                     }
                     ui.add_space(m.pad * 0.5);
@@ -500,13 +500,17 @@ impl Explorer {
             Some(t) => (true, t.selected.len(), !t.rows.is_empty()),
             None => (false, 0, false),
         };
+        let in_licenses = self.tabs[self.active].page == Some(Page::Licenses);
         let can_paste = self.can_paste();
         let selection = self.tabs[self.active].selected_paths();
         let (can_paste, hidden, settings_open) = (
             can_paste,
             self.settings.show_hidden,
-            self.tabs[self.active].settings,
+            self.tabs[self.active].page == Some(Page::Settings),
         );
+        // The button stays unless it is turned off in the settings; its dot marks release notes not read yet.
+        let whats_new_visible = self.settings.show_whats_new;
+        let whats_new_unread = self.settings.whats_new_seen != env!("CARGO_PKG_VERSION");
         egui::Panel::top("command")
             .show_separator_line(false)
             .frame(layer_frame(
@@ -521,211 +525,164 @@ impl Explorer {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
-                    if settings_open {
-                        // Remove all file interaction buttons for settings tab.
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if icon_button(ui, &m, &pal, "settings", "Close Settings", true, true).clicked() {
-                                actions.push(Action::OpenSettings);
-                            }
-                        });
-                        return;
-                    }
                     if in_trash {
-                        if cmd_button(
-                            ui,
-                            &m,
-                            &pal,
-                            "restore",
-                            Some("Restore"),
-                            "Restore the selected items",
-                            trash_sel > 0,
-                            false,
-                        )
+                        if Btn::new().icon("restore").label("Restore").tip("Restore the selected items").enabled(trash_sel > 0).show(ui, &m, &pal)
                         .clicked()
                         {
                             actions.push(Action::TrashRestoreSelected);
                         }
-                        if cmd_button(
-                            ui,
-                            &m,
-                            &pal,
-                            "delete",
-                            Some("Delete permanently"),
-                            "Delete the selected items permanently (Del)",
-                            trash_sel > 0,
-                            false,
-                        )
+                        if Btn::new().icon("delete").label("Delete permanently").tip("Delete the selected items permanently (Del)").enabled(trash_sel > 0).show(ui, &m, &pal)
                         .clicked()
                         {
                             actions.push(Action::TrashPurgeSelected);
                         }
                         vsep(ui, &m, &pal);
-                        if cmd_button(
-                            ui,
-                            &m,
-                            &pal,
-                            "empty_bin",
-                            Some("Empty Recycle Bin"),
-                            "Permanently delete everything in the Recycle Bin",
-                            trash_any,
-                            false,
-                        )
+                        if Btn::new().icon("empty_bin").label("Empty Recycle Bin").tip("Permanently delete everything in the Recycle Bin").enabled(trash_any).show(ui, &m, &pal)
                         .clicked()
                         {
                             actions.push(Action::TrashEmpty);
                         }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if icon_button(
-                                ui,
-                                &m,
-                                &pal,
-                                "settings",
-                                "Settings",
-                                true,
-                                settings_open,
-                            )
+                    }
+                    if !in_trash && !in_licenses && !settings_open {
+                        let wide = ui.available_width() > m.accessibility_scale * 640.0;
+                        if Btn::new().icon("new_folder").label("New folder").tip("New folder (Ctrl+Shift+F)").show(ui, &m, &pal)
                             .clicked()
+                        {
+                            actions.push(Action::NewFolder);
+                        }
+                        vsep(ui, &m, &pal);
+                        if !selection.is_empty() {
+                            if icon_button(ui, &m, &pal, "cut", "Cut (Ctrl+X)", true, false).clicked() {
+                                actions.push(Action::Cut(selection.clone()));
+                            }
+                            if icon_button(ui, &m, &pal, "copy", "Copy (Ctrl+C)", true, false).clicked()
                             {
-                                actions.push(Action::OpenSettings);
+                                actions.push(Action::Copy(selection.clone()));
                             }
-                        });
-                        return;
-                    }
-                    let wide = ui.available_width() > m.accessibility_scale * 640.0;
-                    if cmd_button(
-                        ui,
-                        &m,
-                        &pal,
-                        "new_folder",
-                        Some("New folder"),
-                        "New folder (Ctrl+Shift+F)",
-                        true,
-                        false,
-                    )
-                    .clicked()
-                    {
-                        actions.push(Action::NewFolder);
-                    }
-                    vsep(ui, &m, &pal);
-                    if !selection.is_empty() {
-                        if icon_button(ui, &m, &pal, "cut", "Cut (Ctrl+X)", true, false).clicked() {
-                            actions.push(Action::Cut(selection.clone()));
+                        } else {
+                            icon_button(ui, &m, &pal, "cut", "Cut (Ctrl+X)", false, false);
+                            icon_button(ui, &m, &pal, "copy", "Copy (Ctrl+C)", false, false);
                         }
-                        if icon_button(ui, &m, &pal, "copy", "Copy (Ctrl+C)", true, false).clicked()
-                        {
-                            actions.push(Action::Copy(selection.clone()));
-                        }
-                    } else {
-                        icon_button(ui, &m, &pal, "cut", "Cut (Ctrl+X)", false, false);
-                        icon_button(ui, &m, &pal, "copy", "Copy (Ctrl+C)", false, false);
-                    }
-                    if icon_button(ui, &m, &pal, "paste", "Paste (Ctrl+V)", can_paste, false)
-                        .clicked()
-                    {
-                        actions.push(Action::Paste);
-                    }
-                    if !selection.is_empty() {
-                        if icon_button(ui, &m, &pal, "rename", "Rename (F2)", selection.len() == 1, false)
+                        if icon_button(ui, &m, &pal, "paste", "Paste (Ctrl+V)", can_paste, false)
                             .clicked()
                         {
-                            actions.push(Action::Rename(selection[0].clone()));
+                            actions.push(Action::Paste);
                         }
-                        if icon_button(ui, &m, &pal, "delete", "Delete (Del)", true, false)
+                        if !selection.is_empty() {
+                            if icon_button(ui, &m, &pal, "rename", "Rename (F2)", selection.len() == 1, false)
+                                .clicked()
+                            {
+                                actions.push(Action::Rename(selection[0].clone()));
+                            }
+                            if icon_button(ui, &m, &pal, "delete", "Delete (Del)", true, false)
+                                .clicked()
+                            {
+                                actions.push(Action::Delete(selection.clone()));
+                            }
+                        } else {
+                            icon_button(ui, &m, &pal, "rename", "Rename (F2)", false, false);
+                            icon_button(ui, &m, &pal, "delete", "Delete (Del)", false, false);
+                        }
+                        vsep(ui, &m, &pal);
+                        if {
+                            let b = Btn::new().icon("eye").tip("Show hidden items").toggled(hidden);
+                            if wide { b.label("Hidden items") } else { b }
+                        }.show(ui, &m, &pal)
                             .clicked()
                         {
-                            actions.push(Action::Delete(selection.clone()));
+                            actions.push(Action::ToggleHidden);
                         }
-                    } else {
-                        icon_button(ui, &m, &pal, "rename", "Rename (F2)", false, false);
-                        icon_button(ui, &m, &pal, "delete", "Delete (Del)", false, false);
-                    }
-                    vsep(ui, &m, &pal);
-                    if cmd_button(
-                        ui,
-                        &m,
-                        &pal,
-                        "eye",
-                        if wide { Some("Hidden items") } else { None },
-                        "Show hidden items",
-                        true,
-                        hidden,
-                    )
-                    .clicked()
-                    {
-                        actions.push(Action::ToggleHidden);
-                    }
-                    // Display git toolbar options if in a git repository.
-                    let mut picked: Option<String> = None;
-                    if let Some(git) = &self.git {
-                        if let Some(snap) = &git.snapshot {
-                            let (full, current): (String, Option<&str>) = match &snap.head {
-                                Some(Head::Branch(n)) => (n.clone(), Some(n.as_str())),
-                                Some(Head::Detached(h)) => {
-                                    (format!("detached @ {}", &h[..h.len().min(7)]), None)
-                                }
-                                None => ("no HEAD".to_owned(), None),
-                            };
-                            vsep(ui, &m, &pal);
-                            cmd_dropdown(
-                                ui,
-                                &m,
-                                &pal,
-                                "git_branch",
-                                if wide { Some(full.as_str()) } else { None },
-                                &format!("Branch: {full}"),
-                                !git.busy(),
-                                m.accessibility_scale * 140.0, // max label width before "…"
-                                |ui| {
-                                    egui::ScrollArea::vertical()
-                                        .max_height(m.accessibility_scale * 320.0)
-                                        .show(ui, |ui| {
-                                            for b in &snap.branches {
-                                                let is_cur = Some(b.name.as_str()) == current;
-                                                let r = ui
-                                                    .add(egui::Button::selectable(is_cur, &b.name).truncate())
-                                                    .on_hover_text(&b.name);
-                                                if r.clicked() && !is_cur {
-                                                    picked = Some(b.name.clone());
+                        // Display git toolbar options if in a git repository.
+                        let mut picked: Option<String> = None;
+                        if let Some(git) = &self.git {
+                            if let Some(snap) = &git.snapshot {
+                                let (full, current): (String, Option<&str>) = match &snap.head {
+                                    Some(Head::Branch(n)) => (n.clone(), Some(n.as_str())),
+                                    Some(Head::Detached(h)) => {
+                                        (format!("detached @ {}", &h[..h.len().min(7)]), None)
+                                    }
+                                    None => ("no HEAD".to_owned(), None),
+                                };
+                                vsep(ui, &m, &pal);
+                                cmd_dropdown(
+                                    ui,
+                                    &m,
+                                    &pal,
+                                    "git_branch",
+                                    if wide { Some(full.as_str()) } else { None },
+                                    &format!("Branch: {full}"),
+                                    !git.busy(),
+                                    m.accessibility_scale * 140.0, // max label width before "…"
+                                    |ui| {
+                                        egui::ScrollArea::vertical()
+                                            .max_height(m.accessibility_scale * 320.0)
+                                            .show(ui, |ui| {
+                                                for b in &snap.branches {
+                                                    let is_cur = Some(b.name.as_str()) == current;
+                                                    let r = ui
+                                                        .add(egui::Button::selectable(is_cur, &b.name).truncate())
+                                                        .on_hover_text(&b.name);
+                                                    if r.clicked() && !is_cur {
+                                                        picked = Some(b.name.clone());
+                                                    }
                                                 }
-                                            }
-                                        });
-                                },
-                            );
-                            /*
-                            if !selection.is_empty() {
-                                if icon_button(ui, &m, &pal, "git_add", "add to staging", true, false).clicked() {
-                                    actions.push(Action::GitAdd(selection.clone()));
+                                            });
+                                    },
+                                );
+                                /*
+                                if !selection.is_empty() {
+                                    if icon_button(ui, &m, &pal, "git_add", "add to staging", true, false).clicked() {
+                                        actions.push(Action::GitAdd(selection.clone()));
+                                    }
                                 }
+                                if snap.staged_files > 0 {
+                                    if icon_button(ui, &m, &pal, "git_commit", "commit staged changes", true, false).clicked() {
+                                        actions.push(Action::GitCommit(snap.root.clone()));
+                                    }
+                                }*/
                             }
-                            if snap.staged_files > 0 {
-                                if icon_button(ui, &m, &pal, "git_commit", "commit staged changes", true, false).clicked() {
-                                    actions.push(Action::GitCommit(snap.root.clone()));
-                                }
-                            }*/
                         }
-                    }
-                    // Outside the block due to borrowing logic, refreshes the folder contents after
-                    // switching branches.
-                    if let Some(git) = &mut self.git {
-                        if let Some(name) = picked {
-                            git.git_async(ui.ctx(), GitCommand::Checkout {branch: name});
-                        }
-                        if std::mem::take(&mut git.switched) {
-                            actions.push(Action::Refresh);
-                        }
+                        // Outside the block due to borrowing logic, refreshes the folder contents after
+                        // switching branches.
+                        if let Some(git) = &mut self.git {
+                            if let Some(name) = picked {
+                                git.git_async(ui.ctx(), GitCommand::Checkout { branch: name });
+                            }
+                            if std::mem::take(&mut git.switched) {
+                                actions.push(Action::Refresh);
+                            }
 
-                        git.update(ui.ctx(), &*self.tabs[self.active].dir);
+                            git.update(ui.ctx(), &*self.tabs[self.active].dir);
 
-                        // Push error out to the error display.
-                        if let Some(err) = git.error.take() {
-                            self.tabs[self.active].git_error = Some(err);
+                            // Push error out to the error display.
+                            if let Some(err) = git.error.take() {
+                                self.tabs[self.active].git_error = Some(err);
+                            }
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if icon_button(ui, &m, &pal, "settings", "Settings", true, settings_open)
-                            .clicked()
-                        {
-                            actions.push(Action::OpenSettings);
+                        if settings_open{
+                            if icon_button(ui, &m, &pal, "settings", "Close Settings", true, true)
+                                .clicked()
+                            {
+                                actions.push(Action::OpenSettings);
+                            }
+                        } else {
+                            if icon_button(ui, &m, &pal, "settings", "Settings", true, settings_open)
+                                .clicked()
+                            {
+                                actions.push(Action::OpenSettings);
+                            }
+                        }
+                        if whats_new_visible {
+                            let resp = icon_button(ui, &m, &pal, "whats_new", "What's new", true, false);
+                            if whats_new_unread {
+                                let dot = resp.rect.center() + vec2(m.icon * 0.42, -m.icon * 0.42);
+                                ui.painter().circle_filled(dot, m.font * 0.18, pal.accent);
+                            }
+                            if resp.clicked() {
+                                actions.push(Action::OpenWhatsNew);
+                            }
                         }
                     });
                 });
