@@ -23,11 +23,20 @@ pub(crate) enum UpdateState {
     Failed(String),
 }
 
+/// The "What's new" popup: loading, or what GitHub says changed.
+pub(crate) enum WhatsNew {
+    Loading,
+    Ready { version: String, notes: String },
+    Failed(String),
+}
+
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
     html_url: String,
     assets: Vec<Asset>,
+    /// The release description (the changelog).
+    body: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -36,10 +45,9 @@ struct Asset {
     browser_download_url: String,
 }
 
-/// Runs on a background thread.
-/// Ok(None) = newest is installed
-fn fetch_latest() -> Result<Option<UpdateInfo>, String> {
-    let rel: Release = ureq::get(&format!("https://api.github.com/repos/{REPO}/releases/latest"))
+/// Runs on a background thread. `which` is `latest` or `tags/<tag>`.
+fn fetch_release(which: &str) -> Result<Release, String> {
+    ureq::get(&format!("https://api.github.com/repos/{REPO}/releases/{which}"))
         .header("User-Agent", concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")))
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
@@ -54,8 +62,27 @@ fn fetch_latest() -> Result<Option<UpdateInfo>, String> {
         })?
         .body_mut()
         .read_json::<Release>()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
 
+/// The release notes of the running version (the newest release's when this build has none, like a dev build).
+/// Returns (version, notes).
+fn fetch_release_notes() -> Result<(String, String), String> {
+    let current = env!("CARGO_PKG_VERSION");
+    // Only "this version has no release" (a dev build) falls back to the newest one; a failing network
+    // is reported at once instead of waiting for a second timeout.
+    let rel = match fetch_release(&format!("tags/v{current}")) {
+        Err(e) if e.contains("no releases") => fetch_release("latest")?,
+        other => other?,
+    };
+    let version = rel.tag_name.trim_start_matches('v').to_owned();
+    Ok((version, rel.body.unwrap_or_default()))
+}
+
+/// Runs on a background thread.
+/// Ok(None) = newest is installed
+fn fetch_latest() -> Result<Option<UpdateInfo>, String> {
+    let rel = fetch_release("latest")?;
     let latest = Version::parse(rel.tag_name.trim_start_matches('v'))
         .map_err(|e| format!("unreadable version tag '{}': {e}", rel.tag_name))?;
     let current = Version::parse(env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())?;
@@ -88,6 +115,24 @@ impl Explorer {
             let _ = tx.send(AppMsg::UpdateChecked { announce, result: fetch_latest() });
             ui.request_repaint();
         });
+    }
+
+    /// Opens the "What's new" popup and loads the release notes (only now: nothing contacts GitHub
+    /// before the user asks).
+    pub(crate) fn open_whats_new(&mut self) {
+        self.whats_new = Some(WhatsNew::Loading);
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(AppMsg::ReleaseNotes(fetch_release_notes()));
+            ui.request_repaint();
+        });
+    }
+
+    /// The popup was closed: the button has done its job.
+    pub(crate) fn close_whats_new(&mut self) {
+        self.whats_new = None;
+        self.settings.whats_new_seen = env!("CARGO_PKG_VERSION").to_owned();
+        save_settings(&self.settings);
     }
 
     pub(crate) fn update_checked(

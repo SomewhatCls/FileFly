@@ -12,6 +12,8 @@ pub(crate) enum AppMsg {
     /// A background file operation (see `run_op`) finished.
     Job(u64, Result<String, String>),
     Stats(u64, FolderStats),
+    /// The Properties window looked at its item on disk again (`id` is `Props::id`).
+    PropsMeta { id: u64, meta: PropsMeta },
     /// A failed job could be retried as administrator; `msg` is the error text it reports.
     AdminOffer { msg: String, retry: AdminRetry },
     Trash {
@@ -54,6 +56,8 @@ pub(crate) enum AppMsg {
     },
     /// The "Check for updates" request finished (None = already up to date).
     UpdateChecked { announce: bool, result: Result<Option<UpdateInfo>, String> },
+    /// The release notes for the "What's new" popup arrived: (version, notes).
+    ReleaseNotes(Result<(String, String), String>),
     /// A .lnk file was resolved (see `shortcut.rs`).
     ShortcutTarget { tab: u64, result: Result<PathBuf, String> },
     QuickKind { path: PathBuf, is_dir: Option<bool> },
@@ -64,6 +68,7 @@ pub(crate) enum Action {
     Navigate(PathBuf),
     NewTabAt(PathBuf),
     NewTab,
+    OpenWhatsNew,
     CloseTab(usize),
     ClosePane(u64),
     OpenTerminal(PathBuf),

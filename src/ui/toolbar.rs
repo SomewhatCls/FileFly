@@ -474,10 +474,10 @@ impl Explorer {
                         Some(NavCmd::Refresh) => actions.push(Action::Refresh),
                         None => {}
                     }
-                    if tab.settings {
+                    if let Some(page) = tab.page {
                         ui.add_space(m.pad * 0.5);
                         let w = ui.available_width().max(m.accessibility_scale * 120.0);
-                        static_address(ui, &m, &pal, w, "settings", "Settings");
+                        static_address(ui, &m, &pal, w, page.icon(), page.title());
                         return;
                     }
                     ui.add_space(m.pad * 0.5);
@@ -505,8 +505,11 @@ impl Explorer {
         let (can_paste, hidden, settings_open) = (
             can_paste,
             self.settings.show_hidden,
-            self.tabs[self.active].settings,
+            self.tabs[self.active].page == Some(Page::Settings),
         );
+        // The button stays unless it is turned off in the settings; its dot marks release notes not read yet.
+        let whats_new_visible = self.settings.show_whats_new;
+        let whats_new_unread = self.settings.whats_new_seen != env!("CARGO_PKG_VERSION");
         egui::Panel::top("command")
             .show_separator_line(false)
             .frame(layer_frame(
@@ -681,6 +684,16 @@ impl Explorer {
                             .clicked()
                         {
                             actions.push(Action::OpenSettings);
+                        }
+                        if whats_new_visible {
+                            let resp = icon_button(ui, &m, &pal, "whats_new", "What's new", true, false);
+                            if whats_new_unread {
+                                let dot = resp.rect.center() + vec2(m.icon * 0.42, -m.icon * 0.42);
+                                ui.painter().circle_filled(dot, m.font * 0.18, pal.accent);
+                            }
+                            if resp.clicked() {
+                                actions.push(Action::OpenWhatsNew);
+                            }
                         }
                     });
                 });
