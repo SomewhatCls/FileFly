@@ -628,7 +628,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
     });
     // ---------------------------------------------------------------- Default file manager
     if cfg!(windows) {
-        fl_section(ui, m, pal, "Default file manager");
+        fl_section(ui, m, pal, "Default file manager (experimental)");
         fl_card(ui, m, pal, |ui| {
             let desc = match &sp.default_error {
                 Some(e) => format!("Could not change the setting: {e}"),
@@ -677,13 +677,6 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
         // The rows below only do something while the indexer is turned on.
         let sizes_on = sp.s.calculate_folder_sizes;
         ui.add_enabled_ui(sizes_on, |ui| {
-            fl_divider(ui, m, pal);
-            let loc = format!("Index location: {}", sp.index_dir);
-            fl_row(ui, m, pal, "Index location", Some(loc.as_str()), |ui| {
-                if secondary_button(ui, m, pal, "Choose location…").clicked() {
-                    sp.choose = true;
-                }
-            });
             fl_divider(ui, m, pal);
             let cached = format!(
                 "{} folders cached. Changes are picked up automatically while the app is open.",
@@ -755,7 +748,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 "Check",
             ),
             UpdateState::Checking => ("Checking…".to_owned(), "Check"),
-            UpdateState::UpToDate => ("You are running the current-most version.".to_owned(), "Check"),
+            UpdateState::UpToDate => ("You are up-to-date.".to_owned(), "Check"),
             UpdateState::Available(_) => (
                 "You can update to a newer version, click the Download button to start.".to_owned(),
                 "Download",

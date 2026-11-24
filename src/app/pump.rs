@@ -457,6 +457,7 @@ impl Explorer {
         }
 
         // Schedules restart for settings requiring it.
+        //TODO: Make sure the session is properly reloaded.
         if self.require_restart{
             self.require_restart = false;
             if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {

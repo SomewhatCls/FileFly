@@ -60,6 +60,7 @@ impl Explorer {
         let mut hit = (0..tab.view.len()).find(|&pos| starts(pos, &needle));
         // The same key again and again ("aaa") steps through the names starting with that letter,
         // from the selected item on, unless a name starts with the whole string.
+        //TODO: On duplication cycling, do not extend the label.
         let mut chars = needle.chars();
         let first = chars.next();
         if hit.is_none() && needle.chars().count() > 1 && chars.all(|c| Some(c) == first) {
