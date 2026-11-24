@@ -29,7 +29,7 @@ impl Explorer{
         };
 
          // draws a slight overlay (chrome) over the entire frame to achieve the desired transparency effect look.
-         if self.pal.transparency != TransparencyEffect::None {
+         if self.transparency && self.pal.transparency != TransparencyEffect::None {
              painter.rect_filled(
                  rect,
                  corner_radius,
@@ -153,6 +153,7 @@ impl eframe::App for Explorer {
             save_settings(&self.settings);
             self.peers.shutdown();
             if let Some(ix) = &self.indexer { ix.save_if_dirty(true); }
+            self.stop_ops_for_exit();
             remove_archive_cache(); // unpacked zips are temporary
             finish_journal(); // (keeps its entries if a copy was still running)
 

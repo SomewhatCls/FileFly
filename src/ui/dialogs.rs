@@ -30,11 +30,13 @@ impl Explorer {
         );
         match (choice, closed) {
             (1, _) => {
-                let items = c.items;
+                let ConfirmPurge { items, guard, .. } = c;
                 self.run_job("Deleting permanently…", move || {
+                    let _busy = guard; // stays busy until the purge has finished
                     trash_bin::purge(items).map(|_| String::new())
                 });
             }
+            // Cancel or X: `c` is dropped here, which releases the lock with it.
             (2, _) | (_, true) => {}
             _ => self.confirm = Some(c),
         }

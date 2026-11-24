@@ -95,6 +95,17 @@ impl Explorer {
                     actions.push(Action::TrashSelectAll);
                 }
             }
+            // Typing (no shortcut) selects by name.
+            if !in_trash && !i.modifiers.command && !i.modifiers.alt {
+                let typed: String = i
+                    .events
+                    .iter()
+                    .filter_map(|e| if let egui::Event::Text(t) = e { Some(t.as_str()) } else { None })
+                    .collect();
+                if !typed.is_empty() {
+                    actions.push(Action::TypeAhead(typed));
+                }
+            }
             if !in_trash && i.consume_key(M::CTRL, Key::A) {
                 actions.push(Action::SelectAll);
             }

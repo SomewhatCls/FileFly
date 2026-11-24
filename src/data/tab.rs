@@ -93,6 +93,8 @@ pub(crate) struct Tab {
     pub(crate) editing_addr: bool,
     pub(crate) addr_focus: bool,
     pub(crate) scroll_to: Option<usize>,
+    /// Centre the row of `scroll_to` in the view instead of only bringing it into sight.
+    pub(crate) scroll_center: bool,
     pub(crate) rename: Option<RenameState>,
     pub(crate) pending_rename: Option<PathBuf>,
     pub(crate) trash: Option<TrashState>,
@@ -147,6 +149,7 @@ impl Tab {
             editing_addr: false,
             addr_focus: false,
             scroll_to: None,
+            scroll_center: false,
             rename: None,
             pending_rename: None,
             trash: None,

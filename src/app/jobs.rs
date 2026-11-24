@@ -57,6 +57,7 @@ impl Explorer {
             cancelable: true,
         };
         let (op, progress) = self.begin_op(spec);
+        self.lock_op_paths(op, items.iter().cloned().chain([dest.clone()]));
         progress.unpausable.store(true, std::sync::atomic::Ordering::Relaxed);
         progress.set_current(&file_name_lossy(&dest));
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
@@ -104,6 +105,7 @@ impl Explorer {
         }
         let tab = self.tabs[ti].id;
         let (op, progress) = self.begin_extract_op(&jobs);
+        self.lock_op_paths(op, jobs.iter().flat_map(|(zip, dest)| [zip.clone(), dest.clone()]));
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
             let mut created = Vec::new();
@@ -139,6 +141,7 @@ impl Explorer {
         let open: Option<PathBuf> = if open { jobs.first().map(|(_, t)| t.clone()) } else { None };
         let tab = self.tabs[ti].id;
         let (op, progress) = self.begin_extract_op(&jobs);
+        self.lock_op_paths(op, jobs.iter().flat_map(|(zip, target)| [zip.clone(), target.clone()]));
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
             let mut plan = PastePlan::default();
@@ -267,7 +270,7 @@ impl Explorer {
         &mut self,
         spec: OpSpec,
         f: impl FnOnce(Arc<OpProgress>) -> Result<String, String> + Send + 'static,
-    ) {
+    ) -> u64 {
         let (id, progress) = self.begin_op(spec);
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
@@ -278,6 +281,16 @@ impl Explorer {
             let _ = tx.send(AppMsg::Job(id, r));
             ui.request_repaint();
         });
+        id
+    }
+
+    /// Before the process ends: cancels the running operations and gives them a moment to remove
+    /// their half-written temp items (a crash or a slow cleanup is covered by the journal).
+    pub(crate) fn stop_ops_for_exit(&self) {
+        for op in &self.ops {
+            op.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        wait_for_temps(Duration::from_secs(3));
     }
 
     /// `run_op` for jobs that can't report progress: the dialog shows just the title and a moving bar.

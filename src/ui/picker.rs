@@ -627,7 +627,8 @@ fn folder_list(ui: &mut Ui, m: &Metrics, pal: &Palette, p: &mut FolderPicker, in
         hit,
         TableMode::Picker { can_make },
         &mut actions,
-        has_scanner
+        has_scanner,
+        &[],
     );
     // The table reports what happened as `Action`s; the picker only cares about a few of them.
     for a in actions {

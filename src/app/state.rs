@@ -22,6 +22,10 @@ pub(crate) struct Explorer {
     pub(crate) peazip: Option<PathBuf>,
     /// Zip files that are being unpacked right now so they can be browsed.
     pub(crate) extracting: HashSet<PathBuf>,
+    /// Ids of Recycle Bin items that a running operation is working on (restoring, deleting): they can't be
+    /// started on a second time. Shared with the worker threads, which release them when they end.
+    pub(crate) typeahead: TypeAhead,
+    pub(crate) trash_busy: Arc<std::sync::Mutex<HashSet<std::ffi::OsString>>>,
 
     pub(crate) msg_tx: Sender<AppMsg>,
     pub(crate) msg_rx: Receiver<AppMsg>,
@@ -212,6 +216,8 @@ impl Explorer {
             clipboard: None,
             peazip: find_peazip(),
             extracting: HashSet::new(),
+            typeahead: TypeAhead::default(),
+            trash_busy: Arc::default(),
             msg_tx,
             msg_rx,
             idx_rx,

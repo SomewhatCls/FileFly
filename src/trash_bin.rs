@@ -138,6 +138,11 @@ mod imp {
         p.is_absolute().then_some(p)
     }
 
+    /// Where the item was deleted from (and goes back to).
+    pub fn original(item: &Item) -> PathBuf {
+        item.original_path()
+    }
+
     pub fn restore(items: Vec<Item>, progress: &OpProgress) -> Result<(), String> {
         progress.total_items.store(items.len() as _, AO::Relaxed);
         let mut failed = Vec::new();
@@ -176,6 +181,9 @@ mod imp {
     }
     pub fn bin_dirs() -> Vec<PathBuf> {
         Vec::new()
+    }
+    pub fn original(_: &Item) -> PathBuf {
+        PathBuf::new()
     }
     pub fn restore(_items: Vec<Item>) -> Result<(), String> {
         Err("Not supported on this platform.".into())

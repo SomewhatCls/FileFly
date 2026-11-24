@@ -133,8 +133,12 @@ pub(crate) fn paste_one(it: &PasteItem, cut: bool, prog: &OpProgress) -> Pasted 
             }
         }
     }
+    // A move across drives can end with the item complete at the destination but its source only
+    // partly removed. Then the destination is the only complete copy: it counts as in place (the
+    // parked original goes), and the leftover source is reported.
+    let mut source_left: Option<io::Error> = None;
     let r = if cut {
-        move_item_with(&it.src, &it.dst, prog)
+        move_item_with(&it.src, &it.dst, prog).map(|left| source_left = left)
     } else {
         copy_item_with(&it.src, &it.dst, prog)
     };
@@ -151,7 +155,10 @@ pub(crate) fn paste_one(it: &PasteItem, cut: bool, prog: &OpProgress) -> Pasted 
         _ => {}
     }
     match r {
-        Ok(()) => Pasted::Done,
+        Ok(()) => match source_left {
+            None => Pasted::Done,
+            Some(e) => Pasted::from_io(format!("Moved “{name}”, but could not remove the original: {e}"), &e),
+        },
         Err(e) if is_cancelled(&e) => Pasted::Stopped,
         Err(e) => Pasted::from_io(format!("Could not paste “{name}”: {e}"), &e),
     }

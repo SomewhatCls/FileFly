@@ -23,6 +23,7 @@ impl Explorer {
         } else {
             format!("{verb} {n} items")
         };
+        let locked: Vec<PathBuf> = items.iter().flat_map(|it| [it.src.clone(), it.dst.clone()]).collect();
         let dir_of = |p: &Path| p.parent().map(|d| display_path(d).display().to_string()).unwrap_or_default();
         let spec = OpSpec {
             title,
@@ -30,7 +31,7 @@ impl Explorer {
             to: dir_of(&items[0].dst),
             cancelable: true,
         };
-        self.run_op(spec, move |prog| {
+        let op = self.run_op(spec, move |prog| {
             prog.total_items.store(n as u64, AO::Relaxed);
             // Size of every item (copies only), so a skipped item can take its share back out.
             let mut sizes: Vec<u64> = vec![0; n];
@@ -155,6 +156,7 @@ impl Explorer {
             }
             Err(text)
         });
+        self.lock_op_paths(op, locked);
     }
 
     pub(crate) fn paste(&mut self) {

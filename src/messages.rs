@@ -81,6 +81,8 @@ pub(crate) enum Action {
     GoToAddress(String),
     FocusAddress,
     FocusSearch,
+    /// Text typed while the file list has the focus: selects the first matching name.
+    TypeAhead(String),
     Open(PathBuf),
     Copy(Vec<PathBuf>),
     Cut(Vec<PathBuf>),

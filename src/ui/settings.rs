@@ -522,41 +522,14 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 });
             }
 
-            let is_windows_11 = System::kernel_version()
-                .and_then(|v| v.parse::<u32>().ok())
-                .is_some_and(|build| build >= 22000);
-
             fl_divider(ui, m, pal);
             fl_row(ui, m, pal, "Transparency effects", Some("Choose from available transparency effects"), |ui| {
-                let label = |t: TransparencyEffect| match t {
-                    TransparencyEffect::Mica => "Mica",
-                    TransparencyEffect::Acrylic => "Acrylic",
-                    TransparencyEffect::None => "None",
-                };
-                // Makes selectable transparency effects dependent on Windows version.
                 egui::ComboBox::from_id_salt("transparency")
                     .width(m.accessibility_scale * 150.0)
-                    .selected_text(label(sp.s.transparency_effect))
+                    .selected_text(sp.s.transparency_effect.label())
                     .show_ui(ui, |ui| {
-                        let effects = if is_windows_11 {
-                            vec![
-                                TransparencyEffect::Mica,
-                                TransparencyEffect::Acrylic,
-                                TransparencyEffect::None,
-                            ]
-                        } else {
-                            vec![
-                                TransparencyEffect::Acrylic,
-                                TransparencyEffect::None,
-                            ]
-                        };
-
-                        for t in effects {
-                            ui.selectable_value(
-                                &mut sp.s.transparency_effect,
-                                t,
-                                label(t),
-                            );
+                        for &t in TransparencyEffect::available() {
+                            ui.selectable_value(&mut sp.s.transparency_effect, t, t.label());
                         }
                     });
             });

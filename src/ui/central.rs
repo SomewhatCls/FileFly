@@ -20,6 +20,8 @@ pub(crate) fn tab_body(
     actions: &mut Vec<Action>,
     sp: Option<&mut SettingsPage>,
     has_scanner: bool,
+    busy: &HashSet<std::ffi::OsString>,
+    locked: &[PathBuf],
 ) {
     let tab_id = tab.id;
     if tab.page == Some(Page::Licenses) {
@@ -42,6 +44,7 @@ pub(crate) fn tab_body(
             trash,
             search,
             view_dirty,
+            notice,
             ..
         } = tab;
         let tr = trash.as_mut().unwrap();
@@ -56,7 +59,7 @@ pub(crate) fn tab_body(
                 .id_salt(("tab_body", tab_id))
                 .max_rect(inner),
             |ui| {
-                trash_table_ui(ui, m, pal, tr, searching, actions);
+                trash_table_ui(ui, m, pal, tr, tab_id, notice, searching, busy, actions);
             },
         );
         return;
@@ -76,7 +79,7 @@ pub(crate) fn tab_body(
             .max_rect(inner),
         |ui| {
             table_ui(
-                ui, m, pal, tab, cols, cut, can_paste, has_peazip, rect, TableMode::Explorer, actions, has_scanner,
+                ui, m, pal, tab, cols, cut, can_paste, has_peazip, rect, TableMode::Explorer, actions, has_scanner, locked,
             );
         },
     );
@@ -178,6 +181,8 @@ impl Explorer {
         } else {
             None
         };
+        let busy = self.trash_busy_ids();
+        let locked = self.locked_paths();
         let can_paste = self.can_paste();
         let has_peazip = self.peazip.is_some();
         let cut_set: Option<HashSet<PathBuf>> = self
@@ -212,6 +217,8 @@ impl Explorer {
                         actions,
                         sp.as_mut(),
                         if self.indexer.is_some(){true}else {false},
+                        &busy,
+                        &locked,
                     );
                 });
             }
@@ -319,6 +326,8 @@ impl Explorer {
                                     actions,
                                     sp.as_mut(),
                                     self.indexer.is_some(),
+                                    &busy,
+                                    &locked,
                                 );
                             },
                         );
@@ -339,6 +348,7 @@ impl Explorer {
                 self.load_tab(i); // the pane may have been out of date: only the focused folder is watched
             }
         }
+        self.draw_type_ahead(ui, &panes);
         self.tab_drag_overlay(ui, &panes);
     }
 }

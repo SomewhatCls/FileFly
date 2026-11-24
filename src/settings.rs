@@ -11,11 +11,50 @@ pub(crate) enum ThemeChoice {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub (crate) enum TransparencyEffect {
-    None,
+pub(crate) enum TransparencyEffect {
     Acrylic,
-    #[default]
     Mica,
+    /// Last, so that `serde(other)` can sit here: an unknown name in settings.json becomes None.
+    #[default]
+    #[serde(other)]
+    None,
+}
+
+impl TransparencyEffect {
+    /// The effects this system supports, in the order the Settings page lists them.
+    /// Mica needs Windows 11 (build 22000+), Acrylic any Windows 10 1803+; elsewhere there are none.
+    pub(crate) fn available() -> &'static [TransparencyEffect] {
+        static LIST: std::sync::OnceLock<&'static [TransparencyEffect]> = std::sync::OnceLock::new();
+        LIST.get_or_init(|| -> &'static [TransparencyEffect] {
+            if !cfg!(windows) {
+                return &[TransparencyEffect::None];
+            }
+            let build = System::kernel_version().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            if build >= 22000 {
+                &[TransparencyEffect::Mica, TransparencyEffect::Acrylic, TransparencyEffect::None]
+            } else {
+                &[TransparencyEffect::Acrylic, TransparencyEffect::None]
+            }
+        })
+    }
+
+    /// Mica on Windows 11, otherwise None.
+    pub(crate) fn system_default() -> TransparencyEffect {
+        if Self::available().contains(&TransparencyEffect::Mica) { TransparencyEffect::Mica } else { TransparencyEffect::None }
+    }
+
+    /// This effect if the system supports it, else the system default.
+    pub(crate) fn or_supported(self) -> TransparencyEffect {
+        if Self::available().contains(&self) { self } else { Self::system_default() }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            TransparencyEffect::Mica => "Mica",
+            TransparencyEffect::Acrylic => "Acrylic",
+            TransparencyEffect::None => "None",
+        }
+    }
 }
 
 /// A split layout in a form that can be stored: leaves are indices into `Session::tabs`.
@@ -155,7 +194,7 @@ impl Default for Settings {
             session: Session::default(),
             maximized: false,
             folder_icons: HashMap::new(),
-            transparency_effect: TransparencyEffect::Mica,
+            transparency_effect: TransparencyEffect::system_default(),
             startup_update_check: false,
             restore_tabs: true,
             show_whats_new: true,
@@ -227,6 +266,8 @@ pub(crate) fn load_settings() -> Settings {
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
+    // A setting saved on another system (or hand-edited) may name an unsupported effect.
+    s.transparency_effect = s.transparency_effect.or_supported();
     // A hand-edited or damaged file must not hide columns or make them unusable.
     let def = Settings::default().col_widths;
     for (w, d) in s.col_widths.iter_mut().zip(def) {

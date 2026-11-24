@@ -343,7 +343,7 @@ impl Explorer {
             caption: &title,
             width,
             max_height: m.accessibility_scale * 640.0,
-            transparency: self.backdrop_transparency.expect("A transparency effect should always be set"),
+            transparency: self.backdrop_transparency.unwrap_or(TransparencyEffect::None),
             custom_frame: self.settings.custom_frame,
             // The window's own close button / Alt+F4 cancels every cancelable operation in it (the window
             // then stays until they have really stopped); without any, it just hides them.

@@ -32,6 +32,17 @@ impl Explorer {
             );
             return;
         }
+        // Something that is being restored into place can't be changed until that is done.
+        let into_restore = match &action {
+            Action::Cut(p) | Action::Delete(p) | Action::Compress(p) => touches_locked(&self.locked_paths(), p),
+            Action::Rename(p) | Action::CommitRename(p, _) => touches_locked(&self.locked_paths(), std::slice::from_ref(p)),
+            _ => false,
+        };
+        if into_restore {
+            self.tabs[ti].rename = None;
+            self.tabs[ti].error("Not available while items are being restored here.".to_owned());
+            return;
+        }
         match action {
             Action::Navigate(p) => self.navigate_or_bin(ti, p),
             Action::NewTabAt(p) => {
@@ -130,10 +141,12 @@ impl Explorer {
             }
             Action::FocusAddress => {
                 let tab = &mut self.tabs[ti];
-                tab.address = tab.shown_dir().display().to_string();
+                // A page's address bar starts empty: its label is not a path.
+                tab.address = if tab.special() { String::new() } else { tab.shown_dir().display().to_string() };
                 tab.editing_addr = true;
                 tab.addr_focus = true;
             }
+            Action::TypeAhead(s) => self.type_ahead(ti, &s),
             Action::FocusSearch => self
                 .ui
                 .memory_mut(|m| m.request_focus(Id::unique("search_box"))),
@@ -264,7 +277,8 @@ impl Explorer {
                     to: String::new(),
                     cancelable: true,
                 };
-                self.run_op(spec, move |prog| {
+                let locked = p.clone();
+                let op = self.run_op(spec, move |prog| {
                     use std::sync::atomic::Ordering::Relaxed;
                     let _settle = trash_bin::DeletionGuard;
                     // Batches: progress between them and Cancel in the gaps. One call per file would be much
@@ -381,6 +395,7 @@ impl Explorer {
                     }
                     Ok(String::new())
                 });
+                self.lock_op_paths(op, locked);
             }
             Action::RetryAsAdmin => {
                 let Some((_, retry)) = self.admin_retry.take() else { return };
@@ -498,9 +513,14 @@ impl Explorer {
                         to: String::new(),
                         cancelable: false,
                     };
-                    self.run_op(spec, move |progress| {
+                    // The items stay busy (greyed out, can't be deleted) until the job is over.
+                    let busy = self.mark_trash_busy(&items);
+                    let origins: Vec<PathBuf> = items.iter().map(trash_bin::original).collect();
+                    let op = self.run_op(spec, move |progress| {
+                        let _busy = busy;
                         trash_bin::restore(items, &progress).map(|_| String::new())
                     });
+                    self.lock_op_paths(op, origins);
                 }
             }
             Action::TrashPurgeSelected => {
@@ -511,15 +531,18 @@ impl Explorer {
                         "{n} item{} will be deleted permanently. This can't be undone.",
                         if n == 1 { "" } else { "s" }
                     );
-                    self.confirm = Some(ConfirmPurge { items, text });
+                    let guard = self.mark_trash_busy(&items);
+                    self.confirm = Some(ConfirmPurge { items, text, guard });
                 }
             }
             Action::TrashEmpty => {
                 let items = self.trash_items(ti, true);
-                if !items.is_empty() {
+                // Not while items are being worked on: "all items" would not be true.
+                if !items.is_empty() && self.trash_busy_ids().is_empty() {
                     let n = items.len();
                     let text = format!("All {n} item{} in the Recycle Bin will be deleted permanently. This can't be undone.", if n == 1 { "" } else { "s" });
-                    self.confirm = Some(ConfirmPurge { items, text });
+                    let guard = self.mark_trash_busy(&items);
+                    self.confirm = Some(ConfirmPurge { items, text, guard });
                 }
             }
             Action::TrashSelectAll => {

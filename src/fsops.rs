@@ -912,19 +912,22 @@ pub fn get_clipboard() -> Option<(Vec<PathBuf>, bool)> {
 ///
 /// Reports to (and obeys pause/cancel of) `prog`. A rename adds no bytes; when the move has to become
 /// a copy, its size is added to the total only then.
-pub fn move_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> io::Result<()> {
+///
+/// `Ok(Some(e))`: the item is complete at the destination, but the source could not be removed
+/// afterwards (`e`). The caller must keep the destination: it is the only complete copy.
+pub fn move_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> io::Result<Option<io::Error>> {
     if fs::symlink_metadata(destination).is_ok() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
     }
     prog.checkpoint()?;
     prog.set_current(&file_label(source));
     match fs::rename(source, destination) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(None),
         Err(e) if is_cross_device(&e) => {
             let bytes = tree_bytes(source, prog)?;
             prog.add_total(bytes);
             copy_item_with(source, destination, prog)?; // source stays untouched until this fully succeeded
-            remove_existing(source)
+            Ok(remove_existing(source).err())
         }
         Err(e) => Err(e),
     }
@@ -1389,6 +1392,15 @@ fn journal_settle(tmp: &Path) {
     j.pending.swap_remove(i);
     if let (Some(t), Some(f)) = (line_safe(tmp), j.file.as_mut()) {
         let _ = f.write_all(format!("-\t{t}\n").as_bytes());
+    }
+}
+
+/// Waits (at most `limit`) until every temp item is gone again: cancelled operations remove theirs
+/// as they stop. Whatever is left is cleaned up by the next start, through the journal.
+pub fn wait_for_temps(limit: Duration) {
+    let end = std::time::Instant::now() + limit;
+    while !journal().pending.is_empty() && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 

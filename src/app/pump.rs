@@ -441,6 +441,7 @@ impl Explorer {
             save_settings(&self.settings);
             self.peers.shutdown();
             if let Some(ix) = &self.indexer { ix.save_if_dirty(true); }
+            self.stop_ops_for_exit();
             remove_archive_cache();
             finish_journal();
             terminate_now();
@@ -450,15 +451,9 @@ impl Explorer {
 
         // wanted_transparency is the transparency set by the user in the settings.
         // If transparency is disabled or None, wanted_transparency is None.
-        let wanted_transparency: Option<TransparencyEffect> = if self.transparency {
-            match self.settings.transparency_effect {
-                TransparencyEffect::Mica => Some(TransparencyEffect::Mica),
-                TransparencyEffect::Acrylic => Some(TransparencyEffect::Acrylic),
-                _ => None,
-            }
-        } else {
-            None
-        };
+        let wanted_transparency = (self.transparency
+            && self.settings.transparency_effect.or_supported() != TransparencyEffect::None)
+            .then(|| self.settings.transparency_effect.or_supported());
 
         // True if the theme was changed.
         let changed_theme = if self.settings.theme != self.theme_choice {
@@ -468,43 +463,28 @@ impl Explorer {
             false
         };
 
-        let changed_backdrop = if self.backdrop_transparency != wanted_transparency {
-            self.backdrop_transparency = wanted_transparency;
-            true
-        }else {
-            false
-        };
-        self.pal = Palette::new(
-            theme,
-            accent,
-            wanted_transparency.unwrap_or(TransparencyEffect::None),
-        );
-        // Re-apply a few times shortly after startup to beat the DWM race.
-        const RETRY_AT_MS: [u64; 4] = [150, 600, 1500, 3000];
+        let changed_backdrop = self.backdrop_transparency != wanted_transparency;
+        self.backdrop_transparency = wanted_transparency;
+        self.pal = Palette::new(theme, accent, wanted_transparency.unwrap_or(TransparencyEffect::None));
 
-        let mut force = false;
-        if let Some(_effect) = wanted_transparency {
-            if let Some(&t) = RETRY_AT_MS.get(self.backdrop_retries) {
+        // DWM can drop the effect while the window is still being set up, so it is applied again a few
+        // times shortly after startup.
+        const RETRY_AT_MS: [u64; 4] = [150, 600, 1500, 3000];
+        let mut redo = changed_backdrop || changed_theme;
+        if wanted_transparency.is_some() {
+            if let Some(&due) = RETRY_AT_MS.get(self.backdrop_retries) {
                 let elapsed = self.backdrop_start.elapsed().as_millis() as u64;
-                if elapsed >= t {
+                if elapsed >= due {
                     self.backdrop_retries += 1;
-                    force = true;
+                    redo = true;
                 } else {
                     // egui is reactive: without this, no frame runs to hit the next deadline
-                    ctx.request_repaint_after(Duration::from_millis(t - elapsed));
+                    ctx.request_repaint_after(Duration::from_millis(due - elapsed));
                 }
             }
         }
 
-        // Redraw the backdrop both when it or the theme changes.
-        if changed_backdrop || changed_theme {
-            clear_window_transparency_effects(frame);
-            if let Some(effect) = wanted_transparency {
-                apply_backdrop(frame, self.pal.dark, effect);
-                nudge_frame(frame);
-            }
-            ctx.request_repaint();
-        } else if force {
+        if redo {
             clear_window_transparency_effects(frame);
             if let Some(effect) = wanted_transparency {
                 apply_backdrop(frame, self.pal.dark, effect);
