@@ -18,24 +18,19 @@ impl Explorer {
     /// (so the sidebar entry and the Recycle Bin toolbar show up, like when clicking the sidebar entry).
     pub(crate) fn navigate_or_bin(&mut self, ti: usize, path: PathBuf) {
         if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&path) {
-            self.open_trash(ti);
+            self.open_trash();
         } else {
             self.navigate(ti, path);
         }
     }
 
-    /// Opens the Recycle Bin view as a new history step.
-    pub(crate) fn open_trash(&mut self, ti: usize) {
-        let tab = &mut self.tabs[ti];
-        if tab.page.take().is_some() {
-            // Leaving a page (Settings, Licenses): like `navigate`, the tab starts a fresh history.
-            tab.back.clear();
-            tab.fwd.clear();
-        } else if tab.trash.is_none() {
-            let cur = tab.place();
-            tab.back.push(cur);
-            tab.fwd.clear();
+    /// Opens the Recycle Bin in a tab of its own (or focuses the one that already shows it).
+    pub(crate) fn open_trash(&mut self) {
+        if let Some(i) = self.tabs.iter().position(|t| t.trash.is_some()) {
+            self.activate_tab(i);
+            return;
         }
+        let ti = self.push_special_tab();
         self.show_trash(ti);
     }
 

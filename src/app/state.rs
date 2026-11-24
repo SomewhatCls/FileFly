@@ -129,6 +129,14 @@ pub(crate) struct Explorer {
     pub(crate) deferred_extracts: Vec<PastePlan>,
 }
 
+/// The special tabs in a saved session: (its page, None for the Recycle Bin) and the marker written instead of
+/// a folder. Index 0 is the Recycle Bin.
+const SPECIAL_TABS: [(Option<Page>, &str); 3] = [
+    (None, "::recycle-bin"),
+    (Some(Page::Settings), "::settings"),
+    (Some(Page::Licenses), "::licenses"),
+];
+
 impl Explorer {
     pub(crate) fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ui = cc.egui_ctx.clone();
@@ -357,17 +365,25 @@ impl Explorer {
     }
     // ------------------------------------------------------------------ session
 
+    /// How a tab is written in the session: its folder, or for a special tab a marker that no path can
+    /// look like (`SPECIAL_TABS`), which an older version just skips.
+    fn saved_tab(t: &Tab) -> String {
+        if t.trash.is_some() {
+            return SPECIAL_TABS[0].1.to_owned();
+        }
+        match t.page {
+            Some(Page::Settings) => SPECIAL_TABS[1].1.to_owned(),
+            Some(Page::Licenses) => SPECIAL_TABS[2].1.to_owned(),
+            None => folder_outside(&t.dir).to_string_lossy().into_owned(),
+        }
+    }
+
     pub(crate) fn session_snapshot(&self) -> Session {
-        // Page tabs (Settings, Licenses) are not part of the session (it would come back as a plain folder tab).
-        let kept: Vec<&Tab> = self.tabs.iter().filter(|t| t.page.is_none()).collect();
-        let active_id = self.tabs.get(self.active).map(|t| t.id);
+        let all: Vec<&Tab> = self.tabs.iter().collect();
         Session {
-            tabs: kept.iter().map(|t| folder_outside(&t.dir).to_string_lossy().into_owned()).collect(),
-            active: kept.iter().position(|t| Some(t.id) == active_id).unwrap_or(0),
-            tiles: self
-                .tiles
-                .as_ref()
-                .and_then(|t| SavedTile::from_tile(t, &kept)),
+            tabs: all.iter().map(|t| Self::saved_tab(t)).collect(),
+            active: self.active,
+            tiles: self.tiles.as_ref().and_then(|t| SavedTile::from_tile(t, &all)),
             sidebar_width: self.sidebar_width,
         }
     }
@@ -376,23 +392,44 @@ impl Explorer {
     /// are skipped; if none are left the normal start folder stays.
     pub(crate) fn restore_session(&mut self) {
         let ses = self.settings.session.clone();
+        // A special tab sits on top of some folder, like when it is opened.
+        let base = self.tabs.get(self.active).map(|t| t.dir.clone()).or_else(dirs::home_dir).unwrap_or_default();
         let mut ids: Vec<Option<u64>> = Vec::new();
         let mut tabs: Vec<Tab> = Vec::new();
+        let mut bin_tabs: Vec<usize> = Vec::new();
         for p in &ses.tabs {
+            let special = SPECIAL_TABS.iter().position(|(_, marker)| marker == p);
             let dir = PathBuf::from(p);
-            if dir.is_dir() {
-                let id = tabs.len() as u64 + 1;
-                tabs.push(Tab::new(id, dir));
-                ids.push(Some(id));
-            } else {
+            if special.is_none() && !dir.is_dir() {
                 ids.push(None);
+                continue;
             }
+            let id = tabs.len() as u64 + 1;
+            let mut tab = Tab::new(id, if special.is_some() { base.clone() } else { dir });
+            match special {
+                Some(0) if !trash_bin::SUPPORTED => {
+                    ids.push(None);
+                    continue;
+                }
+                Some(0) => bin_tabs.push(tabs.len()),
+                Some(i) => {
+                    tab.page = SPECIAL_TABS[i].0;
+                    tab.load_gen = 1; // nothing to read: not a folder listing
+                }
+                None => {}
+            }
+            tabs.push(tab);
+            ids.push(Some(id));
         }
         if tabs.is_empty() {
             return;
         }
         self.next_tab_id = tabs.len() as u64 + 1;
         self.tabs = tabs;
+        for ti in bin_tabs {
+            self.show_trash(ti);
+            self.tabs[ti].load_gen = 1;
+        }
         self.active = ids
             .get(ses.active)
             .copied()

@@ -48,10 +48,7 @@ impl Explorer {
             Action::NewTabAt(p) => {
                 if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
                     // The raw folder is shown as the Recycle Bin view, in a tab of its own.
-                    let home = dirs::home_dir().unwrap_or_else(|| self.tabs[ti].dir.clone());
-                    self.new_tab(home);
-                    let tab = self.active;
-                    self.open_trash(tab);
+                    self.open_trash();
                 } else if has_zip_ext(&p) && p.is_file() {
                     // A zip gets its own tab next to its folder, then opens like a folder.
                     let home = p.parent().map(Path::to_path_buf).unwrap_or_else(|| p.clone());
@@ -152,7 +149,7 @@ impl Explorer {
                 .memory_mut(|m| m.request_focus(Id::unique("search_box"))),
             Action::Open(p) => {
                 if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
-                    self.open_trash(ti);
+                    self.open_trash();
                 } else {
                     self.open_path(&p);
                 }
@@ -499,7 +496,7 @@ impl Explorer {
             Action::UnpinQuick(p) => self.unpin_quick(&p),
             Action::OpenRecycleBin => {
                 if trash_bin::SUPPORTED {
-                    self.open_trash(ti);
+                    self.open_trash();
                 } else if let Err(e) = open_recycle_bin() {
                     self.tabs[ti].error(format!("Could not open the Recycle Bin: {e}"));
                 }

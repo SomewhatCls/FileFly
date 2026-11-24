@@ -827,20 +827,26 @@ impl Explorer {
             self.activate_tab(i);
             return;
         }
+        let ti = self.push_special_tab();
+        self.tabs[ti].page = Some(page);
+    }
+
+    /// Adds a tab for a page or the Recycle Bin (the caller sets which) and makes it the active one.
+    /// In tiled mode it takes over the focused pane. Returns its index.
+    pub(crate) fn push_special_tab(&mut self) -> usize {
         let dir = self.tabs[self.active].dir.clone();
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         if let Some(tree) = self.tiles.as_mut() {
-            // In tiled mode the new tab takes over the focused pane.
             let cur = self.tabs[self.active].id;
             tree.replace(cur, id);
         }
         let mut tab = Tab::new(id, dir);
-        tab.page = Some(page);
-        tab.load_gen = 1; // nothing to read: the page is not a folder listing
+        tab.load_gen = 1; // nothing to read: it is not a folder listing
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
         self.on_active_changed();
+        self.active
     }
 
     /// Applies what the Settings tab changed this frame (it works on a copy of the settings).
