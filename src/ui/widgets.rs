@@ -250,13 +250,45 @@ pub(crate) fn cmd_dropdown<R>(
     max_label_w: f32,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
+    cmd_dropdown_wide(ui, m, pal, Some(icon), false, label, None, tip, enabled, max_label_w, 0.0, add_contents)
+}
+
+/// `cmd_dropdown` with a minimum width for the opened menu (it is at least as wide as the button
+/// and 180 points, whatever `menu_min_w` is).
+pub(crate) fn cmd_dropdown_wide<R>(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    icon: Option<&str>,
+    spinner: bool,
+    label: Option<&str>,
+    // Overrides the label style with a custom color and font size.
+    label_style: Option<(f32, Color32)>,
+    tip: &str,
+    enabled: bool,
+    max_label_w: f32,
+    menu_min_w: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
     let icon_size = m.icon * 0.85;
+    // Dropdown chevron icon.
     let chevron = m.small_icon * 0.7;
+
+    let color = text_color(pal, enabled);
+    //Custom label styling if applicable.
+    let (label_size, label_color) = match label_style {
+        Some((size, c)) => (size, if enabled { c } else { pal.text_disabled }),
+        None => (m.font, color),
+    };
+
+    let has_lead = spinner || icon.is_some();
+    let lead_w = if has_lead { icon_size } else { 0.0 };
+    let lead_gap = if has_lead { m.pad * 0.6 } else { 0.0 };
 
     // paint_text elides labels wider than their rect, so only the width needs capping here.
     let width = match label {
-        Some(l) => m.pad * 3.2 + icon_size + chevron + text_width(ui, l, m.font).min(max_label_w),
-        None => m.pad * 2.4 + icon_size + chevron,
+        Some(l) => m.pad * 2.6 + lead_gap + lead_w + chevron + text_width(ui, l, label_size).min(max_label_w),
+        None => m.pad * 2.4 + lead_w + chevron,
     };
     let (rect, resp) = ui.allocate_exact_size(vec2(width, m.ctl_h), sense(enabled));
 
@@ -271,14 +303,15 @@ pub(crate) fn cmd_dropdown<R>(
         hover_fill(ui, rect, &resp, pal, m);
     }
 
-    let color = text_color(pal, enabled);
-    draw_icon(
-        ui,
-        pos2(rect.left() + m.pad + icon_size / 2.0, rect.center().y),
-        icon_size,
-        icon,
-        color,
-    );
+    // Draws an icon, a spinner, or nothing.
+    let lead_pos = pos2(rect.left() + m.pad + m.font / 2.0, rect.center().y);
+    if spinner {
+        let c = if enabled { pal.text_secondary } else { pal.text_disabled };
+        paint_spinner(ui, lead_pos, m.font, c);
+    } else if let Some(name) = icon {
+        draw_icon(ui, lead_pos, icon_size, name, color);
+    }
+
     let chevron_pos = pos2(rect.right() - m.pad - chevron / 2.0, rect.center().y);
     draw_icon(
         ui,
@@ -289,10 +322,10 @@ pub(crate) fn cmd_dropdown<R>(
     );
     if let Some(l) = label {
         let tr = Rect::from_min_max(
-            pos2(rect.left() + m.pad * 1.6 + icon_size, rect.top()),
+            pos2(rect.left() + m.pad + lead_w + lead_gap, rect.top()),
             pos2(chevron_pos.x - chevron / 2.0 - m.pad * 0.6, rect.bottom()),
         );
-        paint_text(ui, tr, l, FontId::proportional(m.font), color, false);
+        paint_text(ui, tr, l, FontId::proportional(label_size), label_color, false);
     }
 
     // Don't show the tooltip on top of the menu.
@@ -302,7 +335,7 @@ pub(crate) fn cmd_dropdown<R>(
     }
 
     let res = egui::Popup::menu(&resp)
-        .width(rect.width().max(m.accessibility_scale * 180.0))
+        .width(rect.width().max(m.accessibility_scale * 180.0).max(menu_min_w))
         .show(add_contents);
     ui.data_mut(|d| d.insert_temp(open_id, res.is_some()));
     res.map(|r| r.inner)

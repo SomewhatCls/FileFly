@@ -248,6 +248,7 @@ pub(crate) fn table_ui(
     let avail = (ui.available_width() - m.pad * 0.5).max(100.0);
 
     // ---- Notification bar (errors in red, everything else in green)
+    // TODO: consider turning this notification bar into a widget.
     let shown = notice
         .clone()
         .or_else(|| git_error.clone().map(Notice::error));
