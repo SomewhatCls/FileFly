@@ -400,7 +400,9 @@ impl Explorer {
         for p in &ses.tabs {
             let special = SPECIAL_TABS.iter().position(|(_, marker)| marker == p);
             let dir = PathBuf::from(p);
-            if special.is_none() && !dir.is_dir() {
+            // (A network folder is not looked at here: that could hold up the start for seconds. If it is gone,
+            // its listing says so.)
+            if special.is_none() && !is_network_path(&dir) && !dir.is_dir() {
                 ids.push(None);
                 continue;
             }

@@ -474,22 +474,30 @@ mod imp {
         out
     }
 
-    /// Installed WSL distributions as lines "<1 if running, else 0>\t<name>". Running ones are the entries of
-    /// `\\\\wsl.localhost\\` (listing it starts nothing); the rest come from the registry.
+    /// Names of the running WSL distributions, as `wsl.exe --list --running` reports them (UTF-16 text). Asking
+    /// starts nothing. (The `\\\\wsl.localhost\\` root can't be listed with the file APIs, so that is no way to
+    /// tell.) Only names that are registered count, which also drops the "no running distributions" message,
+    /// whatever language it is in.
+    fn running_wsl_distros(registered: &[String]) -> Vec<String> {
+        use std::os::windows::process::CommandExt;
+        let out = std::process::Command::new("wsl.exe")
+            .args(["--list", "--running", "--quiet"])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output();
+        let Ok(out) = out else { return Vec::new() };
+        let units: Vec<u16> = out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&units)
+            .lines()
+            .map(|l| l.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}').to_owned())
+            .filter(|l| registered.iter().any(|n| n.eq_ignore_ascii_case(l)))
+            .collect()
+    }
+
+    /// Installed WSL distributions as lines "<1 if running, else 0>\t<name>": the installed ones come from the
+    /// registry, the running ones from `running_wsl_distros`.
     fn probe_wsl_list(_: &str) -> ProbeResult {
-        let mut running: Vec<String> = Vec::new();
-        for host in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {
-            if let Ok(rd) = std::fs::read_dir(host) {
-                running.extend(rd.flatten().filter_map(|e| e.file_name().to_str().map(str::to_owned)));
-                break;
-            }
-        }
-        let mut names = registered_wsl_distros();
-        for r in &running {
-            if !names.iter().any(|n| n.eq_ignore_ascii_case(r)) {
-                names.push(r.clone());
-            }
-        }
+        let names = registered_wsl_distros();
+        let running = running_wsl_distros(&names);
         let lines: Vec<String> = names
             .iter()
             .filter(|n| !n.is_empty() && !n.starts_with("docker-desktop"))

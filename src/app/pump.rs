@@ -160,6 +160,35 @@ impl Explorer {
                         }
                     }
                 }
+                AppMsg::NavResolved { tab, seq, requested, select, result } => {
+                    let Some(ti) = self.tabs.iter().position(|t| t.id == tab && t.nav_seq == seq) else { continue };
+                    match result {
+                        Ok(path) => self.finish_navigate(ti, path, select),
+                        Err(e) => {
+                            self.tabs[ti].loading = false;
+                            if e.denied {
+                                self.admin_retry = Some((e.msg.clone(), AdminRetry::OpenFolder(requested)));
+                            }
+                            self.tabs[ti].error(e.msg);
+                        }
+                    }
+                }
+                AppMsg::OpenZip { tab, seq, path } => {
+                    if let Some(ti) = self.tabs.iter().position(|t| t.id == tab && t.nav_seq == seq) {
+                        self.navigate(ti, path);
+                    }
+                }
+                AppMsg::OpenFailed { tab, msg, retry } => {
+                    if let Some(ti) = self.tabs.iter().position(|t| t.id == tab) {
+                        self.tabs[ti].loading = false;
+                        if !msg.is_empty() {
+                            if let Some(retry) = retry {
+                                self.admin_retry = Some((msg.clone(), retry));
+                            }
+                            self.tabs[ti].error(msg);
+                        }
+                    }
+                }
                 AppMsg::ArchiveReady { tab, zip, target, result } => {
                     self.extracting.remove(&zip);
                     self.job_finished();

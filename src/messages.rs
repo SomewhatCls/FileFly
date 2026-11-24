@@ -21,6 +21,20 @@ pub(crate) enum AppMsg {
         seq: u64,
         result: Result<Vec<trash_bin::TrashRow>, String>,
     },
+    /// A folder path was looked at in the background (see `Explorer::navigate`): the real folder, or why not.
+    /// Dropped when the tab has moved on since (`seq` is `Tab::nav_seq`).
+    NavResolved {
+        tab: u64,
+        seq: u64,
+        requested: PathBuf,
+        select: Option<PathBuf>,
+        result: Result<PathBuf, NavError>,
+    },
+    /// What `open_path` found at its path: a zip to browse like a folder (a folder is `NavResolved`).
+    OpenZip { tab: u64, seq: u64, path: PathBuf },
+    /// `open_path` is done with a file or an unreachable item: stops the tab's loading mark and reports `msg`
+    /// (empty: nothing to report).
+    OpenFailed { tab: u64, msg: String, retry: Option<AdminRetry> },
     /// A zip file was unpacked for browsing (see `fsops::mount_archive`); `target` is the path
     /// (through the zip) the tab should now open.
     ArchiveReady {
@@ -134,4 +148,11 @@ pub(crate) enum Action {
     DownloadUpdate,
     /// Context menu on a .lnk file: open the folder its target lives in and select the target.
     OpenShortcutLocation(PathBuf),
+}
+
+/// Why a folder could not be opened.
+pub(crate) struct NavError {
+    pub(crate) msg: String,
+    /// Refused for lack of access rights: an administrator retry may work.
+    pub(crate) denied: bool,
 }

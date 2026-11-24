@@ -87,6 +87,9 @@ pub(crate) struct Tab {
     pub(crate) git_error: Option<String>,
     pub(crate) loading: bool,
     pub(crate) load_gen: u64,
+    /// Counts navigation requests whose target is still being looked at in the background; an answer
+    /// for an older number is dropped.
+    pub(crate) nav_seq: u64,
     pub(crate) sort_col: SortColumn,
     pub(crate) sort_asc: bool,
     pub(crate) address: String,
@@ -144,6 +147,7 @@ impl Tab {
             git_error: None,
             loading: false,
             load_gen: 0,
+            nav_seq: 0,
             sort_col: SortColumn::Name,
             sort_asc: true,
             editing_addr: false,

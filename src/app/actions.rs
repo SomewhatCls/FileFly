@@ -466,8 +466,11 @@ impl Explorer {
             Action::Properties(p) => self.open_properties(p),
             Action::OpenContaining(p) => {
                 if let Some(parent) = p.parent().map(Path::to_path_buf) {
-                    self.navigate_or_bin(ti, parent);
-                    self.tabs[ti].select_only(p);
+                    if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&parent) {
+                        self.open_trash();
+                    } else {
+                        self.navigate_selecting(ti, parent, Some(p));
+                    }
                 }
             }
             Action::OpenShortcutLocation(p) => self.open_shortcut_location(ti, p),
