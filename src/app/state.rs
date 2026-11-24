@@ -285,6 +285,7 @@ impl Explorer {
         if START_DIR.get().is_none() && app.settings.restore_tabs {
             app.restore_session();
         }
+        #[cfg(feature = "github-updater")]
         if check_for_update {
             app.check_for_update(true);
         }

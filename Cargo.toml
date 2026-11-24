@@ -47,3 +47,7 @@ winres = "0.1.12"
 [package.metadata.appimage]
 icon = "assets/logo.png"
 desktop_entry = "other/FileFly.desktop"
+
+[features]
+default = ["github-updater"]
+github-updater = []

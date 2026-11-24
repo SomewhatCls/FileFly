@@ -766,50 +766,54 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             Some("Shows a button next to Settings that lists what changed in this version. A dot marks it until you have read the notes. Reading them loads them from GitHub."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.show_whats_new),
         );
-        fl_divider(ui, m, pal);
-        fl_row(
-            ui,
-            m,
-            pal,
-            "Check for updates on launch",
-            Some("If active, the app will contact GitHub on launch to check for the newest release. If an update was found, it is shown as a notification."),
-            |ui| fl_switch(ui, m, pal, &mut sp.s.startup_update_check),
-        );
-        fl_divider(ui, m, pal);
-        let (hint, label) = match &sp.update {
-            UpdateState::Idle => (
-                "Checks the github releases for whether the latest version is installed.".to_owned(),
-                "Check",
-            ),
-            UpdateState::Checking => ("Checking…".to_owned(), "Check"),
-            UpdateState::UpToDate => ("You are running the current-most version.".to_owned(), "Check"),
-            UpdateState::Available(_) => (
-                "You can update to a newer version, click the Download button to start.".to_owned(),
-                "Download",
-            ),
-            UpdateState::Failed(e) => (format!("Couldn't check for updates: {e}."), "Check"),
-        };
-        let available = matches!(sp.update, UpdateState::Available(_));
-        let busy = matches!(sp.update, UpdateState::Checking);
+        // Do not show the updates section on msix versions of the app.
+        #[cfg(feature = "github-updater")]
+        {
+            fl_divider(ui, m, pal);
+            fl_row(
+                ui,
+                m,
+                pal,
+                "Check for updates on launch",
+                Some("If active, the app will contact GitHub on launch to check for the newest release. If an update was found, it is shown as a notification."),
+                |ui| fl_switch(ui, m, pal, &mut sp.s.startup_update_check),
+            );
+            fl_divider(ui, m, pal);
+            let (hint, label) = match &sp.update {
+                UpdateState::Idle => (
+                    "Checks the github releases for whether the latest version is installed.".to_owned(),
+                    "Check",
+                ),
+                UpdateState::Checking => ("Checking…".to_owned(), "Check"),
+                UpdateState::UpToDate => ("You are running the current-most version.".to_owned(), "Check"),
+                UpdateState::Available(_) => (
+                    "You can update to a newer version, click the Download button to start.".to_owned(),
+                    "Download",
+                ),
+                UpdateState::Failed(e) => (format!("Couldn't check for updates: {e}."), "Check"),
+            };
+            let available = matches!(sp.update, UpdateState::Available(_));
+            let busy = matches!(sp.update, UpdateState::Checking);
 
-        fl_row(ui, m, pal, "Check for updates", Some(&hint), |ui| {
-            let clicked = ui
-                .add_enabled_ui(!busy, |ui| {
+            fl_row(ui, m, pal, "Check for updates", Some(&hint), |ui| {
+                let clicked = ui
+                    .add_enabled_ui(!busy, |ui| {
+                        if available {
+                            primary_button(ui, m, pal, label).clicked()
+                        } else {
+                            secondary_button(ui, m, pal, label).clicked()
+                        }
+                    })
+                    .inner;
+                if clicked {
                     if available {
-                        primary_button(ui, m, pal, label).clicked()
+                        sp.download_update = true;
                     } else {
-                        secondary_button(ui, m, pal, label).clicked()
+                        sp.check_update = true;
                     }
-                })
-                .inner;
-            if clicked {
-                if available {
-                    sp.download_update = true;
-                } else {
-                    sp.check_update = true;
                 }
-            }
-        });
+            });
+        }
     });
 
     // ---------------------------------------------------------------- About
