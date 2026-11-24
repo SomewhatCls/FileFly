@@ -693,7 +693,7 @@ pub fn draw_path_icon(ui: &Ui, center: Pos2, size: f32, key: &str, path: &Path, 
                 .tint(Color32::from_white_alpha(tint.a()))
                 .paint_at(ui, Rect::from_center_size(center, vec2(size, size)));
         }
-        None => draw_icon(ui, center, size, fallback, tint),
+        None => draw_builtin_icon(ui, center, size, fallback, tint),
     }
 }
 
@@ -719,6 +719,16 @@ pub fn draw_system_icon(ui: &Ui, center: Pos2, size: f32, e: &Entry, tint: Color
 
 /// Built-in SVG icon
 pub fn draw_icon(ui: &Ui, center: Pos2, size: f32, name: &str, tint: Color32) {
+    // The Recycle Bin has the system's own icon (which changes with the bin's fill state), wherever it is drawn.
+    if name == "recycle_bin" {
+        draw_recycle_bin_icon(ui, center, size, tint);
+    } else {
+        draw_builtin_icon(ui, center, size, name, tint);
+    }
+}
+
+/// An embedded SVG icon, never a system one.
+fn draw_builtin_icon(ui: &Ui, center: Pos2, size: f32, name: &str, tint: Color32) {
     egui::Image::new(icon_source(name))
         .tint(tint)
         .paint_at(ui, Rect::from_center_size(center, vec2(size, size)));

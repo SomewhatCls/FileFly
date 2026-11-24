@@ -47,9 +47,6 @@ fn draw_nav_icon(ui: &mut Ui, c: egui::Pos2, size: f32, icon: &str, path: Option
             icon,
             Color32::WHITE,
         ),
-        //Separate recycle bin handling because the icon changes
-        // depending on its fill state on certain platforms (relevant here is Linux).
-        None if icon == "recycle_bin" => draw_recycle_bin_icon(ui, c, size, Color32::WHITE),
         None => draw_icon(ui, c, size, icon, Color32::WHITE),
     }
 }
