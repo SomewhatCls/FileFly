@@ -49,7 +49,7 @@ impl Explorer {
                 if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
                     // The raw folder is shown as the Recycle Bin view, in a tab of its own.
                     self.open_trash();
-                } else if has_zip_ext(&p) && p.is_file() {
+                } else if has_archive_ext(&p) && p.is_file() {
                     // A zip gets its own tab next to its folder, then opens like a folder.
                     let home = p.parent().map(Path::to_path_buf).unwrap_or_else(|| p.clone());
                     self.new_tab(home);

@@ -300,7 +300,7 @@ impl Explorer {
                     let result = resolve_folder(&path);
                     AppMsg::NavResolved { tab: id, seq, requested: path, select: None, result }
                 }
-                Ok(m) if m.is_file() && has_zip_ext(&path) => AppMsg::OpenZip { tab: id, seq, path },
+                Ok(m) if m.is_file() && has_archive_ext(&path) => AppMsg::OpenZip { tab: id, seq, path },
                 Ok(_) => match open::that(&path) {
                     Ok(()) => AppMsg::OpenFailed { tab: id, msg: String::new(), retry: None }, // nothing to report
                     Err(e) => {

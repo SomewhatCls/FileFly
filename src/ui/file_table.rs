@@ -819,7 +819,7 @@ pub(crate) fn table_ui(
                 if resp.double_clicked() && !renaming_here {
                     actions.push(Action::Open(e.path.clone()));
                 }
-                if resp.middle_clicked() && (e.is_dir || has_zip_ext(&e.path)) {
+                if resp.middle_clicked() && (e.is_dir || has_archive_ext(&e.path)) {
                     actions.push(Action::NewTabAt(e.path.clone()));
                 }
 
@@ -881,7 +881,7 @@ pub(crate) fn table_ui(
                     let in_archive = archive_of(p).is_some();
                     // Being restored into place right now: can't be moved, renamed or deleted.
                     let restoring = touches_locked(locked, &targets);
-                    if (e.is_dir || has_zip_ext(&e.path))
+                    if (e.is_dir || has_archive_ext(&e.path))
                         && menu_item(ui, m, pal, Some("new_tab"), "Open in new tab", None, true)
                     {
                         actions.push(Action::NewTabAt(p.clone()));
@@ -924,7 +924,7 @@ pub(crate) fn table_ui(
                     ui.separator();
                     // Native zip support: unzipped items can be compressed, zip files extracted.
                     let zips: Vec<PathBuf> =
-                        targets.iter().filter(|t| has_zip_ext(t)).cloned().collect();
+                        targets.iter().filter(|t| has_archive_ext(t)).cloned().collect();
                     if !zips.is_empty() {
                         if menu_item(ui, m, pal, Some("archive"), "Extract all", None, true) {
                             actions.push(Action::Extract(zips.clone()));

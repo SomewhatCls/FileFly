@@ -88,10 +88,10 @@ impl Explorer {
     pub(crate) fn extract(&mut self, ti: usize, zips: Vec<PathBuf>) {
         let mut jobs: Vec<(PathBuf, PathBuf)> = Vec::new();
         for zip in zips.into_iter().filter(|z| z.is_file()) {
-            let (Some(parent), Some(stem)) = (zip.parent(), zip.file_stem()) else {
+            let Some(parent) = zip.parent() else {
                 continue;
             };
-            let dest = unique_folder_name(&folder_outside(parent).join(stem));
+            let dest = unique_folder_name(&folder_outside(parent).join(archive_stem(&zip)));
             jobs.push((zip, dest));
         }
         self.run_extract_new_folder(ti, jobs);
