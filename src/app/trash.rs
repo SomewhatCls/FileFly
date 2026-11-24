@@ -68,6 +68,12 @@ impl Explorer {
         });
     }
 
+    /// Starts the background upkeep of the Recycle Bin size shown in the sidebar (only the first call does anything).
+    pub(crate) fn start_trash_index(&self) {
+        let ui = self.ui.clone();
+        trash_bin::start_index(move || ui.request_repaint());
+    }
+
     pub(crate) fn trash_items(&self, ti: usize, all: bool) -> Vec<trash_bin::Item> {
         self.tabs[ti]
             .trash

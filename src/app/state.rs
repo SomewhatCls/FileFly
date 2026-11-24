@@ -162,6 +162,7 @@ impl Explorer {
             .clone()
             .filter(|p| p.is_dir())
             .unwrap_or_else(app_dir);
+        trash_bin::init_index(&index_dir);
 
         let indexer = settings
             .calculate_folder_sizes
@@ -171,6 +172,7 @@ impl Explorer {
             Some(ix) => DirWatcher::new(ui.clone(), ix.change_sink()),
             None => DirWatcher::ui_only(ui.clone()),
         };
+        trash_bin::set_index_enabled(indexer.is_some());
         std::thread::spawn(|| {
             // Leftovers of a crashed run: unpacked zips, and half-finished copy/move/zip temp items.
             sweep_old_archive_caches();
@@ -299,6 +301,7 @@ impl Explorer {
         if on == self.indexer.is_some() {
             return;
         }
+        trash_bin::set_index_enabled(on);
         if on {
             let ix = Indexer::new(self.ui.clone(), self.idx_tx.clone(), &self.index_dir);
             self.watcher = DirWatcher::new(self.ui.clone(), ix.change_sink());

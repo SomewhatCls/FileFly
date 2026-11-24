@@ -239,6 +239,24 @@ impl Explorer {
                 if p.is_empty() {
                     return;
                 }
+                // Folders arrive in the bin with the size the list shows for them (a running total
+                // if the scan wasn't finished), or else the indexer's stored one; the Recycle Bin
+                // size in the sidebar starts from it. It is exact only if the indexer vouches for it.
+                if let Some(ix) = &self.indexer {
+                    let sel: HashSet<&PathBuf> = p.iter().collect();
+                    let shown: HashMap<&PathBuf, u64> = self.tabs[ti]
+                        .entries
+                        .iter()
+                        .filter(|e| e.is_dir && sel.contains(&e.path))
+                        .filter_map(|e| Some((&e.path, e.dir_size?)))
+                        .collect();
+                    for x in &p {
+                        let stored = ix.lookup_fresh(x);
+                        if let Some(size) = shown.get(x).copied().or(stored.map(|(s, _)| s)) {
+                            trash_bin::expect_trashed(x.clone(), size, stored.is_some_and(|(_, fresh)| fresh));
+                        }
+                    }
+                }
                 let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
                 let spec = OpSpec {
                     title: "Moving to Recycle Bin".to_owned(),
@@ -248,6 +266,7 @@ impl Explorer {
                 };
                 self.run_op(spec, move |prog| {
                     use std::sync::atomic::Ordering::Relaxed;
+                    let _settle = trash_bin::DeletionGuard;
                     // Batches: progress between them and Cancel in the gaps. One call per file would be much
                     // slower, because each starts its own shell operation. A running shell operation
                     // itself cannot be interrupted, so Cancel takes effect at the next gap.
@@ -473,8 +492,14 @@ impl Explorer {
             Action::TrashRestoreSelected => {
                 let items = self.trash_items(ti, false);
                 if !items.is_empty() {
-                    self.run_job("Restoring…", move || {
-                        trash_bin::restore(items).map(|_| String::new())
+                    let spec = OpSpec {
+                        title: "Restoring".to_owned(),
+                        from: String::new(),
+                        to: String::new(),
+                        cancelable: false,
+                    };
+                    self.run_op(spec, move |progress| {
+                        trash_bin::restore(items, &progress).map(|_| String::new())
                     });
                 }
             }

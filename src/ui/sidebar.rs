@@ -336,6 +336,29 @@ pub(crate) fn nav_item_collapsed(
     resp.on_hover_text(label)
 }
 
+/// The Recycle Bin's fill size: "> " marks a lower bound (a folder is still being summed).
+/// Nothing for an empty bin.
+fn bin_size_text((bytes, dirty): (u64, bool)) -> Option<String> {
+    (bytes > 0 || dirty).then(|| format!("{}{}", if dirty { "> " } else { "" }, format_size(bytes)))
+}
+
+/// The Recycle Bin size, right-aligned in its (expanded) row; a spinner until the first value is known.
+fn paint_bin_size(ui: &Ui, m: &Metrics, pal: &Palette, row: Rect) {
+    let inner = row.shrink2(vec2(0.0, 1.0));
+    match trash_bin::index_summary() {
+        None => {
+            let d = size_spinner_diameter(m);
+            paint_spinner(ui, pos2(inner.right() - m.pad * 1.5 - d / 2.0, inner.center().y), d, pal.accent);
+        }
+        Some(s) => {
+            let Some(text) = bin_size_text(s) else { return };
+            let left = inner.left() + m.pad * 3.3 + m.icon + text_width(ui, "Recycle Bin", m.font);
+            let tr = Rect::from_min_max(pos2(left, inner.top()), pos2(inner.right() - m.pad, inner.bottom()));
+            paint_text(ui, tr, &text, FontId::proportional(m.font * 0.86), pal.text_secondary, true);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Drives
 // ---------------------------------------------------------------------------------------------
@@ -481,6 +504,7 @@ pub(crate) fn drive_collapsed(
 
 impl Explorer {
     pub(crate) fn ui_sidebar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        self.start_trash_index();
         let (m, pal) = (self.m, self.pal);
         let collapsed = self.sidebar_collapsed;
         let mut toggle_collapse = false;
@@ -534,9 +558,17 @@ impl Explorer {
                 // Bottom-up: the Recycle Bin is pinned, the rest scrolls only when it has to.
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     let bin = if collapsed {
-                        nav_item_collapsed(ui, &m, &pal, "recycle_bin", None, "Recycle Bin", trash_active)
+                        let tip = match trash_bin::index_summary().and_then(bin_size_text) {
+                            Some(size) => format!("Recycle Bin\n{size}"),
+                            None => "Recycle Bin".to_owned(),
+                        };
+                        nav_item_collapsed(ui, &m, &pal, "recycle_bin", None, &tip, trash_active)
                     } else {
-                        nav_item(ui, &m, &pal, "recycle_bin", "Recycle Bin", trash_active)
+                        let resp = nav_item(ui, &m, &pal, "recycle_bin", "Recycle Bin", trash_active);
+                        if trash_bin::index_enabled() {
+                            paint_bin_size(ui, &m, &pal, resp.rect);
+                        }
+                        resp
                     };
                     if bin.clicked() {
                         actions.push(Action::OpenRecycleBin);
