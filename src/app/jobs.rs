@@ -141,7 +141,8 @@ impl Explorer {
         let open: Option<PathBuf> = if open { jobs.first().map(|(_, t)| t.clone()) } else { None };
         let tab = self.tabs[ti].id;
         let (op, progress) = self.begin_extract_op(&jobs);
-        self.lock_op_paths(op, jobs.iter().flat_map(|(zip, target)| [zip.clone(), target.clone()]));
+        // Only the archives: the target folder may be a big shared one, and what lands in it is not known yet.
+        self.lock_op_paths(op, jobs.iter().map(|(zip, _)| zip.clone()));
         let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
         std::thread::spawn(move || {
             let mut plan = PastePlan::default();

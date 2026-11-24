@@ -505,23 +505,8 @@ impl Explorer {
                 }
             }
             Action::TrashRestoreSelected => {
-                let items = self.trash_items(ti, false);
-                if !items.is_empty() {
-                    let spec = OpSpec {
-                        title: "Restoring".to_owned(),
-                        from: String::new(),
-                        to: String::new(),
-                        cancelable: false,
-                    };
-                    // The items stay busy (greyed out, can't be deleted) until the job is over.
-                    let busy = self.mark_trash_busy(&items);
-                    let origins: Vec<PathBuf> = items.iter().map(trash_bin::original).collect();
-                    let op = self.run_op(spec, move |progress| {
-                        let _busy = busy;
-                        trash_bin::restore(items, &progress).map(|_| String::new())
-                    });
-                    self.lock_op_paths(op, origins);
-                }
+                let items = self.trash_items_with_kind(ti, false);
+                self.begin_restore(items);
             }
             Action::TrashPurgeSelected => {
                 let items = self.trash_items(ti, false);

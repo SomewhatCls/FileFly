@@ -97,6 +97,66 @@ impl Explorer {
             .unwrap_or_default()
     }
 
+    /// The free items of the Recycle Bin view (all, or the selected ones) with whether each is a folder.
+    pub(crate) fn trash_items_with_kind(&self, ti: usize, all: bool) -> Vec<(trash_bin::Item, bool)> {
+        let busy = self.trash_busy_ids();
+        let Some(tr) = self.tabs[ti].trash.as_ref() else { return Vec::new() };
+        let rows: Vec<&trash_bin::TrashRow> = if all {
+            tr.rows.iter().collect()
+        } else {
+            tr.selected.iter().filter_map(|&i| tr.rows.get(i)).collect()
+        };
+        rows.into_iter().filter(|r| !busy.contains(&r.item.id)).map(|r| (r.item.clone(), r.is_dir)).collect()
+    }
+
+    /// Restores `items`. Those whose original place is taken (by something else, or by another item of
+    /// this very restore) first raise the question: replace, keep both, or skip.
+    pub(crate) fn begin_restore(&mut self, items: Vec<(trash_bin::Item, bool)>) {
+        if items.is_empty() || self.restore_conflict.is_some() {
+            return;
+        }
+        let plain: Vec<trash_bin::Item> = items.iter().map(|(i, _)| i.clone()).collect();
+        let guard = self.mark_trash_busy(&plain);
+        let mut claimed: HashSet<PathBuf> = HashSet::new();
+        let (mut ready, mut todo) = (Vec::new(), VecDeque::new());
+        for (item, is_dir) in items {
+            let dst = trash_bin::original(&item);
+            if occupied(&dst) || !claimed.insert(dst) {
+                todo.push_back((item, is_dir));
+            } else {
+                ready.push((item, trash_bin::Clash::None));
+            }
+        }
+        if todo.is_empty() {
+            self.run_restore(ready, guard);
+        } else {
+            self.restore_conflict = Some(PendingRestore { ready, todo, apply_all: false, guard });
+        }
+    }
+
+    /// Runs the decided restores as one background job. The items stay busy (greyed out) until it is over.
+    pub(crate) fn run_restore(&mut self, ready: Vec<(trash_bin::Item, trash_bin::Clash)>, guard: BusyGuard) {
+        if ready.is_empty() {
+            return;
+        }
+        let spec = OpSpec { title: "Restoring".to_owned(), from: String::new(), to: String::new(), cancelable: false };
+        let paths: Vec<PathBuf> = ready
+            .iter()
+            .flat_map(|(item, clash)| {
+                let own = trash_bin::original(item);
+                match clash {
+                    trash_bin::Clash::KeepBoth(new) => vec![own, new.clone()],
+                    _ => vec![own],
+                }
+            })
+            .collect();
+        let op = self.run_op(spec, move |progress| {
+            let _busy = guard;
+            trash_bin::restore(ready, &progress).map(|_| String::new())
+        });
+        self.lock_op_paths(op, paths);
+    }
+
     /// Marks `items` as busy until the returned guard is dropped: move the guard into the job that
     /// works on them.
     pub(crate) fn mark_trash_busy(&self, items: &[trash_bin::Item]) -> BusyGuard {

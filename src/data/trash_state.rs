@@ -53,6 +53,18 @@ pub(crate) struct ConfirmPurge {
     pub(crate) guard: BusyGuard,
 }
 
+/// A restore waiting for the user to decide what to do with each item whose place is taken.
+pub(crate) struct PendingRestore {
+    /// Items that need no decision (or were already decided).
+    pub(crate) ready: Vec<(trash_bin::Item, trash_bin::Clash)>,
+    /// (item, is a folder) whose original path is taken; the front one is being asked about.
+    pub(crate) todo: VecDeque<(trash_bin::Item, bool)>,
+    /// "Do this for all remaining conflicts" was ticked.
+    pub(crate) apply_all: bool,
+    /// Keeps all the items busy while the question is open; moves into the job that restores them.
+    pub(crate) guard: BusyGuard,
+}
+
 /// Marks Recycle Bin items as being worked on (`Explorer::trash_busy`) for as long as it lives: they
 /// can't be restored or deleted a second time. Dropping it releases them, however the job ends
 /// (finished, failed, cancelled, or panicked).

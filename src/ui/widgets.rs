@@ -544,22 +544,8 @@ fn dialog_surface(pal: &Palette) -> Color32 {
     if pal.dark { Color32::from_rgb(43, 43, 43) } else { Color32::from_rgb(249, 249, 249) }
 }
 
-/// Fluent-style dialog: rounded flyout surface, optional dimmed scrim. Returns true when closed (X / Esc /
-/// a click outside of it).
-pub(crate) fn dialog_shell(
-    ui: &mut Ui,
-    m: &Metrics,
-    pal: &Palette,
-    id: &str,
-    title: &str,
-    modal: bool,
-    width: f32,
-    add: impl FnOnce(&mut Ui),
-) -> bool {
-    dialog_shell_with_footer(ui, m, pal, id, title, modal, width, add, None)
-}
-
-/// `dialog_shell` with a command row along the bottom edge, like a Windows content dialog.
+/// Fluent-style dialog: rounded flyout surface, optional dimmed scrim, and an optional command row along the
+/// bottom edge like a Windows content dialog. Returns true when closed (X / Esc / a click outside of it).
 pub(crate) fn dialog_shell_with_footer<'a>(
     ui: &mut Ui,
     m: &Metrics,

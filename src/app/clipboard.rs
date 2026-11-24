@@ -185,8 +185,15 @@ impl Explorer {
                 continue;
             };
             let dest = dir.join(name);
-            if cut && source == dest {
-                continue; // moving an item onto itself is a no-op
+            if paths_equal(&source, &dest) {
+                if cut {
+                    continue; // moving an item onto itself is a no-op
+                }
+                // Copying into its own folder: like Explorer, the copy is named "name - Copy" without asking.
+                let copy = copy_name(&dest, &claimed, source.is_dir());
+                claimed.insert(copy.clone());
+                plan.ready.push(PasteItem { src: source, dst: copy, replace: false });
+                continue;
             }
             if source.is_dir() && dir.starts_with(&source) {
                 self.tabs[self.active].error(format!(

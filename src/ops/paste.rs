@@ -33,6 +33,11 @@ pub(crate) fn paths_related(a: &Path, b: &Path) -> bool {
     a.starts_with(&b) || b.starts_with(&a)
 }
 
+/// True if `a` and `b` are the same path (case-insensitive on Windows).
+pub(crate) fn paths_equal(a: &Path, b: &Path) -> bool {
+    a == b || (cfg!(windows) && a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase())
+}
+
 /// Two paste items overlap when either touches (as source or destination) something inside the
 /// other's source or destination. Items that overlap must not run at the same time.
 pub(crate) fn paste_overlaps(a: &PasteItem, b: &PasteItem) -> bool {
@@ -157,7 +162,9 @@ pub(crate) fn paste_one(it: &PasteItem, cut: bool, prog: &OpProgress) -> Pasted 
     match r {
         Ok(()) => match source_left {
             None => Pasted::Done,
-            Some(e) => Pasted::from_io(format!("Moved “{name}”, but could not remove the original: {e}"), &e),
+            // Never `Denied`: an administrator retry would run the whole paste again, and with "Replace"
+            // it would throw away the complete copy that is already in place.
+            Some(e) => Pasted::Failed(format!("Moved “{name}”, but could not remove the original: {e}")),
         },
         Err(e) if is_cancelled(&e) => Pasted::Stopped,
         Err(e) => Pasted::from_io(format!("Could not paste “{name}”: {e}"), &e),

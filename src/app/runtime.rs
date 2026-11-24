@@ -189,6 +189,7 @@ impl eframe::App for Explorer {
 
         self.ui_props(ui);
         self.ui_conflict(ui);
+        self.ui_restore_conflict(ui);
         self.ui_confirm(ui);
         self.ui_ops(ui);
         self.ui_picker(ui);

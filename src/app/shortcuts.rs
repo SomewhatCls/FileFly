@@ -7,6 +7,7 @@ impl Explorer {
         use egui::{Key, Modifiers as M};
         let typing = ui.egui_wants_keyboard_input();
         let modal = self.conflict.is_some()
+            || self.restore_conflict.is_some()
             || self.confirm.is_some()
             || self.picker.is_some()
             || self.whats_new.is_some();

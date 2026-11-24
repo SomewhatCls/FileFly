@@ -14,6 +14,17 @@ use std::{
 };
 use crate::prelude::*;
 
+/// What to do when the place a Recycle Bin item goes back to is taken.
+#[derive(Clone)]
+pub enum Clash {
+    /// Nothing is in the way.
+    None,
+    /// Whatever is there goes away once the restored item is in place.
+    Replace,
+    /// Whatever is there stays; the restored item is renamed to this path.
+    KeepBoth(PathBuf),
+}
+
 #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
 mod imp {
     use super::*;
@@ -143,18 +154,59 @@ mod imp {
         item.original_path()
     }
 
-    pub fn restore(items: Vec<Item>, progress: &OpProgress) -> Result<(), String> {
+    pub fn restore(items: Vec<(Item, Clash)>, progress: &OpProgress) -> Result<(), String> {
         progress.total_items.store(items.len() as _, AO::Relaxed);
         let mut failed = Vec::new();
-        for item in items {
+        for (item, clash) in items {
             let name = item.name.to_string_lossy().into_owned();
             progress.set_current(&name); // placeholder: whatever fills `current()`
-            if let Err(e) = trash::os_limited::restore_all([item]) {
+            if let Err(e) = restore_one(item, clash) {
                 failed.push(format!("{name}: {e}"));
             }
             progress.done_items.fetch_add(1, AO::Relaxed);
         }
         if failed.is_empty() { Ok(()) } else { Err(failed.join("\n")) }
+    }
+
+    /// Restores one item. When the original place is taken, the item in the way is parked next to it
+    /// for the duration, so that a failure puts everything back as it was.
+    fn restore_one(item: Item, clash: Clash) -> Result<(), String> {
+        let path = item.original_path();
+        let restore = |item: Item| trash::os_limited::restore_all([item]).map_err(|e| e.to_string());
+        // Decided earlier, but whatever was in the way may be gone by now: nothing to park then.
+        if !matches!(clash, Clash::None) && !occupied(&path) {
+            return restore(item);
+        }
+        let aside = match clash {
+            Clash::None => return restore(item),
+            // Journaled: a crash afterwards deletes the parked item only if the restored one is in place.
+            Clash::Replace => backup_name(&path),
+            Clash::KeepBoth(_) => park_name(&path),
+        };
+        if let Err(e) = fs::rename(&path, &aside) {
+            backup_settled(&aside);
+            return Err(e.to_string());
+        }
+        let restored = restore(item);
+        match (&clash, restored) {
+            (Clash::Replace, Ok(())) => {
+                let _ = remove_existing(&aside);
+                backup_settled(&aside);
+                Ok(())
+            }
+            (Clash::KeepBoth(new), Ok(())) => {
+                // The restored item takes the new name, then the parked one returns to its own.
+                fs::rename(&path, new)
+                    .map_err(|e| format!("restored, but could not rename it ({e}); your other item is kept as {}", aside.display()))?;
+                fs::rename(&aside, &path).map_err(|e| format!("restored as {}, but the other item stayed at {} ({e})", new.display(), aside.display()))
+            }
+            (_, Err(e)) => {
+                let _ = fs::rename(&aside, &path); // put the original back
+                backup_settled(&aside);
+                Err(e)
+            }
+            (Clash::None, Ok(())) => Ok(()), // (returned early above)
+        }
     }
 
     pub fn purge(items: Vec<Item>) -> Result<(), String> {
@@ -185,7 +237,7 @@ mod imp {
     pub fn original(_: &Item) -> PathBuf {
         PathBuf::new()
     }
-    pub fn restore(_items: Vec<Item>) -> Result<(), String> {
+    pub fn restore(_items: Vec<(Item, Clash)>, _progress: &OpProgress) -> Result<(), String> {
         Err("Not supported on this platform.".into())
     }
     pub fn purge(_items: Vec<Item>) -> Result<(), String> {
