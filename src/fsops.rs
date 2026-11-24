@@ -423,8 +423,8 @@ pub fn occupied(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok()
 }
 
-/// "name<suffix(n)>.ext" (a folder: "name<suffix(n)>") with the lowest n >= 1 for which `free` holds.
-fn suffixed_name(dest: &Path, is_dir: bool, suffix: impl Fn(u64) -> String, free: impl Fn(&Path) -> bool) -> PathBuf {
+/// "name (n).ext" (a folder: "name (n)") with the lowest n >= 1 for which `free` holds.
+fn numbered_name(dest: &Path, is_dir: bool, free: impl Fn(&Path) -> bool) -> PathBuf {
     let parent = dest.parent().map(Path::to_path_buf).unwrap_or_default();
     // OsStrings throughout, so a name that is not valid Unicode is kept byte for byte.
     let name = dest.file_name().map(|n| n.to_os_string()).unwrap_or_default();
@@ -439,7 +439,7 @@ fn suffixed_name(dest: &Path, is_dir: bool, suffix: impl Fn(u64) -> String, free
     };
     for n in 1u64.. {
         let mut file = stem.clone();
-        file.push(suffix(n));
+        file.push(format!(" ({n})"));
         if let Some(e) = &ext {
             file.push(".");
             file.push(e);
@@ -450,19 +450,6 @@ fn suffixed_name(dest: &Path, is_dir: bool, suffix: impl Fn(u64) -> String, free
         }
     }
     unreachable!()
-}
-
-/// "name (n).ext" (a folder: "name (n)") with the lowest n >= 1 for which `free` holds.
-fn numbered_name(dest: &Path, is_dir: bool, free: impl Fn(&Path) -> bool) -> PathBuf {
-    suffixed_name(dest, is_dir, |n| format!(" ({n})"), free)
-}
-
-/// The name Explorer gives a copy pasted into its own folder: "name - Copy.ext", then
-/// "name - Copy (2).ext", "name - Copy (3).ext", ... The lowest one that is free on disk and not
-/// claimed (`taken`) by this paste.
-pub fn copy_name(dest: &Path, taken: &HashSet<PathBuf>, is_dir: bool) -> PathBuf {
-    let suffix = |n: u64| if n == 1 { " - Copy".to_owned() } else { format!(" - Copy ({n})") };
-    suffixed_name(dest, is_dir, suffix, |p| !occupied(p) && !taken.contains(p))
 }
 
 /// `dest` itself when it is free, otherwise the free "name (n).ext" next to it.

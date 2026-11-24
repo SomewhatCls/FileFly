@@ -189,8 +189,8 @@ impl Explorer {
                 if cut {
                     continue; // moving an item onto itself is a no-op
                 }
-                // Copying into its own folder: like Explorer, the copy is named "name - Copy" without asking.
-                let copy = copy_name(&dest, &claimed, source.is_dir());
+                // Copying into its own folder: the copy gets the next free "name (n)" without asking.
+                let copy = lowest_free_name(&dest, &claimed, source.is_dir());
                 claimed.insert(copy.clone());
                 plan.ready.push(PasteItem { src: source, dst: copy, replace: false });
                 continue;
