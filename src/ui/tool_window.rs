@@ -160,7 +160,10 @@ pub(crate) fn tool_window(
         // Fit the window to its content.
         let need = (panel.inner + bar_h + m.pad * 3.0).min(spec.max_height);
         let last = ui.ctx().data(|d| d.get_temp::<f32>(height_key)).unwrap_or(0.0);
-        if (need - last).abs() > 1.0 {
+        // A minimized window ignores resize commands, so wait: remembering the height as applied
+        // now would mean it is never sent once the window is restored.
+        let minimized = ui.ctx().input(|i| i.viewport().minimized).unwrap_or(false);
+        if !minimized && (need - last).abs() > 1.0 {
             ui.ctx().data_mut(|d| d.insert_temp(height_key, need));
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(win_w, need)));
         }

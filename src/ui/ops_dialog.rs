@@ -2,7 +2,9 @@
 
 use crate::prelude::*;
 
-/// Thin rounded progress bar; a sliding segment when the amount of work isn't known.
+/// Thin rounded progress bar; when the amount of work isn't known, a blob of slime that runs from
+/// left to right: the head shoots ahead and stretches it, the tail sticks, then snaps up to the
+/// head and the blob is swallowed by the right edge, while the next one oozes out of the left.
 pub(crate) fn progress_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, frac: Option<f32>, paused: bool) {
     let h = m.accessibility_scale * 6.0;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
@@ -18,13 +20,23 @@ pub(crate) fn progress_bar(ui: &mut Ui, m: &Metrics, pal: &Palette, frac: Option
             }
         }
         None => {
-            let t = ui.input(|i| i.time) as f32;
-            let seg = rect.width() * 0.3;
-            let x = rect.left() + (t * 0.7 % 1.0) * (rect.width() + seg) - seg;
-            let (a, b) = (x.max(rect.left()), (x + seg).min(rect.right()));
-            if b > a {
-                p.rect_filled(Rect::from_min_max(pos2(a, rect.top()), pos2(b, rect.bottom())), r, fill);
-            }
+            const PASS_SECS: f64 = 1.1;
+            const STICK: f32 = 2.4; // how long the tail clings, and how hard the head pulls away
+            let u = (ui.input(|i| i.time) / PASS_SECS).fract() as f32;
+            // The blob runs from just outside the left edge to just outside the right one (the
+            // bar clips it, so it feeds in at the right edge and comes out of the left one again).
+            let travel = rect.width() + h;
+            let head = 1.0 - (1.0 - u).powf(STICK);
+            let tail = u.powf(STICK);
+            let (a, b) = (travel * tail - h, travel * head);
+            // Stretched slime is thinner: the volume stays the same.
+            let stretch = ((b - a - h) / travel).clamp(0.0, 1.0);
+            let th = h * (1.0 - 0.45 * stretch);
+            let seg = Rect::from_min_max(
+                pos2(rect.left() + a, rect.center().y - th * 0.5),
+                pos2(rect.left() + b, rect.center().y + th * 0.5),
+            );
+            p.rect_filled(seg, CornerRadius::same((th * 0.5).ceil() as u8), fill);
         }
     }
 }
@@ -77,6 +89,17 @@ struct OpUi {
     skip: Vec<u64>,
     /// The answer to "delete permanently?": Some(true) = delete, Some(false) = cancel.
     perm: Option<bool>,
+}
+
+/// What an operation works on, for places that have room for one short text (the status bar): the
+/// name of the item, or "N items" when there are several. Empty until the first item is started.
+pub(crate) fn op_target(op: &ActiveOp) -> String {
+    let total = op.progress.total_items.load(AO::Relaxed);
+    if total > 1 {
+        format!("{total} items")
+    } else {
+        op.progress.current().to_string()
+    }
 }
 
 /// One operation's section: headline, bar, details, buttons. Several of these are stacked
@@ -258,7 +281,10 @@ fn op_panel(ui: &mut Ui, m: &Metrics, pal: &Palette, op: &mut ActiveOp, width: f
                 {
                     out.pause = true;
                 }
-            } else if secondary_button(ui, m, pal, "Hide").clicked() {
+            }
+            // Every operation can go to the status bar, unless it is waiting for an answer (that
+            // case returned above).
+            if secondary_button(ui, m, pal, "Hide").clicked() {
                 out.hide = true;
             }
         });
@@ -289,6 +315,7 @@ impl Explorer {
                 || (!op.hidden && op.started.elapsed() >= Duration::from_millis(500))
         };
         let mut shown = 0usize;
+        let mut animating = false; // a bar of unknown length is on screen
         let mut first_title = String::new();
         let mut any_cancelable = false;
         for op in self.ops.iter_mut().filter(|o| is_shown(o)) {
@@ -298,10 +325,16 @@ impl Explorer {
             }
             shown += 1;
             any_cancelable |= op.cancelable;
+            animating |= op.progress.preparing.load(AO::Relaxed) || op.fraction().is_none();
         }
         if shown == 0 {
             forget_tool_window(&ctx, "file-ops");
             return;
+        }
+        // The window is drawn as part of this frame, so the 100 ms above would make the animation
+        // run at 10 fps. While it is on screen it gets a frame per refresh instead.
+        if animating {
+            self.ui.request_repaint_after(Duration::from_millis(16));
         }
 
         let title = if shown == 1 { first_title } else { format!("{shown} operations") };
