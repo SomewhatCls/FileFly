@@ -22,6 +22,10 @@ pub(crate) struct Explorer {
     pub(crate) peazip: Option<PathBuf>,
     /// Zip files that are being unpacked right now so they can be browsed.
     pub(crate) extracting: HashSet<PathBuf>,
+    /// Ids of Recycle Bin items that a running operation is working on (restoring, deleting): they can't be
+    /// started on a second time. Shared with the worker threads, which release them when they end.
+    pub(crate) typeahead: TypeAhead,
+    pub(crate) trash_busy: Arc<std::sync::Mutex<HashSet<std::ffi::OsString>>>,
 
     pub(crate) msg_tx: Sender<AppMsg>,
     pub(crate) msg_rx: Receiver<AppMsg>,
@@ -42,6 +46,7 @@ pub(crate) struct Explorer {
     pub(crate) ops: Vec<ActiveOp>,
     pub(crate) next_op: u64,
     pub(crate) conflict: Option<PendingPaste>,
+    pub(crate) restore_conflict: Option<PendingRestore>,
     pub(crate) props: Option<Props>,
     pub(crate) props_gen: Arc<AtomicU64>,
     pub(crate) settings_dirty: bool,
@@ -124,6 +129,14 @@ pub(crate) struct Explorer {
     pub(crate) deferred_extracts: Vec<PastePlan>,
 }
 
+/// The special tabs in a saved session: (its page, None for the Recycle Bin) and the marker written instead of
+/// a folder. Index 0 is the Recycle Bin.
+const SPECIAL_TABS: [(Option<Page>, &str); 3] = [
+    (None, "::recycle-bin"),
+    (Some(Page::Settings), "::settings"),
+    (Some(Page::Licenses), "::licenses"),
+];
+
 impl Explorer {
     pub(crate) fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ui = cc.egui_ctx.clone();
@@ -162,6 +175,7 @@ impl Explorer {
             .clone()
             .filter(|p| p.is_dir())
             .unwrap_or_else(app_dir);
+        trash_bin::init_index(&index_dir);
 
         let indexer = settings
             .calculate_folder_sizes
@@ -171,6 +185,7 @@ impl Explorer {
             Some(ix) => DirWatcher::new(ui.clone(), ix.change_sink()),
             None => DirWatcher::ui_only(ui.clone()),
         };
+        trash_bin::set_index_enabled(indexer.is_some());
         std::thread::spawn(|| {
             // Leftovers of a crashed run: unpacked zips, and half-finished copy/move/zip temp items.
             sweep_old_archive_caches();
@@ -210,6 +225,8 @@ impl Explorer {
             clipboard: None,
             peazip: find_peazip(),
             extracting: HashSet::new(),
+            typeahead: TypeAhead::default(),
+            trash_busy: Arc::default(),
             msg_tx,
             msg_rx,
             idx_rx,
@@ -225,6 +242,7 @@ impl Explorer {
             ops: Vec::new(),
             next_op: 0,
             conflict: None,
+            restore_conflict: None,
             props: None,
             props_gen: Arc::new(AtomicU64::new(0)),
             settings_dirty: false,
@@ -282,7 +300,8 @@ impl Explorer {
         // Independent of the tabs, so it also applies when FileFly is started on a given folder.
         app.sidebar_width = app.settings.session.sidebar_width;
         app.sync_special_icons();
-        if START_DIR.get().is_none() && app.settings.restore_tabs {
+        // If the app has a scheduled restart, make sure to restore the sessions tabs.
+        if RESTORE_SESSION.get().is_some() || (START_DIR.get().is_none() && app.settings.restore_tabs) {
             app.restore_session();
         }
         #[cfg(feature = "github-updater")]
@@ -300,6 +319,7 @@ impl Explorer {
         if on == self.indexer.is_some() {
             return;
         }
+        trash_bin::set_index_enabled(on);
         if on {
             let ix = Indexer::new(self.ui.clone(), self.idx_tx.clone(), &self.index_dir);
             self.watcher = DirWatcher::new(self.ui.clone(), ix.change_sink());
@@ -327,11 +347,9 @@ impl Explorer {
         }
     }
 
+    /// Returns true if the Window is maximized.
     pub(crate) fn is_maximized(ctx: &egui::Context) -> bool {
-        if ctx.input(|i| i.viewport().maximized) == Some(true) {
-            return true
-        }
-        false
+        ctx.input(|i| i.viewport().maximized) == Some(true)
     }
 
     //paste key detection workaround
@@ -347,17 +365,25 @@ impl Explorer {
     }
     // ------------------------------------------------------------------ session
 
+    /// How a tab is written in the session: its folder, or for a special tab a marker that no path can
+    /// look like (`SPECIAL_TABS`), which an older version just skips.
+    fn saved_tab(t: &Tab) -> String {
+        if t.trash.is_some() {
+            return SPECIAL_TABS[0].1.to_owned();
+        }
+        match t.page {
+            Some(Page::Settings) => SPECIAL_TABS[1].1.to_owned(),
+            Some(Page::Licenses) => SPECIAL_TABS[2].1.to_owned(),
+            None => folder_outside(&t.dir).to_string_lossy().into_owned(),
+        }
+    }
+
     pub(crate) fn session_snapshot(&self) -> Session {
-        // Page tabs (Settings, Licenses) are not part of the session (it would come back as a plain folder tab).
-        let kept: Vec<&Tab> = self.tabs.iter().filter(|t| t.page.is_none()).collect();
-        let active_id = self.tabs.get(self.active).map(|t| t.id);
+        let all: Vec<&Tab> = self.tabs.iter().collect();
         Session {
-            tabs: kept.iter().map(|t| folder_outside(&t.dir).to_string_lossy().into_owned()).collect(),
-            active: kept.iter().position(|t| Some(t.id) == active_id).unwrap_or(0),
-            tiles: self
-                .tiles
-                .as_ref()
-                .and_then(|t| SavedTile::from_tile(t, &kept)),
+            tabs: all.iter().map(|t| Self::saved_tab(t)).collect(),
+            active: self.active,
+            tiles: self.tiles.as_ref().and_then(|t| SavedTile::from_tile(t, &all)),
             sidebar_width: self.sidebar_width,
         }
     }
@@ -366,23 +392,46 @@ impl Explorer {
     /// are skipped; if none are left the normal start folder stays.
     pub(crate) fn restore_session(&mut self) {
         let ses = self.settings.session.clone();
+        // A special tab sits on top of some folder, like when it is opened.
+        let base = self.tabs.get(self.active).map(|t| t.dir.clone()).or_else(dirs::home_dir).unwrap_or_default();
         let mut ids: Vec<Option<u64>> = Vec::new();
         let mut tabs: Vec<Tab> = Vec::new();
+        let mut bin_tabs: Vec<usize> = Vec::new();
         for p in &ses.tabs {
+            let special = SPECIAL_TABS.iter().position(|(_, marker)| marker == p);
             let dir = PathBuf::from(p);
-            if dir.is_dir() {
-                let id = tabs.len() as u64 + 1;
-                tabs.push(Tab::new(id, dir));
-                ids.push(Some(id));
-            } else {
+            // (A network folder is not looked at here: that could hold up the start for seconds. If it is gone,
+            // its listing says so.)
+            if special.is_none() && !is_network_path(&dir) && !dir.is_dir() {
                 ids.push(None);
+                continue;
             }
+            let id = tabs.len() as u64 + 1;
+            let mut tab = Tab::new(id, if special.is_some() { base.clone() } else { dir });
+            match special {
+                Some(0) if !trash_bin::SUPPORTED => {
+                    ids.push(None);
+                    continue;
+                }
+                Some(0) => bin_tabs.push(tabs.len()),
+                Some(i) => {
+                    tab.page = SPECIAL_TABS[i].0;
+                    tab.load_gen = 1; // nothing to read: not a folder listing
+                }
+                None => {}
+            }
+            tabs.push(tab);
+            ids.push(Some(id));
         }
         if tabs.is_empty() {
             return;
         }
         self.next_tab_id = tabs.len() as u64 + 1;
         self.tabs = tabs;
+        for ti in bin_tabs {
+            self.show_trash(ti);
+            self.tabs[ti].load_gen = 1;
+        }
         self.active = ids
             .get(ses.active)
             .copied()

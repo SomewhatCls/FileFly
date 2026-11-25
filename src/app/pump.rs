@@ -160,6 +160,35 @@ impl Explorer {
                         }
                     }
                 }
+                AppMsg::NavResolved { tab, seq, requested, select, result } => {
+                    let Some(ti) = self.tabs.iter().position(|t| t.id == tab && t.nav_seq == seq) else { continue };
+                    match result {
+                        Ok(path) => self.finish_navigate(ti, path, select),
+                        Err(e) => {
+                            self.tabs[ti].loading = false;
+                            if e.denied {
+                                self.admin_retry = Some((e.msg.clone(), AdminRetry::OpenFolder(requested)));
+                            }
+                            self.tabs[ti].error(e.msg);
+                        }
+                    }
+                }
+                AppMsg::OpenZip { tab, seq, path } => {
+                    if let Some(ti) = self.tabs.iter().position(|t| t.id == tab && t.nav_seq == seq) {
+                        self.navigate(ti, path);
+                    }
+                }
+                AppMsg::OpenFailed { tab, msg, retry } => {
+                    if let Some(ti) = self.tabs.iter().position(|t| t.id == tab) {
+                        self.tabs[ti].loading = false;
+                        if !msg.is_empty() {
+                            if let Some(retry) = retry {
+                                self.admin_retry = Some((msg.clone(), retry));
+                            }
+                            self.tabs[ti].error(msg);
+                        }
+                    }
+                }
                 AppMsg::ArchiveReady { tab, zip, target, result } => {
                     self.extracting.remove(&zip);
                     self.job_finished();
@@ -398,7 +427,6 @@ impl Explorer {
     pub(crate) fn sync_system(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         if self.last_poll.elapsed() > Duration::from_secs(2) && ctx.input(|i| i.focused) {
             self.last_poll = Instant::now();
-            self.text_scale = system_text_scale();
             self.sys_accent = system_accent();
             self.transparency = system_transparency();
         }
@@ -428,83 +456,43 @@ impl Explorer {
         }
 
         // Schedules restart for settings requiring it.
-        if self.require_restart{
-            self.require_restart = false;
-            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
-                let pos: egui::Pos2 = rect.min;
-                let (x, y) = (pos.x, pos.y);
-                spawn_window(&self.tabs[self.active].dir, Some((x, y)));
-            }else{
-                spawn_window(&self.tabs[self.active].dir, Some((0.0, 0.0)));
-            }
-            hide_window(frame);
-            save_settings(&self.settings);
-            self.peers.shutdown();
-            if let Some(ix) = &self.indexer { ix.save_if_dirty(true); }
-            remove_archive_cache();
-            finish_journal();
-            terminate_now();
+        if std::mem::take(&mut self.require_restart) {
+            self.restart(ctx, frame);
         }
 
         let theme = ctx.theme();
 
         // wanted_transparency is the transparency set by the user in the settings.
         // If transparency is disabled or None, wanted_transparency is None.
-        let wanted_transparency: Option<TransparencyEffect> = if self.transparency {
-            match self.settings.transparency_effect {
-                TransparencyEffect::Mica => Some(TransparencyEffect::Mica),
-                TransparencyEffect::Acrylic => Some(TransparencyEffect::Acrylic),
-                _ => None,
-            }
-        } else {
-            None
-        };
+        let wanted_transparency = (self.transparency
+            && self.settings.transparency_effect.or_supported() != TransparencyEffect::None)
+            .then(|| self.settings.transparency_effect.or_supported());
 
         // True if the theme was changed.
-        let changed_theme = if self.settings.theme != self.theme_choice {
-            self.theme_choice = self.settings.theme;
-            true
-        } else {
-            false
-        };
+        let changed_theme = std::mem::replace(&mut self.theme_choice, self.settings.theme) != self.settings.theme;
 
-        let changed_backdrop = if self.backdrop_transparency != wanted_transparency {
-            self.backdrop_transparency = wanted_transparency;
-            true
-        }else {
-            false
-        };
-        self.pal = Palette::new(
-            theme,
-            accent,
-            wanted_transparency.unwrap_or(TransparencyEffect::None),
-        );
-        // Re-apply a few times shortly after startup to beat the DWM race.
+        let changed_backdrop = self.backdrop_transparency != wanted_transparency;
+        self.backdrop_transparency = wanted_transparency;
+        self.pal = Palette::new(theme, accent, wanted_transparency.unwrap_or(TransparencyEffect::None));
+
+        // DWM can drop the effect while the window is still being set up, so it is applied again a few
+        // times shortly after startup.
         const RETRY_AT_MS: [u64; 4] = [150, 600, 1500, 3000];
-
-        let mut force = false;
-        if let Some(_effect) = wanted_transparency {
-            if let Some(&t) = RETRY_AT_MS.get(self.backdrop_retries) {
+        let mut redo = changed_backdrop || changed_theme;
+        if wanted_transparency.is_some() {
+            if let Some(&due) = RETRY_AT_MS.get(self.backdrop_retries) {
                 let elapsed = self.backdrop_start.elapsed().as_millis() as u64;
-                if elapsed >= t {
+                if elapsed >= due {
                     self.backdrop_retries += 1;
-                    force = true;
+                    redo = true;
                 } else {
                     // egui is reactive: without this, no frame runs to hit the next deadline
-                    ctx.request_repaint_after(Duration::from_millis(t - elapsed));
+                    ctx.request_repaint_after(Duration::from_millis(due - elapsed));
                 }
             }
         }
 
-        // Redraw the backdrop both when it or the theme changes.
-        if changed_backdrop || changed_theme {
-            clear_window_transparency_effects(frame);
-            if let Some(effect) = wanted_transparency {
-                apply_backdrop(frame, self.pal.dark, effect);
-                nudge_frame(frame);
-            }
-            ctx.request_repaint();
-        } else if force {
+        if redo {
             clear_window_transparency_effects(frame);
             if let Some(effect) = wanted_transparency {
                 apply_backdrop(frame, self.pal.dark, effect);
@@ -514,13 +502,30 @@ impl Explorer {
         }
     }
 
-    pub(crate) fn get_accent(&mut self, ) -> Accent{
-        let accent = if self.settings.use_system_accent {
-        self.sys_accent.unwrap_or_else(Accent::fallback)
+    /// Starts a fresh window at the same position with the current session, then exits.
+    fn restart(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let pos = ctx.input(|i| i.viewport().outer_rect).map_or(egui::Pos2::ZERO, |r| r.min);
+        // Before spawning: the new window reads these files while starting.
+        self.settings.session = self.session_snapshot();
+        save_settings(&self.settings);
+        spawn_restart((pos.x, pos.y));
+        hide_window(frame);
+        self.peers.shutdown();
+        if let Some(ix) = &self.indexer {
+            ix.save_if_dirty(true);
+        }
+        self.stop_ops_for_exit();
+        remove_archive_cache();
+        finish_journal();
+        terminate_now();
+    }
+
+    pub(crate) fn get_accent(&self) -> Accent {
+        if self.settings.use_system_accent {
+            self.sys_accent.unwrap_or_else(Accent::fallback)
         } else {
-        let c = self.settings.custom_accent;
-        Accent::from_base(Color32::from_rgb(c[0], c[1], c[2]))
-        };
-        accent
+            let [r, g, b] = self.settings.custom_accent;
+            Accent::from_base(Color32::from_rgb(r, g, b))
+        }
     }
 }

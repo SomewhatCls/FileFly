@@ -7,6 +7,7 @@ impl Explorer {
         use egui::{Key, Modifiers as M};
         let typing = ui.egui_wants_keyboard_input();
         let modal = self.conflict.is_some()
+            || self.restore_conflict.is_some()
             || self.confirm.is_some()
             || self.picker.is_some()
             || self.whats_new.is_some();
@@ -93,6 +94,17 @@ impl Explorer {
                 }
                 if i.consume_key(M::CTRL, Key::A) {
                     actions.push(Action::TrashSelectAll);
+                }
+            }
+            // Typing (no shortcut) selects by name.
+            if !in_trash && !i.modifiers.command && !i.modifiers.alt {
+                let typed: String = i
+                    .events
+                    .iter()
+                    .filter_map(|e| if let egui::Event::Text(t) = e { Some(t.as_str()) } else { None })
+                    .collect();
+                if !typed.is_empty() {
+                    actions.push(Action::TypeAhead(typed));
                 }
             }
             if !in_trash && i.consume_key(M::CTRL, Key::A) {

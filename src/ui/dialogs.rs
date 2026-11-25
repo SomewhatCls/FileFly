@@ -30,11 +30,13 @@ impl Explorer {
         );
         match (choice, closed) {
             (1, _) => {
-                let items = c.items;
+                let ConfirmPurge { items, guard, .. } = c;
                 self.run_job("Deleting permanently…", move || {
+                    let _busy = guard; // stays busy until the purge has finished
                     trash_bin::purge(items).map(|_| String::new())
                 });
             }
+            // Cancel or X: `c` is dropped here, which releases the lock with it.
             (2, _) | (_, true) => {}
             _ => self.confirm = Some(c),
         }
@@ -94,13 +96,13 @@ impl Explorer {
     /// "(n)" suffix, or skip it. "Do this for all" answers the remaining ones the same way.
     pub(crate) fn ui_conflict(&mut self, ui: &mut Ui) {
         let Some(mut c) = self.conflict.take() else {
+            forget_tool_window(ui.ctx(), "conflict-paste");
             return;
         };
         let Some((src, dst)) = c.todo.front().cloned() else {
             self.run_paste(c.ready, c.cut, c.merged_dirs);
             return;
         };
-        let (m, pal) = (self.m, self.pal);
         let same = src == dst; // pasting a copy into the folder it came from
         let name = dst
             .file_name()
@@ -123,54 +125,11 @@ impl Explorer {
             format!("A file or folder named “{name}” already exists here.")
         };
         let mut all = c.apply_all;
-        let mut choice = 0;
-        let closed = dialog_shell(
+        let (choice, closed) = self.conflict_window(
             ui,
-            &m,
-            &pal,
-            "conflict",
-            "Item already exists",
-            true,
-            m.accessibility_scale * 460.0,
-            |ui| {
-                ui.label(&message);
-                ui.add_space(m.pad * 0.5);
-                ui.label(
-                    RichText::new(format!("Keep both saves the new item as “{keep_name}”."))
-                        .color(pal.text_secondary),
-                );
-                if remaining > 0 {
-                    ui.add_space(m.pad * 0.5);
-                    ui.checkbox(
-                        &mut all,
-                        format!(
-                            "Do this for the {remaining} remaining conflict{}",
-                            if remaining == 1 { "" } else { "s" }
-                        ),
-                    );
-                }
-                ui.add_space(m.pad * 1.5);
-                ui.horizontal(|ui| {
-                    if same {
-                        if primary_button(ui, &m, &pal, "Keep both").clicked() {
-                            choice = 2;
-                        }
-                    } else {
-                        if primary_button(ui, &m, &pal, "Replace").clicked() {
-                            choice = 1;
-                        }
-                        if secondary_button(ui, &m, &pal, "Keep both").clicked() {
-                            choice = 2;
-                        }
-                    }
-                    if secondary_button(ui, &m, &pal, "Skip").clicked() {
-                        choice = 3;
-                    }
-                    if secondary_button(ui, &m, &pal, "Cancel").clicked() {
-                        choice = 4;
-                    }
-                });
-            },
+            "conflict-paste",
+            ConflictAsk { message, keep_name, remaining, replaceable: !same },
+            &mut all,
         );
         match (choice, closed) {
             (4, _) | (_, true) => {} // cancel the whole paste
@@ -216,6 +175,132 @@ impl Explorer {
             }
         }
     }
+    /// The "Item already exists" question in a window of its own. Returns the pressed button
+    /// (0: none, 1: Replace, 2: Keep both, 3: Skip, 4: Cancel) and whether the window was closed.
+    fn conflict_window(&self, ui: &Ui, key: &str, ask: ConflictAsk, all: &mut bool) -> (u8, bool) {
+        let (m, pal) = (self.m, self.pal);
+        let spec = ToolWindow {
+            key,
+            caption: "Item already exists",
+            width: m.accessibility_scale * 440.0,
+            max_height: m.accessibility_scale * 420.0,
+            transparency: self.backdrop_transparency.unwrap_or(TransparencyEffect::None),
+            custom_frame: self.settings.custom_frame,
+            hold_open: false,
+        };
+        let mut choice = 0;
+        let closed = tool_window(ui.ctx(), &m, &pal, &spec, |ui| {
+            ui.label(&ask.message);
+            ui.add_space(m.pad * 0.5);
+            ui.label(RichText::new(format!("Keep both saves the new item as “{}”.", ask.keep_name)).color(pal.text_secondary));
+            if ask.remaining > 0 {
+                ui.add_space(m.pad * 0.5);
+                ui.checkbox(
+                    all,
+                    format!(
+                        "Do this for the {} remaining conflict{}",
+                        ask.remaining,
+                        if ask.remaining == 1 { "" } else { "s" }
+                    ),
+                );
+            }
+            ui.add_space(m.pad * 1.5);
+            ui.horizontal(|ui| {
+                if ask.replaceable && primary_button(ui, &m, &pal, "Replace").clicked() {
+                    choice = 1;
+                }
+                let keep = if ask.replaceable { secondary_button(ui, &m, &pal, "Keep both") } else { primary_button(ui, &m, &pal, "Keep both") };
+                if keep.clicked() {
+                    choice = 2;
+                }
+                if secondary_button(ui, &m, &pal, "Skip").clicked() {
+                    choice = 3;
+                }
+                if secondary_button(ui, &m, &pal, "Cancel").clicked() {
+                    choice = 4;
+                }
+            });
+        });
+        (choice, closed)
+    }
+
+    /// Like `ui_conflict`, for Recycle Bin items whose original place is taken.
+    pub(crate) fn ui_restore_conflict(&mut self, ui: &mut Ui) {
+        let Some(mut c) = self.restore_conflict.take() else {
+            forget_tool_window(ui.ctx(), "conflict-restore");
+            return;
+        };
+        let Some((item, is_dir)) = c.todo.front().cloned() else {
+            let PendingRestore { ready, guard, .. } = c;
+            self.run_restore(ready, guard);
+            return;
+        };
+        let dst = trash_bin::original(&item);
+        let name = dst.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let taken = |c: &PendingRestore| -> HashSet<PathBuf> {
+            c.ready
+                .iter()
+                .map(|(i, k)| match k {
+                    trash_bin::Clash::KeepBoth(p) => p.clone(),
+                    _ => trash_bin::original(i),
+                })
+                .chain(c.todo.iter().map(|(i, _)| trash_bin::original(i)))
+                .collect()
+        };
+        let keep_name = lowest_free_name(&dst, &taken(&c), is_dir)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let place = dst.parent().map(|p| p.display().to_string()).unwrap_or_default();
+        let ask = ConflictAsk {
+            message: format!("A file or folder named “{name}” already exists in {place}."),
+            keep_name,
+            remaining: c.todo.len() - 1,
+            // Not when only another item of this same restore is in the way: it isn't on disk yet.
+            replaceable: occupied(&dst),
+        };
+        let mut all = c.apply_all;
+        let (choice, closed) = self.conflict_window(ui, "conflict-restore", ask, &mut all);
+        match (choice, closed) {
+            (4, _) | (_, true) => {} // cancel the whole restore: `c` is dropped, which frees the items
+            (0, false) => {
+                c.apply_all = all;
+                self.restore_conflict = Some(c);
+            }
+            (ch, _) => {
+                let n = if all { c.todo.len() } else { 1 };
+                for _ in 0..n {
+                    let Some((item, is_dir)) = c.todo.pop_front() else { break };
+                    let dst = trash_bin::original(&item);
+                    match ch {
+                        1 if occupied(&dst) => c.ready.push((item, trash_bin::Clash::Replace)),
+                        1 | 2 => {
+                            let new = lowest_free_name(&dst, &taken(&c), is_dir);
+                            c.ready.push((item, trash_bin::Clash::KeepBoth(new)));
+                        }
+                        _ => {} // skip this one
+                    }
+                }
+                if c.todo.is_empty() {
+                    let PendingRestore { ready, guard, .. } = c;
+                    self.run_restore(ready, guard);
+                } else {
+                    c.apply_all = all;
+                    self.restore_conflict = Some(c);
+                }
+            }
+        }
+    }
+}
+
+/// What the "Item already exists" window shows.
+struct ConflictAsk {
+    message: String,
+    keep_name: String,
+    /// Further conflicts after this one ("Do this for all").
+    remaining: usize,
+    /// Replace is offered (not when an item is pasted over itself).
+    replaceable: bool,
 }
 
 /// Draws GitHub release notes (Markdown) as plain text: headings, bullets and paragraphs. Emphasis marks

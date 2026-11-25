@@ -32,16 +32,24 @@ impl Explorer {
             );
             return;
         }
+        // Something that is being restored into place can't be changed until that is done.
+        let into_restore = match &action {
+            Action::Cut(p) | Action::Delete(p) | Action::Compress(p) => touches_locked(&self.locked_paths(), p),
+            Action::Rename(p) | Action::CommitRename(p, _) => touches_locked(&self.locked_paths(), std::slice::from_ref(p)),
+            _ => false,
+        };
+        if into_restore {
+            self.tabs[ti].rename = None;
+            self.tabs[ti].error("Not available while items are being restored here.".to_owned());
+            return;
+        }
         match action {
             Action::Navigate(p) => self.navigate_or_bin(ti, p),
             Action::NewTabAt(p) => {
                 if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
                     // The raw folder is shown as the Recycle Bin view, in a tab of its own.
-                    let home = dirs::home_dir().unwrap_or_else(|| self.tabs[ti].dir.clone());
-                    self.new_tab(home);
-                    let tab = self.active;
-                    self.open_trash(tab);
-                } else if has_zip_ext(&p) && p.is_file() {
+                    self.open_trash();
+                } else if has_archive_ext(&p) && p.is_file() {
                     // A zip gets its own tab next to its folder, then opens like a folder.
                     let home = p.parent().map(Path::to_path_buf).unwrap_or_else(|| p.clone());
                     self.new_tab(home);
@@ -130,16 +138,18 @@ impl Explorer {
             }
             Action::FocusAddress => {
                 let tab = &mut self.tabs[ti];
-                tab.address = tab.shown_dir().display().to_string();
+                // A page's address bar starts empty: its label is not a path.
+                tab.address = if tab.special() { String::new() } else { tab.shown_dir().display().to_string() };
                 tab.editing_addr = true;
                 tab.addr_focus = true;
             }
+            Action::TypeAhead(s) => self.type_ahead(ti, &s),
             Action::FocusSearch => self
                 .ui
                 .memory_mut(|m| m.request_focus(Id::unique("search_box"))),
             Action::Open(p) => {
                 if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
-                    self.open_trash(ti);
+                    self.open_trash();
                 } else {
                     self.open_path(&p);
                 }
@@ -239,6 +249,24 @@ impl Explorer {
                 if p.is_empty() {
                     return;
                 }
+                // Folders arrive in the bin with the size the list shows for them (a running total
+                // if the scan wasn't finished), or else the indexer's stored one; the Recycle Bin
+                // size in the sidebar starts from it. It is exact only if the indexer vouches for it.
+                if let Some(ix) = &self.indexer {
+                    let sel: HashSet<&PathBuf> = p.iter().collect();
+                    let shown: HashMap<&PathBuf, u64> = self.tabs[ti]
+                        .entries
+                        .iter()
+                        .filter(|e| e.is_dir && sel.contains(&e.path))
+                        .filter_map(|e| Some((&e.path, e.dir_size?)))
+                        .collect();
+                    for x in &p {
+                        let stored = ix.lookup_fresh(x);
+                        if let Some(size) = shown.get(x).copied().or(stored.map(|(s, _)| s)) {
+                            trash_bin::expect_trashed(x.clone(), size, stored.is_some_and(|(_, fresh)| fresh));
+                        }
+                    }
+                }
                 let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
                 let spec = OpSpec {
                     title: "Moving to Recycle Bin".to_owned(),
@@ -246,8 +274,10 @@ impl Explorer {
                     to: String::new(),
                     cancelable: true,
                 };
-                self.run_op(spec, move |prog| {
+                let locked = p.clone();
+                let op = self.run_op(spec, move |prog| {
                     use std::sync::atomic::Ordering::Relaxed;
+                    let _settle = trash_bin::DeletionGuard;
                     // Batches: progress between them and Cancel in the gaps. One call per file would be much
                     // slower, because each starts its own shell operation. A running shell operation
                     // itself cannot be interrupted, so Cancel takes effect at the next gap.
@@ -362,6 +392,7 @@ impl Explorer {
                     }
                     Ok(String::new())
                 });
+                self.lock_op_paths(op, locked);
             }
             Action::RetryAsAdmin => {
                 let Some((_, retry)) = self.admin_retry.take() else { return };
@@ -435,8 +466,11 @@ impl Explorer {
             Action::Properties(p) => self.open_properties(p),
             Action::OpenContaining(p) => {
                 if let Some(parent) = p.parent().map(Path::to_path_buf) {
-                    self.navigate_or_bin(ti, parent);
-                    self.tabs[ti].select_only(p);
+                    if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&parent) {
+                        self.open_trash();
+                    } else {
+                        self.navigate_selecting(ti, parent, Some(p));
+                    }
                 }
             }
             Action::OpenShortcutLocation(p) => self.open_shortcut_location(ti, p),
@@ -465,18 +499,14 @@ impl Explorer {
             Action::UnpinQuick(p) => self.unpin_quick(&p),
             Action::OpenRecycleBin => {
                 if trash_bin::SUPPORTED {
-                    self.open_trash(ti);
+                    self.open_trash();
                 } else if let Err(e) = open_recycle_bin() {
                     self.tabs[ti].error(format!("Could not open the Recycle Bin: {e}"));
                 }
             }
             Action::TrashRestoreSelected => {
-                let items = self.trash_items(ti, false);
-                if !items.is_empty() {
-                    self.run_job("Restoring…", move || {
-                        trash_bin::restore(items).map(|_| String::new())
-                    });
-                }
+                let items = self.trash_items_with_kind(ti, false);
+                self.begin_restore(items);
             }
             Action::TrashPurgeSelected => {
                 let items = self.trash_items(ti, false);
@@ -486,15 +516,18 @@ impl Explorer {
                         "{n} item{} will be deleted permanently. This can't be undone.",
                         if n == 1 { "" } else { "s" }
                     );
-                    self.confirm = Some(ConfirmPurge { items, text });
+                    let guard = self.mark_trash_busy(&items);
+                    self.confirm = Some(ConfirmPurge { items, text, guard });
                 }
             }
             Action::TrashEmpty => {
                 let items = self.trash_items(ti, true);
-                if !items.is_empty() {
+                // Not while items are being worked on: "all items" would not be true.
+                if !items.is_empty() && self.trash_busy_ids().is_empty() {
                     let n = items.len();
                     let text = format!("All {n} item{} in the Recycle Bin will be deleted permanently. This can't be undone.", if n == 1 { "" } else { "s" });
-                    self.confirm = Some(ConfirmPurge { items, text });
+                    let guard = self.mark_trash_busy(&items);
+                    self.confirm = Some(ConfirmPurge { items, text, guard });
                 }
             }
             Action::TrashSelectAll => {

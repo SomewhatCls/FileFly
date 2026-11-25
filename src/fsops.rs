@@ -492,6 +492,12 @@ pub fn backup_name(path: &Path) -> PathBuf {
     aside
 }
 
+/// Where an item is parked for a moment while something else takes its name. Not journaled: if the
+/// app dies in between, the item simply stays there under this hidden name (never deleted by a sweep).
+pub fn park_name(path: &Path) -> PathBuf {
+    free_sibling(path, "kept")
+}
+
 /// Call once the parked original is gone again (deleted after a successful paste, or renamed back
 /// after a failed one, or the parking rename itself failed). Does nothing while it still exists, so
 /// the next start can still deal with it.
@@ -912,19 +918,22 @@ pub fn get_clipboard() -> Option<(Vec<PathBuf>, bool)> {
 ///
 /// Reports to (and obeys pause/cancel of) `prog`. A rename adds no bytes; when the move has to become
 /// a copy, its size is added to the total only then.
-pub fn move_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> io::Result<()> {
+///
+/// `Ok(Some(e))`: the item is complete at the destination, but the source could not be removed
+/// afterwards (`e`). The caller must keep the destination: it is the only complete copy.
+pub fn move_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> io::Result<Option<io::Error>> {
     if fs::symlink_metadata(destination).is_ok() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination already exists"));
     }
     prog.checkpoint()?;
     prog.set_current(&file_label(source));
     match fs::rename(source, destination) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(None),
         Err(e) if is_cross_device(&e) => {
             let bytes = tree_bytes(source, prog)?;
             prog.add_total(bytes);
             copy_item_with(source, destination, prog)?; // source stays untouched until this fully succeeded
-            remove_existing(source)
+            Ok(remove_existing(source).err())
         }
         Err(e) => Err(e),
     }
@@ -1057,15 +1066,55 @@ const OK0: &[i32] = &[0];
 const OK01: &[i32] = &[0, 1];
 
 const NO_ZIP_TOOL: &str = if cfg!(windows) {
-    "no ZIP tool found (tar.exe or PowerShell is required)"
+    "no archive tool found (tar.exe or PowerShell is required)"
 } else if cfg!(target_os = "macos") {
     "the system tool \"ditto\" was not found"
 } else {
-    "no ZIP tool found; install \"zip\" and \"unzip\" (or bsdtar / 7-Zip)"
+    "no archive tool found; install \"zip\" and \"unzip\" (or bsdtar / 7-Zip)"
 };
 
-pub fn has_zip_ext(p: &Path) -> bool {
-    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+/// The endings of the archives that can be opened like a folder and extracted, longest first so that
+/// ".tar.gz" wins over ".gz". `Compress` still only makes zips.
+const ARCHIVE_ENDINGS: [&str; 13] = [
+    ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz", ".tbz2", ".tbz", ".txz", ".tzst", ".tar", ".zip", ".7z", ".rar",
+];
+
+/// The archive ending of `p`'s name (".tar.gz", ".zip", ...), if it has one.
+fn archive_ending(p: &Path) -> Option<&'static str> {
+    let name = p.file_name()?.to_str()?.to_ascii_lowercase();
+    ARCHIVE_ENDINGS.iter().copied().find(|e| name.len() > e.len() && name.ends_with(e))
+}
+
+/// An archive we can unpack: zip, tar (also gzip / bzip2 / xz / zstd compressed), 7z or rar.
+pub fn has_archive_ext(p: &Path) -> bool {
+    archive_ending(p).is_some()
+}
+
+/// The archive's name without its ending ("photos.tar.gz" -> "photos"): what its extracted folder is called.
+pub fn archive_stem(p: &Path) -> OsString {
+    let name = p.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    match (name.to_str(), archive_ending(p)) {
+        (Some(n), Some(e)) => OsString::from(&n[..n.len() - e.len()]),
+        _ => p.file_stem().map(|s| s.to_os_string()).unwrap_or(name),
+    }
+}
+
+fn archive_kind(p: &Path) -> ArchiveKind {
+    match archive_ending(p) {
+        Some(".zip") => ArchiveKind::Zip,
+        Some(".7z") | Some(".rar") => ArchiveKind::Other,
+        _ => ArchiveKind::Tar,
+    }
+}
+
+/// Which tools can unpack an archive.
+#[derive(PartialEq)]
+enum ArchiveKind {
+    Zip,
+    /// A tar, possibly compressed: any tar program handles it.
+    Tar,
+    /// 7z or rar: only bsdtar (libarchive) and 7-Zip.
+    Other,
 }
 
 fn tool(program: impl AsRef<OsStr>) -> Command {
@@ -1205,40 +1254,60 @@ fn compress_tools(parent: &Path, items: &[PathBuf], names: &[OsString], out: &Pa
 }
 
 #[allow(unused_variables, unused_mut)]
-fn extract_tools(zip: &Path, dest: &Path) -> Vec<(Command, &'static [i32])> {
+fn extract_tools(archive: &Path, dest: &Path) -> Vec<(Command, &'static [i32])> {
     let mut tools: Vec<(Command, &'static [i32])> = Vec::new();
+    let kind = archive_kind(archive);
     #[cfg(windows)]
     {
+        // bsdtar reads all of them (zip, tar.*, 7z, rar).
         let mut c = tool(system_tar());
-        c.arg("-x").arg("-f").arg(zip).arg("-C").arg(dest);
+        c.arg("-x").arg("-f").arg(archive).arg("-C").arg(dest);
         tools.push((c, OK0));
-        let mut c = tool("powershell.exe");
-        c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]).arg(format!(
-            "$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath {} -DestinationPath {}",
-            ps_quote(zip),
-            ps_quote(dest)
-        ));
-        tools.push((c, OK0));
+        if kind == ArchiveKind::Zip {
+            let mut c = tool("powershell.exe");
+            c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]).arg(format!(
+                "$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath {} -DestinationPath {}",
+                ps_quote(archive),
+                ps_quote(dest)
+            ));
+            tools.push((c, OK0));
+        }
     }
     #[cfg(target_os = "macos")]
     {
-        let mut c = tool("ditto");
-        c.arg("-x").arg("-k").arg(zip).arg(dest);
-        tools.push((c, OK0));
+        if kind == ArchiveKind::Zip {
+            let mut c = tool("ditto");
+            c.arg("-x").arg("-k").arg(archive).arg(dest);
+            tools.push((c, OK0));
+        } else {
+            // macOS's own tar is bsdtar.
+            let mut c = tool("tar");
+            c.arg("-x").arg("-f").arg(archive).arg("-C").arg(dest);
+            tools.push((c, OK0));
+        }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let mut c = tool("unzip");
-        c.arg("-q").arg(zip).arg("-d").arg(dest);
-        tools.push((c, OK01));
+        // A tool that can't read the format fails with an error of its own, which ends the search:
+        // so only tools that can read this kind are listed.
+        if kind == ArchiveKind::Zip {
+            let mut c = tool("unzip");
+            c.arg("-q").arg(archive).arg("-d").arg(dest);
+            tools.push((c, OK01));
+        }
         let mut c = tool("bsdtar");
-        c.arg("-x").arg("-f").arg(zip).arg("-C").arg(dest);
+        c.arg("-x").arg("-f").arg(archive).arg("-C").arg(dest);
         tools.push((c, OK0));
+        if kind == ArchiveKind::Tar {
+            let mut c = tool("tar"); // GNU tar picks the compression itself
+            c.arg("-x").arg("-f").arg(archive).arg("-C").arg(dest);
+            tools.push((c, OK0));
+        }
         for sevenzip in ["7z", "7zz"] {
             let mut o = OsString::from("-o");
             o.push(dest);
             let mut c = tool(sevenzip);
-            c.args(["x", "-y", "-bd"]).arg(o).arg(zip);
+            c.args(["x", "-y", "-bd"]).arg(o).arg(archive);
             tools.push((c, OK0));
         }
     }
@@ -1309,7 +1378,7 @@ pub fn extract_zip(zip: &Path, dest: &Path, prog: Option<&OpProgress>) -> io::Re
 /// The caller moves the contents out (asking about clashes) and then calls `discard_staging`.
 /// Crash safety is the same as `extract_zip`: the folder is journaled as a `part` temp.
 pub fn extract_zip_staged(zip: &Path, target: &Path, prog: Option<&OpProgress>) -> io::Result<PathBuf> {
-    let stem = zip.file_stem().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the zip has no name"))?;
+    let stem = archive_stem(zip);
     let dest = target.join(stem); // never created; only gives the temp its `.<name>.part-<pid>-<n>` shape
     let tmp = free_sibling(&dest, "part");
     journal_add("part", &tmp, &dest);
@@ -1389,6 +1458,15 @@ fn journal_settle(tmp: &Path) {
     j.pending.swap_remove(i);
     if let (Some(t), Some(f)) = (line_safe(tmp), j.file.as_mut()) {
         let _ = f.write_all(format!("-\t{t}\n").as_bytes());
+    }
+}
+
+/// Waits (at most `limit`) until every temp item is gone again: cancelled operations remove theirs
+/// as they stop. Whatever is left is cleaned up by the next start, through the journal.
+pub fn wait_for_temps(limit: Duration) {
+    let end = std::time::Instant::now() + limit;
+    while !journal().pending.is_empty() && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 
@@ -1556,7 +1634,7 @@ fn find_zip_in(path: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut prefix = PathBuf::new();
     for (i, c) in comps.iter().enumerate() {
         prefix.push(c.as_os_str());
-        if has_zip_ext(&prefix) && prefix.is_file() {
+        if has_archive_ext(&prefix) && prefix.is_file() {
             let rel: PathBuf = comps[i + 1..].iter().collect();
             return Some((prefix, rel));
         }
@@ -1600,7 +1678,7 @@ pub fn mount_archive(zip: &Path) -> io::Result<PathBuf> {
     // Canonical, so it compares equal to what the folder tabs get from `canonicalize` (8.3 names on
     // Windows, /var -> /private/var on macOS).
     let base = dunce::canonicalize(&base)?;
-    let stem = zip.file_stem().map(|s| s.to_os_string()).unwrap_or_else(|| "archive".into());
+    let stem = archive_stem(zip);
     let root = base.join(stem);
     if let Err(e) = extract_zip(zip, &root, None) {
         let _ = fs::remove_dir_all(&base);

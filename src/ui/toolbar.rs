@@ -413,9 +413,43 @@ pub(crate) fn search_pill(
     changed
 }
 
-///static_address determines the look of the static, immutable address bar for the settings tab.
-pub(crate) fn static_address(ui: &mut Ui, m: &Metrics, pal: &Palette, width: f32, icon: &str, label: &str) {
-    let (pill, _) = ui.allocate_exact_size(vec2(width, m.ctl_h), Sense::hover());
+/// The address bar of a special tab (a page or the Recycle Bin): its label until clicked, then an empty
+/// field to type a path into. Leaving it without typing (or with Esc) brings the label back.
+pub(crate) fn special_address(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    tab: &mut Tab,
+    width: f32,
+    icon: &str,
+    label: &str,
+    actions: &mut Vec<Action>,
+) {
+    if tab.editing_addr {
+        let id = Id::unique(("addr_edit", tab.id));
+        let state = AddrState { text: &mut tab.address, editing: &mut tab.editing_addr, focus: &mut tab.addr_focus };
+        // The `dir` only matters for the breadcrumbs and for resetting the text, which stays empty here.
+        match breadcrumb_bar(ui, m, pal, id, Path::new(""), state, width) {
+            Some(AddrEvent::Submit(text)) => actions.push(Action::GoToAddress(text)),
+            Some(AddrEvent::Go(path)) => actions.push(Action::Navigate(path)),
+            Some(AddrEvent::Cancelled) | None => {}
+        }
+        if !tab.editing_addr {
+            tab.address.clear();
+        }
+        return;
+    }
+    if static_address(ui, m, pal, width, icon, label).clicked() {
+        tab.editing_addr = true;
+        tab.addr_focus = true;
+        tab.address.clear();
+    }
+}
+
+///static_address determines the look of the static address bar for the settings tab and Recycle Bin.
+pub(crate) fn static_address(ui: &mut Ui, m: &Metrics, pal: &Palette, width: f32, icon: &str, label: &str) -> egui::Response {
+    let (pill, resp) = ui.allocate_exact_size(vec2(width, m.ctl_h), Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::Text);
     let r = CornerRadius::same(m.radius);
     ui.painter().rect_filled(pill, r, pal.control);
     ui.painter().rect_stroke(
@@ -448,6 +482,7 @@ pub(crate) fn static_address(ui: &mut Ui, m: &Metrics, pal: &Palette, width: f32
         pill.max,
     );
     paint_text(ui, tr, label, FontId::proportional(m.font), pal.text, false);
+    resp
 }
 
 impl Explorer {
@@ -477,13 +512,13 @@ impl Explorer {
                     if let Some(page) = tab.page {
                         ui.add_space(m.pad * 0.5);
                         let w = ui.available_width().max(m.accessibility_scale * 120.0);
-                        static_address(ui, &m, &pal, w, page.icon(), page.title());
+                        special_address(ui, &m, &pal, tab, w, page.icon(), page.title(), actions);
                         return;
                     }
                     ui.add_space(m.pad * 0.5);
                     let (addr_w, search_w) = nav_widths(ui, &m, 260.0);
                     if tab.trash.is_some() {
-                        static_address(ui, &m, &pal, addr_w, "recycle_bin", "Recycle Bin");
+                        special_address(ui, &m, &pal, tab, addr_w, "recycle_bin", "Recycle Bin", actions);
                     } else {
                         address_bar(ui, &m, &pal, tab, addr_w, actions);
                     }
@@ -496,13 +531,27 @@ impl Explorer {
     //ui_command is the bottom section of the navbar, where you can find quick commands and the settings button
     pub(crate) fn ui_command(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (m, pal) = (self.m, self.pal);
-        let (in_trash, trash_sel, trash_any) = match &self.tabs[self.active].trash {
-            Some(t) => (true, t.selected.len(), !t.rows.is_empty()),
-            None => (false, 0, false),
+        // Items that a running operation is working on can't be restored or deleted a second time:
+        // only the others count as selected, and Empty needs the whole bin to be idle.
+        let busy = self.trash_busy_ids();
+        let (in_trash, trash_sel, trash_any, sel_busy, bin_busy) = match &self.tabs[self.active].trash {
+            Some(t) => {
+                let selected: Vec<_> = t.selected.iter().filter_map(|&i| t.rows.get(i)).collect();
+                let free = selected.iter().filter(|r| !busy.contains(&r.item.id)).count();
+                (
+                    true,
+                    free,
+                    !t.rows.is_empty() && busy.is_empty(),
+                    !selected.is_empty() && free == 0,
+                    !t.rows.is_empty() && !busy.is_empty(),
+                )
+            }
+            None => (false, 0, false, false, false),
         };
         let in_licenses = self.tabs[self.active].page == Some(Page::Licenses);
         let can_paste = self.can_paste();
         let selection = self.tabs[self.active].selected_paths();
+        let restoring = touches_locked(&self.locked_paths(), &selection);
         let (can_paste, hidden, settings_open) = (
             can_paste,
             self.settings.show_hidden,
@@ -526,18 +575,18 @@ impl Explorer {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = m.accessibility_scale * 2.0;
                     if in_trash {
-                        if Btn::new().icon("restore").label("Restore").tip("Restore the selected items").enabled(trash_sel > 0).show(ui, &m, &pal)
+                        if Btn::new().icon("restore").label("Restore").tip(if sel_busy { "Being restored or deleted right now" } else { "Restore the selected items" }).enabled(trash_sel > 0).show(ui, &m, &pal)
                         .clicked()
                         {
                             actions.push(Action::TrashRestoreSelected);
                         }
-                        if Btn::new().icon("delete").label("Delete permanently").tip("Delete the selected items permanently (Del)").enabled(trash_sel > 0).show(ui, &m, &pal)
+                        if Btn::new().icon("delete").label("Delete permanently").tip(if sel_busy { "Being restored or deleted right now" } else { "Delete the selected items permanently (Del)" }).enabled(trash_sel > 0).show(ui, &m, &pal)
                         .clicked()
                         {
                             actions.push(Action::TrashPurgeSelected);
                         }
                         vsep(ui, &m, &pal);
-                        if Btn::new().icon("empty_bin").label("Empty Recycle Bin").tip("Permanently delete everything in the Recycle Bin").enabled(trash_any).show(ui, &m, &pal)
+                        if Btn::new().icon("empty_bin").label("Empty Recycle Bin").tip(if bin_busy { "Not available while items are being restored or deleted" } else { "Permanently delete everything in the Recycle Bin" }).enabled(trash_any).show(ui, &m, &pal)
                         .clicked()
                         {
                             actions.push(Action::TrashEmpty);
@@ -552,7 +601,7 @@ impl Explorer {
                         }
                         vsep(ui, &m, &pal);
                         if !selection.is_empty() {
-                            if icon_button(ui, &m, &pal, "cut", "Cut (Ctrl+X)", true, false).clicked() {
+                            if icon_button(ui, &m, &pal, "cut", "Cut (Ctrl+X)", !restoring, false).clicked() {
                                 actions.push(Action::Cut(selection.clone()));
                             }
                             if icon_button(ui, &m, &pal, "copy", "Copy (Ctrl+C)", true, false).clicked()
@@ -569,12 +618,12 @@ impl Explorer {
                             actions.push(Action::Paste);
                         }
                         if !selection.is_empty() {
-                            if icon_button(ui, &m, &pal, "rename", "Rename (F2)", selection.len() == 1, false)
+                            if icon_button(ui, &m, &pal, "rename", "Rename (F2)", selection.len() == 1 && !restoring, false)
                                 .clicked()
                             {
                                 actions.push(Action::Rename(selection[0].clone()));
                             }
-                            if icon_button(ui, &m, &pal, "delete", "Delete (Del)", true, false)
+                            if icon_button(ui, &m, &pal, "delete", "Delete (Del)", !restoring, false)
                                 .clicked()
                             {
                                 actions.push(Action::Delete(selection.clone()));

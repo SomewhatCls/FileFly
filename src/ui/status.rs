@@ -51,8 +51,10 @@ impl Explorer {
         // File operations have their own progress dialog; the status bar keeps an entry for them
         // while the user has hidden any of those dialogs. Clicking it opens the dialog again (or, with
         // several operations running, a list to choose from).
-        let ops: Vec<(u64, String)> = self.ops.iter().map(|o| (o.id, o.title.clone())).collect();
-        let any_hidden = self.ops.iter().any(|o| o.hidden);
+        let ops: Vec<(u64, String, String)> =
+            self.ops.iter().filter(|o| o.hidden).map(|o| (o.id, o.title.clone(), crate::ui::ops_dialog::op_target(o))).collect();
+        // The longest an item name gets before it is cut off with "…".
+        let name_limit = m.accessibility_scale * 160.0;
         let busy = self.jobs_running > 0 || tab.loading || tab.trash.as_ref().is_some_and(|t| t.loading);
         let job = self.job_label.clone();
         let mut reopen: Vec<u64> = Vec::new();
@@ -110,35 +112,56 @@ impl Explorer {
                         }
                     }
 
-                    if any_hidden {
+                    if let [(id, title, target)] = ops.as_slice() {
                         let entry = ui
                             .horizontal(|ui| {
                                 ui.add_space(m.pad);
                                 spinner(ui, m.font, pal.text_secondary);
-                                let label = match ops.as_slice() {
-                                    [(_, title)] => title.clone(),
-                                    _ => format!("{} operations", ops.len()),
-                                };
-                                ui.label(RichText::new(label).color(pal.text_secondary).size(m.font * 0.93));
+                                let head = if target.is_empty() { title.clone() } else { format!("{title}:") };
+                                ui.label(RichText::new(head).color(pal.text_secondary).size(m.font * 0.93));
+                                if !target.is_empty() {
+                                    let w = text_width(ui, target, m.font * 0.93).min(name_limit);
+                                    let (r, _) = ui.allocate_exact_size(vec2(w, m.font * 1.4), Sense::hover());
+                                    paint_text(ui, r, target, FontId::proportional(m.font * 0.93), pal.text_secondary, false);
+                                }
                             })
                             .response;
+                        let full = if target.is_empty() { title.clone() } else { format!("{title}: {target}") };
                         let click = ui
                             .interact(entry.rect, Id::unique("status_ops"), Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        if let [(id, _)] = ops.as_slice() {
-                            if click.clicked() {
-                                reopen.push(*id);
-                            }
-                        } else {
-                            egui::Popup::menu(&click).align(egui::RectAlign::TOP_START).show(|ui| {
-                                for (id, title) in &ops {
-                                    if menu_item(ui, &m, &pal, None, title, None, true) {
-                                        reopen.push(*id);
-                                        ui.close();
-                                    }
-                                }
-                            });
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text(full);
+                        if click.clicked() {
+                            reopen.push(*id);
                         }
+                    } else if !ops.is_empty() {
+                        // Several hidden operations: pick the one to show again.
+                        let longest_title = ops.iter().map(|(_, t, _)| text_width(ui, t, m.font)).fold(0.0, f32::max);
+                        cmd_dropdown_wide(
+                            ui,
+                            &m,
+                            &pal,
+                            None,
+                            true,
+                            Some(&format!("{} operations", ops.len())),
+                            Some((m.font * 0.93, pal.text_secondary)),  // So the label looks consistent with the non-dropdown version.
+                            "Show an operation",
+                            true,
+                            m.accessibility_scale * 140.0,
+                            longest_title + name_limit + m.pad * 3.0,
+                            |ui| {
+                                egui::ScrollArea::vertical()
+                                    .max_height(m.accessibility_scale * 320.0)
+                                    .show(ui, |ui| {
+                                        for (id, title, target) in &ops {
+                                            let text = if target.is_empty() { title.clone() } else { format!("{title}: {target}") };
+                                            if ui.add(egui::Button::new(&text).truncate()).on_hover_text(&text).clicked() {
+                                                reopen.push(*id);
+                                            }
+                                        }
+                                    });
+                            },
+                        );
                     }
 
                     // If the window runs with administrator rights, notify the user.

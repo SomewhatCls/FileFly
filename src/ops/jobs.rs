@@ -17,6 +17,9 @@ pub(crate) struct ActiveOp {
     pub(crate) from: String,
     pub(crate) to: String,
     pub(crate) cancelable: bool,
+    /// What the operation reads, changes or creates. Until it is over (its entry is removed) none of
+    /// this can be deleted, moved or renamed, and Recycle Bin items that came from it can't be touched.
+    pub(crate) paths: Vec<PathBuf>,
     pub(crate) progress: Arc<OpProgress>,
     pub(crate) started: Instant,
     /// "More details" (speed graph, time remaining) is open.
@@ -44,6 +47,7 @@ impl ActiveOp {
             from: spec.from,
             to: spec.to,
             cancelable: spec.cancelable,
+            paths: Vec::new(),
             progress,
             started: now,
             expanded: false,

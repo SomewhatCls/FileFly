@@ -215,6 +215,7 @@ pub(crate) fn table_ui(
     mode: TableMode,
     actions: &mut Vec<Action>,
     has_scanner: bool,
+    locked: &[PathBuf],
 ) {
     let Tab {
         id: tab_id,
@@ -227,6 +228,7 @@ pub(crate) fn table_ui(
         anchor,
         rename,
         scroll_to,
+        scroll_center,
         sort_col,
         sort_asc,
         view_dirty,
@@ -248,70 +250,7 @@ pub(crate) fn table_ui(
     let avail = (ui.available_width() - m.pad * 0.5).max(100.0);
 
     // ---- Notification bar (errors in red, everything else in green)
-    let shown = notice
-        .clone()
-        .or_else(|| git_error.clone().map(Notice::error));
-    if let Some(n) = shown {
-        let is_err = n.kind == NoticeKind::Error;
-        let (fg, bg) = if is_err {
-            (pal.danger, pal.danger_bg)
-        } else {
-            (pal.success, pal.success_bg)
-        };
-        // "Try as administrator" only makes sense for errors.
-        let admin_offer = is_err
-            && ui.data(|d| d.get_temp::<u64>(Id::unique("admin_retry_tab"))) == Some(tab_id);
-        let button: Option<(String, Action)> = if admin_offer {
-            Some(("Try as administrator".to_owned(), Action::RetryAsAdmin))
-        } else {
-            n.button.as_ref().map(|b| (b.label.clone(), b.action.clone()))
-        };
-        let btn_w = button
-            .as_ref()
-            .map_or(0.0, |(label, _)| text_width(ui, label, m.font * 0.95) + m.pad * 2.0);
-
-        let (r, _) = ui.allocate_exact_size(vec2(avail, m.row_h * 1.1), Sense::hover());
-        ui.painter().rect_filled(r, CornerRadius::same(m.radius), bg);
-        let tr = Rect::from_min_max(
-            r.min + vec2(m.pad, 0.0),
-            r.max - vec2(m.pad * 3.0 + m.small_icon + btn_w, 0.0),
-        );
-        paint_text(ui, tr, &n.text, FontId::proportional(m.font), fg, false);
-        let cr = Rect::from_center_size(
-            pos2(r.right() - m.pad - m.small_icon / 2.0, r.center().y),
-            vec2(m.ctl_h * 0.8, m.ctl_h * 0.8),
-        );
-        if let Some((label, act)) = button {
-            let right = r.right() - m.pad * 3.0 - m.small_icon;
-            let br = Rect::from_min_max(
-                pos2(right - btn_w + m.pad, r.top() + m.row_h * 0.15),
-                pos2(right, r.bottom() - m.row_h * 0.15),
-            );
-            let resp = ui.interact(br, Id::unique(("notice_btn", tab_id)), Sense::click());
-            hover_fill(ui, br, &resp, pal, m);
-            ui.painter().text(
-                br.center(),
-                Align2::CENTER_CENTER,
-                &label,
-                FontId::proportional(m.font * 0.95),
-                fg,
-            );
-            if resp.clicked() {
-                actions.push(act);
-                if !admin_offer {
-                    *notice = None; // e.g. clicking Download dismisses the update notice
-                }
-            }
-        }
-        let resp = ui.interact(cr, Id::unique(("notice_close", tab_id)), Sense::click());
-        hover_fill(ui, cr, &resp, pal, m);
-        draw_icon(ui, cr.center(), m.small_icon * 0.8, "close", fg);
-        if resp.clicked() {
-            *notice = None;
-            *git_error = None;
-        }
-        ui.add_space(m.pad * 0.5);
-    }
+    notice_bar(ui, m, pal, tab_id, avail, notice, git_error, actions);
 
     // ---- column geometry: Name flexes; Type, then Date, then Size are dropped when space runs out
     // Each pane keeps its own widths. Whether a column fits depends on the pane's width, so
@@ -880,7 +819,7 @@ pub(crate) fn table_ui(
                 if resp.double_clicked() && !renaming_here {
                     actions.push(Action::Open(e.path.clone()));
                 }
-                if resp.middle_clicked() && (e.is_dir || has_zip_ext(&e.path)) {
+                if resp.middle_clicked() && (e.is_dir || has_archive_ext(&e.path)) {
                     actions.push(Action::NewTabAt(e.path.clone()));
                 }
 
@@ -940,7 +879,9 @@ pub(crate) fn table_ui(
                     }
                     // An opened zip is read-only (it is shown from a temporary unpacked copy).
                     let in_archive = archive_of(p).is_some();
-                    if (e.is_dir || has_zip_ext(&e.path))
+                    // Being restored into place right now: can't be moved, renamed or deleted.
+                    let restoring = touches_locked(locked, &targets);
+                    if (e.is_dir || has_archive_ext(&e.path))
                         && menu_item(ui, m, pal, Some("new_tab"), "Open in new tab", None, true)
                     {
                         actions.push(Action::NewTabAt(p.clone()));
@@ -948,7 +889,7 @@ pub(crate) fn table_ui(
                     }
                     pin_menu_item(ui, m, pal, p, actions);
                     ui.separator();
-                    if menu_item(ui, m, pal, Some("cut"), "Cut", Some("Ctrl+X"), !in_archive) {
+                    if menu_item(ui, m, pal, Some("cut"), "Cut", Some("Ctrl+X"), !in_archive && !restoring) {
                         actions.push(Action::Cut(targets.clone()));
                         
                     }
@@ -971,19 +912,19 @@ pub(crate) fn table_ui(
                         Some("rename"),
                         "Rename",
                         Some("F2"),
-                        targets.len() == 1 && !in_archive,
+                        targets.len() == 1 && !in_archive && !restoring,
                     ) {
                         actions.push(Action::Rename(p.clone()));
                         
                     }
-                    if menu_item(ui, m, pal, Some("delete"), "Delete", Some("Del"), !in_archive) {
+                    if menu_item(ui, m, pal, Some("delete"), "Delete", Some("Del"), !in_archive && !restoring) {
                         actions.push(Action::Delete(targets.clone()));
                         
                     }
                     ui.separator();
                     // Native zip support: unzipped items can be compressed, zip files extracted.
                     let zips: Vec<PathBuf> =
-                        targets.iter().filter(|t| has_zip_ext(t)).cloned().collect();
+                        targets.iter().filter(|t| has_archive_ext(t)).cloned().collect();
                     if !zips.is_empty() {
                         if menu_item(ui, m, pal, Some("archive"), "Extract all", None, true) {
                             actions.push(Action::Extract(zips.clone()));
@@ -1067,7 +1008,7 @@ pub(crate) fn table_ui(
                     pos2(ui.max_rect().left(), top + vi as f32 * row_h),
                     vec2(avail, row_h),
                 );
-                ui.scroll_to_rect(target, None);
+                ui.scroll_to_rect(target, std::mem::take(scroll_center).then_some(Align::Center));
             }
         });
 }

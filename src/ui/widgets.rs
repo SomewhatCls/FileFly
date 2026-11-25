@@ -250,13 +250,45 @@ pub(crate) fn cmd_dropdown<R>(
     max_label_w: f32,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
+    cmd_dropdown_wide(ui, m, pal, Some(icon), false, label, None, tip, enabled, max_label_w, 0.0, add_contents)
+}
+
+/// `cmd_dropdown` with a minimum width for the opened menu (it is at least as wide as the button
+/// and 180 points, whatever `menu_min_w` is).
+pub(crate) fn cmd_dropdown_wide<R>(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    icon: Option<&str>,
+    spinner: bool,
+    label: Option<&str>,
+    // Overrides the label style with a custom color and font size.
+    label_style: Option<(f32, Color32)>,
+    tip: &str,
+    enabled: bool,
+    max_label_w: f32,
+    menu_min_w: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
     let icon_size = m.icon * 0.85;
+    // Dropdown chevron icon.
     let chevron = m.small_icon * 0.7;
+
+    let color = text_color(pal, enabled);
+    //Custom label styling if applicable.
+    let (label_size, label_color) = match label_style {
+        Some((size, c)) => (size, if enabled { c } else { pal.text_disabled }),
+        None => (m.font, color),
+    };
+
+    let has_lead = spinner || icon.is_some();
+    let lead_w = if has_lead { icon_size } else { 0.0 };
+    let lead_gap = if has_lead { m.pad * 0.6 } else { 0.0 };
 
     // paint_text elides labels wider than their rect, so only the width needs capping here.
     let width = match label {
-        Some(l) => m.pad * 3.2 + icon_size + chevron + text_width(ui, l, m.font).min(max_label_w),
-        None => m.pad * 2.4 + icon_size + chevron,
+        Some(l) => m.pad * 2.6 + lead_gap + lead_w + chevron + text_width(ui, l, label_size).min(max_label_w),
+        None => m.pad * 2.4 + lead_w + chevron,
     };
     let (rect, resp) = ui.allocate_exact_size(vec2(width, m.ctl_h), sense(enabled));
 
@@ -271,14 +303,15 @@ pub(crate) fn cmd_dropdown<R>(
         hover_fill(ui, rect, &resp, pal, m);
     }
 
-    let color = text_color(pal, enabled);
-    draw_icon(
-        ui,
-        pos2(rect.left() + m.pad + icon_size / 2.0, rect.center().y),
-        icon_size,
-        icon,
-        color,
-    );
+    // Draws an icon, a spinner, or nothing.
+    let lead_pos = pos2(rect.left() + m.pad + m.font / 2.0, rect.center().y);
+    if spinner {
+        let c = if enabled { pal.text_secondary } else { pal.text_disabled };
+        paint_spinner(ui, lead_pos, m.font, c);
+    } else if let Some(name) = icon {
+        draw_icon(ui, lead_pos, icon_size, name, color);
+    }
+
     let chevron_pos = pos2(rect.right() - m.pad - chevron / 2.0, rect.center().y);
     draw_icon(
         ui,
@@ -289,10 +322,10 @@ pub(crate) fn cmd_dropdown<R>(
     );
     if let Some(l) = label {
         let tr = Rect::from_min_max(
-            pos2(rect.left() + m.pad * 1.6 + icon_size, rect.top()),
+            pos2(rect.left() + m.pad + lead_w + lead_gap, rect.top()),
             pos2(chevron_pos.x - chevron / 2.0 - m.pad * 0.6, rect.bottom()),
         );
-        paint_text(ui, tr, l, FontId::proportional(m.font), color, false);
+        paint_text(ui, tr, l, FontId::proportional(label_size), label_color, false);
     }
 
     // Don't show the tooltip on top of the menu.
@@ -302,10 +335,93 @@ pub(crate) fn cmd_dropdown<R>(
     }
 
     let res = egui::Popup::menu(&resp)
-        .width(rect.width().max(m.accessibility_scale * 180.0))
+        .width(rect.width().max(m.accessibility_scale * 180.0).max(menu_min_w))
         .show(add_contents);
     ui.data_mut(|d| d.insert_temp(open_id, res.is_some()));
     res.map(|r| r.inner)
+}
+
+/// The notification bar at the top of a view: errors in red, everything else in green, with an optional
+/// action button and a close button.
+///
+/// `notice` is the tab's notice. `error` is a plain error text that is shown while there is no notice
+/// (git errors in the file view, load errors in the Recycle Bin). Closing the bar clears both.
+/// A button's action is pushed to `actions`; clicking it also dismisses the notice (except the
+/// "Try as administrator" offer, which stays until the retry replaces the error).
+pub(crate) fn notice_bar(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    tab_id: u64,
+    width: f32,
+    notice: &mut Option<Notice>,
+    error: &mut Option<String>,
+    actions: &mut Vec<Action>,
+) {
+    let shown = notice.clone().or_else(|| error.clone().map(Notice::error));
+    let Some(n) = shown else { return };
+
+    let is_err = n.kind == NoticeKind::Error;
+    let (fg, bg) = if is_err {
+        (pal.danger, pal.danger_bg)
+    } else {
+        (pal.success, pal.success_bg)
+    };
+    // "Try as administrator" only makes sense for errors.
+    let admin_offer = is_err && ui.data(|d| d.get_temp::<u64>(Id::unique("admin_retry_tab"))) == Some(tab_id);
+    let button: Option<(String, Action)> = if admin_offer {
+        Some(("Try as administrator".to_owned(), Action::RetryAsAdmin))
+    } else {
+        n.button.as_ref().map(|b| (b.label.clone(), b.action.clone()))
+    };
+    let btn_w = button
+        .as_ref()
+        .map_or(0.0, |(label, _)| text_width(ui, label, m.font * 0.95) + m.pad * 2.0);
+
+    let (r, _) = ui.allocate_exact_size(vec2(width, m.row_h * 1.1), Sense::hover());
+    ui.painter().rect_filled(r, CornerRadius::same(m.radius), bg);
+    let text_rect = Rect::from_min_max(
+        r.min + vec2(m.pad, 0.0),
+        r.max - vec2(m.pad * 3.0 + m.small_icon + btn_w, 0.0),
+    );
+    paint_text(ui, text_rect, &n.text, FontId::proportional(m.font), fg, false);
+    // The text is one elided line; the tooltip has all of it.
+    ui.interact(text_rect, Id::unique(("notice_text", tab_id)), Sense::hover()).on_hover_text(&n.text);
+
+    let close = Rect::from_center_size(
+        pos2(r.right() - m.pad - m.small_icon / 2.0, r.center().y),
+        vec2(m.ctl_h * 0.8, m.ctl_h * 0.8),
+    );
+    if let Some((label, act)) = button {
+        let right = r.right() - m.pad * 3.0 - m.small_icon;
+        let br = Rect::from_min_max(
+            pos2(right - btn_w + m.pad, r.top() + m.row_h * 0.15),
+            pos2(right, r.bottom() - m.row_h * 0.15),
+        );
+        let resp = ui.interact(br, Id::unique(("notice_btn", tab_id)), Sense::click());
+        hover_fill(ui, br, &resp, pal, m);
+        ui.painter().text(
+            br.center(),
+            Align2::CENTER_CENTER,
+            &label,
+            FontId::proportional(m.font * 0.95),
+            fg,
+        );
+        if resp.clicked() {
+            actions.push(act);
+            if !admin_offer {
+                *notice = None; // e.g. clicking Download dismisses the update notice
+            }
+        }
+    }
+    let resp = ui.interact(close, Id::unique(("notice_close", tab_id)), Sense::click());
+    hover_fill(ui, close, &resp, pal, m);
+    draw_icon(ui, close.center(), m.small_icon * 0.8, "close", fg);
+    if resp.clicked() {
+        *notice = None;
+        *error = None;
+    }
+    ui.add_space(m.pad * 0.5);
 }
 
 pub(crate) fn vsep(ui: &mut Ui, m: &Metrics, pal: &Palette) {
@@ -324,6 +440,21 @@ pub(crate) fn menu_item(
     label: &str,
     hint: Option<&str>,
     enabled: bool,
+) -> bool {
+    menu_item_tip(ui, m, pal, icon, label, hint, enabled, None)
+}
+
+/// `menu_item` that also says why it is greyed out: `why_disabled` is the tooltip of a disabled entry
+/// (a label that is cut off shows its full text instead).
+pub(crate) fn menu_item_tip(
+    ui: &mut Ui,
+    m: &Metrics,
+    pal: &Palette,
+    icon: Option<&str>,
+    label: &str,
+    hint: Option<&str>,
+    enabled: bool,
+    why_disabled: Option<&str>,
 ) -> bool {
     let w = ui.available_width().max(m.accessibility_scale * 230.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(w, m.row_h * 0.95), sense(enabled));
@@ -361,10 +492,16 @@ pub(crate) fn menu_item(
     if let Some(h) = hint {
         paint_text(ui, text_rect, h, FontId::proportional(hint_size), pal.text_secondary, true);
     }
-    if truncated {
-        resp.on_hover_text(label).clicked()
+    let tip = if truncated {
+        Some(label)
+    } else if enabled {
+        None
     } else {
-        resp.clicked()
+        why_disabled
+    };
+    match tip {
+        Some(t) => resp.on_hover_text(t).clicked(),
+        None => resp.clicked(),
     }
 }
 
@@ -407,22 +544,8 @@ fn dialog_surface(pal: &Palette) -> Color32 {
     if pal.dark { Color32::from_rgb(43, 43, 43) } else { Color32::from_rgb(249, 249, 249) }
 }
 
-/// Fluent-style dialog: rounded flyout surface, optional dimmed scrim. Returns true when closed (X / Esc /
-/// a click outside of it).
-pub(crate) fn dialog_shell(
-    ui: &mut Ui,
-    m: &Metrics,
-    pal: &Palette,
-    id: &str,
-    title: &str,
-    modal: bool,
-    width: f32,
-    add: impl FnOnce(&mut Ui),
-) -> bool {
-    dialog_shell_with_footer(ui, m, pal, id, title, modal, width, add, None)
-}
-
-/// `dialog_shell` with a command row along the bottom edge, like a Windows content dialog.
+/// Fluent-style dialog: rounded flyout surface, optional dimmed scrim, and an optional command row along the
+/// bottom edge like a Windows content dialog. Returns true when closed (X / Esc / a click outside of it).
 pub(crate) fn dialog_shell_with_footer<'a>(
     ui: &mut Ui,
     m: &Metrics,

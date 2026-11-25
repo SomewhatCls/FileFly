@@ -158,6 +158,14 @@ impl Indexer {
         self.cache.get(path).map(|c| c.size)
     }
 
+    /// `lookup`, plus whether the entry is up to date right now: the same test a listing applies
+    /// before it trusts a cached size (no rescan needed, so no spinner). Costs one `stat`.
+    pub fn lookup_fresh(&self, path: &Path) -> Option<(u64, bool)> {
+        let c = self.cache.get(path)?;
+        let stamp = fs::metadata(path).and_then(|m| m.modified()).map(stamp_of).unwrap_or(0);
+        Some((c.size, is_fresh(&c, stamp, now_secs(), self.sink.watched_since(path))))
+    }
+
     /// Drop the path and every ancestor: their totals are no longer correct.
     pub fn invalidate(&self, path: &Path) {
         self.cache.remove_with_ancestors(path);

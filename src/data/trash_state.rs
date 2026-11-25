@@ -48,6 +48,45 @@ impl TrashState {
 pub(crate) struct ConfirmPurge {
     pub(crate) items: Vec<trash_bin::Item>,
     pub(crate) text: String,
+    /// Keeps `items` marked as busy while the question is open (so they can't be restored in the
+    /// meantime). On "Delete", move it into the job that purges them, so they stay busy until it ends.
+    pub(crate) guard: BusyGuard,
+}
+
+/// A restore waiting for the user to decide what to do with each item whose place is taken.
+pub(crate) struct PendingRestore {
+    /// Items that need no decision (or were already decided).
+    pub(crate) ready: Vec<(trash_bin::Item, trash_bin::Clash)>,
+    /// (item, is a folder) whose original path is taken; the front one is being asked about.
+    pub(crate) todo: VecDeque<(trash_bin::Item, bool)>,
+    /// "Do this for all remaining conflicts" was ticked.
+    pub(crate) apply_all: bool,
+    /// Keeps all the items busy while the question is open; moves into the job that restores them.
+    pub(crate) guard: BusyGuard,
+}
+
+/// Marks Recycle Bin items as being worked on (`Explorer::trash_busy`) for as long as it lives: they
+/// can't be restored or deleted a second time. Dropping it releases them, however the job ends
+/// (finished, failed, cancelled, or panicked).
+pub(crate) struct BusyGuard {
+    set: Arc<std::sync::Mutex<HashSet<std::ffi::OsString>>>,
+    ids: Vec<std::ffi::OsString>,
+}
+
+impl BusyGuard {
+    pub(crate) fn new(set: Arc<std::sync::Mutex<HashSet<std::ffi::OsString>>>, ids: Vec<std::ffi::OsString>) -> Self {
+        set.lock().unwrap_or_else(|e| e.into_inner()).extend(ids.iter().cloned());
+        Self { set, ids }
+    }
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        let mut set = self.set.lock().unwrap_or_else(|e| e.into_inner());
+        for id in &self.ids {
+            set.remove(id);
+        }
+    }
 }
 
 pub(crate) fn trash_move(tr: &mut TrashState, delta: i32) {
@@ -116,4 +155,10 @@ pub(crate) fn rebuild_trash_view(tr: &mut TrashState, search: &str) {
 /// Rebuilds `dir_rows` after the rows were replaced.
 pub(crate) fn index_trash_dirs(tr: &mut TrashState) {
     tr.dir_rows = tr.rows.iter().enumerate().filter_map(|(i, r)| r.dir_path.clone().map(|p| (p, i))).collect();
+}
+
+/// Whether any of `paths` is, contains, or lies inside one of the `locked` ones (what running
+/// operations are working on, see `Explorer::locked_paths`).
+pub(crate) fn touches_locked(locked: &[PathBuf], paths: &[PathBuf]) -> bool {
+    paths.iter().any(|p| locked.iter().any(|l| paths_related(p, l)))
 }

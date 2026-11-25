@@ -349,7 +349,7 @@ impl Explorer {
             caption: &caption,
             width: m.accessibility_scale * 460.0,
             max_height: m.accessibility_scale * 760.0,
-            transparency: self.backdrop_transparency.expect("A transparency effect should always be set"),
+            transparency: self.backdrop_transparency.unwrap_or(TransparencyEffect::None),
             custom_frame: self.settings.custom_frame,
             hold_open: false,
         };

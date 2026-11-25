@@ -29,6 +29,13 @@ impl Explorer {
     }
 
     pub(crate) fn navigate(&mut self, ti: usize, path: PathBuf) {
+        self.navigate_selecting(ti, path, None);
+    }
+
+    /// Opens a folder in tab `ti` and, once it is shown, selects `select` in it. Nothing here waits for
+    /// the disk: a network share or a WSL distribution that is still starting could take seconds, so the
+    /// path is looked at on a worker thread and the tab changes when the answer arrives (`finish_navigate`).
+    pub(crate) fn navigate_selecting(&mut self, ti: usize, path: PathBuf, select: Option<PathBuf>) {
         // A path through a .zip ("C:\\data\\a.zip\\docs") is opened like any folder: the zip is
         // unpacked once (in the background) and the tab then shows the unpacked folder.
         let path = match resolve_archive_path(&path) {
@@ -38,40 +45,44 @@ impl Explorer {
                 return;
             }
         };
-        let path = match dunce::canonicalize(&path) {
-            Ok(p) if p.is_dir() => clean_path(&p), // no \\?\ / \\?\UNC\ prefix (breaks cargo, cmd, ...)
-            Ok(_) => {
-                self.tabs[ti].error("That path is not a folder.".to_owned());
-                return;
-            }
-            Err(e) => {
-                let msg = format!("Could not open folder: {e}");
-                if is_denied_io(&e) {
-                    self.admin_retry = Some((msg.clone(), AdminRetry::OpenFolder(path.clone())));
-                }
-                self.tabs[ti].error(msg);
-                return;
-            }
-        };
+        let tab = &mut self.tabs[ti];
+        tab.nav_seq += 1;
+        tab.loading = true;
+        let (id, seq) = (tab.id, tab.nav_seq);
+        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        std::thread::spawn(move || {
+            let result = resolve_folder(&path);
+            let _ = tx.send(AppMsg::NavResolved { tab: id, seq, requested: path, select, result });
+            ui.request_repaint();
+        });
+    }
+
+    /// The tab's target folder turned out to be `path` (see `navigate_selecting`): shows it.
+    pub(crate) fn finish_navigate(&mut self, ti: usize, path: PathBuf, select: Option<PathBuf>) {
         let tab = &mut self.tabs[ti];
         if tab.page.is_some() {
             // Leaving a page (Settings, Licenses): the tab turns into a normal folder tab.
             tab.page = None;
             tab.back.clear();
             tab.fwd.clear();
-            self.set_dir(ti, path);
-            return;
-        }
-        // The Recycle Bin is a view *over* `tab.dir`, so asking for that same folder while in the
-        // bin must leave the bin; otherwise the same folder is simply ignored.
-        if path == tab.dir && tab.trash.is_none() {
+        } else if path == tab.dir && tab.trash.is_none() {
+            // The Recycle Bin is a view *over* `tab.dir`, so asking for that same folder while in the
+            // bin must leave the bin; otherwise the same folder is simply ignored.
+            tab.loading = false;
             tab.address = display_path(&path).display().to_string();
+            if let Some(p) = select {
+                tab.select_only(p);
+            }
             return;
+        } else {
+            let cur = tab.place();
+            tab.back.push(cur);
+            tab.fwd.clear();
         }
-        let cur = tab.place();
-        tab.back.push(cur);
-        tab.fwd.clear();
         self.set_dir(ti, path);
+        if let Some(p) = select {
+            self.tabs[ti].select_only(p);
+        }
     }
 
     /// Shows a history entry without touching the history stacks.
@@ -93,6 +104,7 @@ impl Explorer {
         tab.editing_addr = false;
         tab.trash = None;
         tab.page = None;
+        tab.nav_seq += 1; // an answer still on its way for an earlier request is out of date now
         tab.entries.clear();
         tab.lookup.clear();
         tab.view.clear();
@@ -272,25 +284,36 @@ impl Explorer {
         save_settings(&self.settings);
     }
 
+    /// Opens a folder in the active tab, a zip like a folder, any other file with its program. Looking at
+    /// the path (and starting the program) happens on a worker thread, like `navigate_selecting`.
     pub(crate) fn open_path(&mut self, path: &Path) {
-        // A .zip opens like a folder: its contents are shown in the same tab.
-        if has_zip_ext(path) && path.is_file() {
-            self.navigate(self.active, path.to_path_buf());
-            return;
-        }
-        match fs::metadata(path) {
-            Ok(m) if m.is_dir() => self.navigate(self.active, path.to_path_buf()),
-            Ok(_) => {
-                if let Err(e) = open::that(path) {
-                    let msg = format!("Could not open file: {e}");
-                    if needs_elevation(&e) {
-                        self.admin_retry = Some((msg.clone(), AdminRetry::RunFile(path.to_path_buf())));
-                    }
-                    self.tabs[self.active].error(msg);
+        let ti = self.active;
+        let tab = &mut self.tabs[ti];
+        tab.nav_seq += 1;
+        tab.loading = true;
+        let (id, seq) = (tab.id, tab.nav_seq);
+        let (tx, ui, path) = (self.msg_tx.clone(), self.ui.clone(), path.to_path_buf());
+        std::thread::spawn(move || {
+            let fail = |msg: String, retry: Option<AdminRetry>| AppMsg::OpenFailed { tab: id, msg, retry };
+            let msg = match fs::metadata(&path) {
+                Ok(m) if m.is_dir() => {
+                    let result = resolve_folder(&path);
+                    AppMsg::NavResolved { tab: id, seq, requested: path, select: None, result }
                 }
-            }
-            Err(e) => self.tabs[self.active].error(format!("Could not access item: {e}")),
-        }
+                Ok(m) if m.is_file() && has_archive_ext(&path) => AppMsg::OpenZip { tab: id, seq, path },
+                Ok(_) => match open::that(&path) {
+                    Ok(()) => AppMsg::OpenFailed { tab: id, msg: String::new(), retry: None }, // nothing to report
+                    Err(e) => {
+                        let msg = format!("Could not open file: {e}");
+                        let retry = needs_elevation(&e).then(|| AdminRetry::RunFile(path.clone()));
+                        fail(msg, retry)
+                    }
+                },
+                Err(e) => fail(format!("Could not access item: {e}"), None),
+            };
+            let _ = tx.send(msg);
+            ui.request_repaint();
+        });
     }
 
     // ------------------------------------------------------------------ zip archives
@@ -317,5 +340,15 @@ impl Explorer {
             }
         }
         changed
+    }
+}
+
+/// Looks at a folder path (this can take a while on a network share): the real, cleaned-up path, or the reason it
+/// can't be opened. Runs on a worker thread.
+fn resolve_folder(path: &Path) -> Result<PathBuf, NavError> {
+    match dunce::canonicalize(path) {
+        Ok(p) if p.is_dir() => Ok(clean_path(&p)), // no \\?\ / \\?\UNC\ prefix (breaks cargo, cmd, ...)
+        Ok(_) => Err(NavError { msg: "That path is not a folder.".to_owned(), denied: false }),
+        Err(e) => Err(NavError { msg: format!("Could not open folder: {e}"), denied: is_denied_io(&e) }),
     }
 }

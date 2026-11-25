@@ -9,7 +9,6 @@ pub(crate) struct SettingsPage {
     pub(crate) s: Settings,
     pub(crate) font: f32,
     pub(crate) font_edit: Option<f32>,
-    pub(crate) index_dir: String,
     pub(crate) cache_len: usize,
     pub(crate) rescan: bool,
     pub(crate) choose: bool,
@@ -31,7 +30,6 @@ impl SettingsPage {
     pub(crate) fn new(
         settings: &Settings,
         font_edit: Option<f32>,
-        index_dir: String,
         cache_len: usize,
         default_on: bool,
         default_error: Option<String>,
@@ -42,7 +40,6 @@ impl SettingsPage {
             s: settings.clone(),
             font: font_edit.unwrap_or(settings.font_size),
             font_edit,
-            index_dir,
             cache_len,
             rescan: false,
             choose: false,
@@ -522,41 +519,14 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                 });
             }
 
-            let is_windows_11 = System::kernel_version()
-                .and_then(|v| v.parse::<u32>().ok())
-                .is_some_and(|build| build >= 22000);
-
             fl_divider(ui, m, pal);
             fl_row(ui, m, pal, "Transparency effects", Some("Choose from available transparency effects"), |ui| {
-                let label = |t: TransparencyEffect| match t {
-                    TransparencyEffect::Mica => "Mica",
-                    TransparencyEffect::Acrylic => "Acrylic",
-                    TransparencyEffect::None => "None",
-                };
-                // Makes selectable transparency effects dependent on Windows version.
                 egui::ComboBox::from_id_salt("transparency")
                     .width(m.accessibility_scale * 150.0)
-                    .selected_text(label(sp.s.transparency_effect))
+                    .selected_text(sp.s.transparency_effect.label())
                     .show_ui(ui, |ui| {
-                        let effects = if is_windows_11 {
-                            vec![
-                                TransparencyEffect::Mica,
-                                TransparencyEffect::Acrylic,
-                                TransparencyEffect::None,
-                            ]
-                        } else {
-                            vec![
-                                TransparencyEffect::Acrylic,
-                                TransparencyEffect::None,
-                            ]
-                        };
-
-                        for t in effects {
-                            ui.selectable_value(
-                                &mut sp.s.transparency_effect,
-                                t,
-                                label(t),
-                            );
+                        for &t in TransparencyEffect::available() {
+                            ui.selectable_value(&mut sp.s.transparency_effect, t, t.label());
                         }
                     });
             });
@@ -655,7 +625,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
     });
     // ---------------------------------------------------------------- Default file manager
     if cfg!(windows) {
-        fl_section(ui, m, pal, "Default file manager");
+        fl_section(ui, m, pal, "Default file manager (experimental)");
         fl_card(ui, m, pal, |ui| {
             let desc = match &sp.default_error {
                 Some(e) => format!("Could not change the setting: {e}"),
@@ -704,13 +674,6 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
         // The rows below only do something while the indexer is turned on.
         let sizes_on = sp.s.calculate_folder_sizes;
         ui.add_enabled_ui(sizes_on, |ui| {
-            fl_divider(ui, m, pal);
-            let loc = format!("Index location: {}", sp.index_dir);
-            fl_row(ui, m, pal, "Index location", Some(loc.as_str()), |ui| {
-                if secondary_button(ui, m, pal, "Choose location…").clicked() {
-                    sp.choose = true;
-                }
-            });
             fl_divider(ui, m, pal);
             let cached = format!(
                 "{} folders cached. Changes are picked up automatically while the app is open.",
@@ -785,7 +748,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
                     "Check",
                 ),
                 UpdateState::Checking => ("Checking…".to_owned(), "Check"),
-                UpdateState::UpToDate => ("You are running the current-most version.".to_owned(), "Check"),
+                UpdateState::UpToDate => ("You are up-to-date.".to_owned(), "Check"),
                 UpdateState::Available(_) => (
                     "You can update to a newer version, click the Download button to start.".to_owned(),
                     "Download",
@@ -858,20 +821,26 @@ impl Explorer {
             self.activate_tab(i);
             return;
         }
+        let ti = self.push_special_tab();
+        self.tabs[ti].page = Some(page);
+    }
+
+    /// Adds a tab for a page or the Recycle Bin (the caller sets which) and makes it the active one.
+    /// In tiled mode it takes over the focused pane. Returns its index.
+    pub(crate) fn push_special_tab(&mut self) -> usize {
         let dir = self.tabs[self.active].dir.clone();
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         if let Some(tree) = self.tiles.as_mut() {
-            // In tiled mode the new tab takes over the focused pane.
             let cur = self.tabs[self.active].id;
             tree.replace(cur, id);
         }
         let mut tab = Tab::new(id, dir);
-        tab.page = Some(page);
-        tab.load_gen = 1; // nothing to read: the page is not a folder listing
+        tab.load_gen = 1; // nothing to read: it is not a folder listing
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
         self.on_active_changed();
+        self.active
     }
 
     /// Applies what the Settings tab changed this frame (it works on a copy of the settings).
@@ -888,16 +857,10 @@ impl Explorer {
             if s.theme != old.theme {
                 ui.set_theme(theme_pref(s.theme));
             }
-            if s.custom_frame != old.custom_frame {
-                self.settings.custom_frame = s.custom_frame;
-                self.require_restart = true;
-            }
-            if s.git_activated != old.git_activated {
-                self.settings.git_activated = s.git_activated;
-                self.require_restart = true;
-            }
-            if s.blur_paning != old.blur_paning {
-                self.settings.blur_paning = s.blur_paning;
+            // For settings requiring restarts. Will be deprecated once logic is moved out of eframe.
+            let restart_fields = |x: &Settings| (x.custom_frame, x.git_activated, x.blur_paning);
+            if restart_fields(&s) != restart_fields(&old) {
+                (self.settings.custom_frame, self.settings.git_activated, self.settings.blur_paning) = restart_fields(&s);
                 self.require_restart = true;
             }
             if s.show_hidden != old.show_hidden || s.date_format != old.date_format {

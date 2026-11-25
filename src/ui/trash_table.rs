@@ -8,7 +8,11 @@ pub(crate) fn trash_table_ui(
     m: &Metrics,
     pal: &Palette,
     tr: &mut TrashState,
+    tab_id: u64,
+    notice: &mut Option<Notice>,
     searching: bool,
+    // Ids of items a running operation is working on: dimmed, and can't be restored or deleted again.
+    busy: &HashSet<std::ffi::OsString>,
     actions: &mut Vec<Action>,
 ) {
     let TrashState {
@@ -26,34 +30,8 @@ pub(crate) fn trash_table_ui(
     } = tr;
     let avail = (ui.available_width() - m.pad * 0.5).max(100.0);
 
-    if let Some(msg) = error.clone() {
-        let (r, _) = ui.allocate_exact_size(vec2(avail, m.row_h * 1.1), Sense::hover());
-        ui.painter()
-            .rect_filled(r, CornerRadius::same(m.radius), pal.danger_bg);
-        let tr_rect = Rect::from_min_max(
-            r.min + vec2(m.pad, 0.0),
-            r.max - vec2(m.pad * 3.0 + m.small_icon, 0.0),
-        );
-        paint_text(
-            ui,
-            tr_rect,
-            &msg,
-            FontId::proportional(m.font),
-            pal.danger,
-            false,
-        );
-        let cr = Rect::from_center_size(
-            pos2(r.right() - m.pad - m.small_icon / 2.0, r.center().y),
-            vec2(m.ctl_h * 0.8, m.ctl_h * 0.8),
-        );
-        let resp = ui.interact(cr, Id::unique("trash_err_close"), Sense::click());
-        hover_fill(ui, cr, &resp, pal, m);
-        draw_icon(ui, cr.center(), m.small_icon * 0.8, "close", pal.danger);
-        if resp.clicked() {
-            *error = None;
-        }
-        ui.add_space(m.pad * 0.5);
-    }
+    // Same notification bar as the file view: the tab's notice, or the Recycle Bin's own error text.
+    notice_bar(ui, m, pal, tab_id, avail, notice, error, actions);
 
     // Columns after Name: Original location, Date deleted, Size. Dropped in that order when narrow.
     // The Size column always has room for the widest regular value ("999.9 MB") plus the spinner.
@@ -151,9 +129,10 @@ pub(crate) fn trash_table_ui(
     if body_resp.clicked() {
         selected.clear();
     }
-    let any_rows = !rows.is_empty();
+    // Emptying the bin would also take the items an operation is working on.
+    let any_rows = !rows.is_empty() && busy.is_empty();
     scroll_context_menu(&body_resp, |ui| {
-        if menu_item(
+        if menu_item_tip(
             ui,
             m,
             pal,
@@ -161,6 +140,8 @@ pub(crate) fn trash_table_ui(
             "Empty Recycle Bin",
             None,
             any_rows,
+            // Greyed out because of a running operation (an empty bin has nothing to explain).
+            (!rows.is_empty() && !busy.is_empty()).then_some("Not available while items are being restored or deleted"),
         ) {
             actions.push(Action::TrashEmpty);
         }
@@ -234,6 +215,7 @@ pub(crate) fn trash_table_ui(
             for vi in range.clone() {
                 let ri = view[vi];
                 let row = &rows[ri];
+                let is_busy = busy.contains(&row.item.id);
                 let (rect, resp) = ui.allocate_exact_size(vec2(avail, row_h), Sense::click());
                 let is_sel = selected.contains(&ri);
                 let bg = if is_sel {
@@ -274,7 +256,7 @@ pub(crate) fn trash_table_ui(
                     name_rect,
                     &row.name,
                     FontId::proportional(m.font),
-                    pal.text,
+                    if is_busy { pal.text_secondary } else { pal.text },
                     false,
                 );
                 let mut cx = rect.left() + name_w;
@@ -337,18 +319,19 @@ pub(crate) fn trash_table_ui(
                     }
                 }
                 scroll_context_menu(&resp, |ui| {
-                    if menu_item(ui, m, pal, Some("restore"), "Restore", None, true) {
+                    if menu_item_tip(ui, m, pal, Some("restore"), "Restore", None, !is_busy, Some("Being restored or deleted right now")) {
                         actions.push(Action::TrashRestoreSelected);
                         
                     }
-                    if menu_item(
+                    if menu_item_tip(
                         ui,
                         m,
                         pal,
                         Some("delete"),
                         "Delete permanently",
                         Some("Del"),
-                        true,
+                        !is_busy,
+                        Some("Being restored or deleted right now"),
                     ) {
                         actions.push(Action::TrashPurgeSelected);
                         
@@ -367,4 +350,140 @@ pub(crate) fn trash_table_ui(
                 ui.scroll_to_rect(target, None);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    //! Headless checks of the Recycle Bin's error reporting: a job error must show up in the notification
+    //! bar, a tab notice beats the bin's own error text (as `git_error` does in the file view), and the
+    //! close button clears both. Each test drives `trash_table_ui` through a real egui context.
+    use super::*;
+
+    const WIDTH: f32 = 800.0;
+
+    fn look() -> (Metrics, Palette) {
+        (
+            Metrics::new(14.0, 1.0, false),
+            Palette::new(egui::Theme::Dark, Accent::fallback(), TransparencyEffect::None),
+        )
+    }
+
+    /// Everything painted as text during a frame (the bar paints with the painter, not as a label).
+    fn painted_text(out: &egui::FullOutput) -> Vec<String> {
+        fn walk(shape: &egui::Shape, into: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => into.push(t.galley.text().to_owned()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, into)),
+                _ => {}
+            }
+        }
+        let mut text = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut text);
+        }
+        text
+    }
+
+    struct Frame {
+        text: Vec<String>,
+        /// Where the table's top-left is, and how wide the space for it is.
+        origin: egui::Pos2,
+        width: f32,
+    }
+
+    /// Runs one frame of the table in `ctx` with the given input events. If egui has no `run_ui`
+    /// in your version, this is the only function to adapt.
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>, tr: &mut TrashState, notice: &mut Option<Notice>) -> Frame {
+        let (m, pal) = look();
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 600.0)));
+        raw.events = events;
+        let (mut origin, mut width) = (egui::Pos2::ZERO, 0.0);
+        let mut actions = Vec::new();
+        let out = ctx.run_ui(raw, |ui| {
+            origin = ui.cursor().min;
+            width = ui.available_width();
+            trash_table_ui(ui, &m, &pal, tr, 1, notice, false, &HashSet::new(), &mut actions);
+        });
+        Frame { text: painted_text(&out), origin, width }
+    }
+
+    fn shows(f: &Frame, needle: &str) -> bool {
+        f.text.iter().any(|t| t.contains(needle))
+    }
+
+    /// Clicks the bar's close button (position derived from `notice_bar`'s layout).
+    fn click_close(ctx: &egui::Context, f: &Frame, tr: &mut TrashState, notice: &mut Option<Notice>) {
+        let (m, _) = look();
+        let bar_w = (f.width - m.pad * 0.5).max(100.0);
+        let at = egui::pos2(
+            f.origin.x + bar_w - m.pad - m.small_icon / 2.0,
+            f.origin.y + m.row_h * 1.1 / 2.0,
+        );
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        for event in [egui::Event::PointerMoved(at), button(true), button(false)] {
+            frame(ctx, vec![event], tr, notice);
+        }
+    }
+
+    fn bin() -> TrashState {
+        let mut tr = TrashState::new();
+        tr.loading = false;
+        tr
+    }
+
+    #[test]
+    fn nothing_is_shown_without_an_error() {
+        let (ctx, mut tr, mut notice) = (egui::Context::default(), bin(), None);
+        let f = frame(&ctx, vec![], &mut tr, &mut notice);
+        // The empty-bin message proves the table itself was drawn, so the checks below mean something.
+        assert!(shows(&f, "The Recycle Bin is empty"), "{:?}", f.text);
+        assert!(!shows(&f, "Restore failed"), "{:?}", f.text);
+    }
+
+    #[test]
+    fn a_job_error_in_the_bin_is_shown() {
+        let (ctx, mut tr, mut notice) = (egui::Context::default(), bin(), None);
+        tr.error = Some("Restore failed: the item already exists".to_owned());
+        let f = frame(&ctx, vec![], &mut tr, &mut notice);
+        assert!(shows(&f, "Restore failed"), "{:?}", f.text);
+    }
+
+    #[test]
+    fn a_tab_notice_is_shown_in_the_bin() {
+        let (ctx, mut tr) = (egui::Context::default(), bin());
+        let mut notice = Some(Notice::error("Restore failed: access denied".to_owned()));
+        let f = frame(&ctx, vec![], &mut tr, &mut notice);
+        assert!(shows(&f, "access denied"), "{:?}", f.text);
+    }
+
+    #[test]
+    fn the_tab_notice_wins_over_the_bins_own_error() {
+        let (ctx, mut tr) = (egui::Context::default(), bin());
+        tr.error = Some("old load error".to_owned());
+        let mut notice = Some(Notice::error("fresh job error".to_owned()));
+        let f = frame(&ctx, vec![], &mut tr, &mut notice);
+        assert!(shows(&f, "fresh job error"), "{:?}", f.text);
+        assert!(!shows(&f, "old load error"), "{:?}", f.text);
+    }
+
+    #[test]
+    fn closing_the_bar_clears_both_and_hides_it() {
+        let (ctx, mut tr) = (egui::Context::default(), bin());
+        tr.error = Some("load error".to_owned());
+        let mut notice = Some(Notice::error("job error".to_owned()));
+        let first = frame(&ctx, vec![], &mut tr, &mut notice);
+        assert!(shows(&first, "job error"), "{:?}", first.text);
+
+        click_close(&ctx, &first, &mut tr, &mut notice);
+
+        assert!(notice.is_none() && tr.error.is_none(), "the close button did not clear the error");
+        let after = frame(&ctx, vec![], &mut tr, &mut notice);
+        assert!(!shows(&after, "job error") && !shows(&after, "load error"), "{:?}", after.text);
+    }
 }
