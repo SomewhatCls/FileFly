@@ -236,7 +236,7 @@ impl Explorer {
                             // Only show close button if tab is almost fully grown.
                             let show_close = (is_active || resp.hovered() || close.hovered()) && grow[i] > 0.95;
                             // Unlike the fetched icons, the settings icon is a white svg and therefore needs to be colored in properly.
-                            let color = if *tab_icon == "settings" {pal.text_secondary} else {Color32::WHITE};
+                            let color = if *tab_icon == "settings" || *tab_icon == "info" {pal.text_secondary} else {Color32::WHITE};
                             draw_icon(
                                 ui,
                                 pos2(rect.left() + m.pad + m.small_icon / 2.0, rect.center().y),
