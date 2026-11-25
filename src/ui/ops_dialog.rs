@@ -245,14 +245,17 @@ fn op_panel(ui: &mut Ui, m: &Metrics, pal: &Palette, op: &mut ActiveOp, width: f
             .wrap(),
         );
         ui.add_space(m.pad * 1.2);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            // Right to left: Cancel ends up rightmost, like in a Windows dialog.
-            if secondary_button(ui, m, pal, "Cancel").clicked() {
-                out.perm = Some(false);
-            }
-            if primary_button(ui, m, pal, "Delete permanently").clicked() {
-                out.perm = Some(true);
-            }
+        ui.add_space(m.pad * 1.2);
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Right to left: Cancel ends up rightmost, like in a Windows dialog.
+                if secondary_button(ui, m, pal, "Cancel").clicked() {
+                    out.perm = Some(false);
+                }
+                if primary_button(ui, m, pal, "Delete permanently").clicked() {
+                    out.perm = Some(true);
+                }
+            });
         });
         return out;
     }
