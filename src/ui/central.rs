@@ -172,7 +172,6 @@ impl Explorer {
             Some(SettingsPage::new(
                 &self.settings,
                 self.font_edit,
-                self.index_dir.display().to_string(),
                 self.indexer.as_ref().map_or(0, |ix| ix.len()),
                 self.default_on,
                 self.default_error.clone(),

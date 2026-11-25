@@ -36,16 +36,31 @@ pub(crate) fn window_pos_is_sane(p: [f32; 2]) -> bool {
 /// Folder a window opened by "drag a tab out" starts in.
 pub(crate) static START_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// Set by `--restore`: the window was started by a settings restart and must reopen the saved session.
+pub(crate) static RESTORE_SESSION: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+fn spawn_self(pos: Option<(f32, f32)>, configure: impl FnOnce(&mut std::process::Command)) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut c = std::process::Command::new(exe);
+    configure(&mut c);
+    if let Some((x, y)) = pos {
+        c.arg("--pos").arg(format!("{x:.0},{y:.0}"));
+    }
+    let _ = c.spawn();
+}
+
 /// Starts another FileFly window (its own process) showing `dir`.
 pub(crate) fn spawn_window(dir: &Path, pos: Option<(f32, f32)>) {
-    if let Ok(exe) = std::env::current_exe() {
-        let mut c = std::process::Command::new(exe);
+    spawn_self(pos, |c| {
         c.arg("--open").arg(dir);
-        if let Some((x, y)) = pos {
-            c.arg("--pos").arg(format!("{x:.0},{y:.0}"));
-        }
-        let _ = c.spawn();
-    }
+    });
+}
+
+/// New window of this app at `pos` that restores the saved session (used for settings restarts).
+pub(crate) fn spawn_restart(pos: (f32, f32)) {
+    spawn_self(Some(pos), |c| {
+        c.arg("--restore");
+    });
 }
 
 /// Path argument from the command line. Windows passes a drive root as `"D:\"`, which the argument
@@ -110,6 +125,7 @@ pub(crate) fn run() -> eframe::Result<()> {
                 }
                 k += 1;
             }
+            "--restore" => { let _ = RESTORE_SESSION.set(()); }
             _ => {}
         }
         k += 1;

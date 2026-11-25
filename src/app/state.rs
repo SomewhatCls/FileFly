@@ -300,7 +300,8 @@ impl Explorer {
         // Independent of the tabs, so it also applies when FileFly is started on a given folder.
         app.sidebar_width = app.settings.session.sidebar_width;
         app.sync_special_icons();
-        if START_DIR.get().is_none() && app.settings.restore_tabs {
+        // If the app has a scheduled restart, make sure to restore the sessions tabs.
+        if RESTORE_SESSION.get().is_some() || (START_DIR.get().is_none() && app.settings.restore_tabs) {
             app.restore_session();
         }
         if check_for_update {
@@ -345,11 +346,9 @@ impl Explorer {
         }
     }
 
+    /// Returns true if the Window is maximized.
     pub(crate) fn is_maximized(ctx: &egui::Context) -> bool {
-        if ctx.input(|i| i.viewport().maximized) == Some(true) {
-            return true
-        }
-        false
+        ctx.input(|i| i.viewport().maximized) == Some(true)
     }
 
     //paste key detection workaround

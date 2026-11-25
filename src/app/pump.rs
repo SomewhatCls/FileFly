@@ -427,7 +427,6 @@ impl Explorer {
     pub(crate) fn sync_system(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         if self.last_poll.elapsed() > Duration::from_secs(2) && ctx.input(|i| i.focused) {
             self.last_poll = Instant::now();
-            self.text_scale = system_text_scale();
             self.sys_accent = system_accent();
             self.transparency = system_transparency();
         }
@@ -457,24 +456,8 @@ impl Explorer {
         }
 
         // Schedules restart for settings requiring it.
-        //TODO: Make sure the session is properly reloaded.
-        if self.require_restart{
-            self.require_restart = false;
-            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
-                let pos: egui::Pos2 = rect.min;
-                let (x, y) = (pos.x, pos.y);
-                spawn_window(&self.tabs[self.active].dir, Some((x, y)));
-            }else{
-                spawn_window(&self.tabs[self.active].dir, Some((0.0, 0.0)));
-            }
-            hide_window(frame);
-            save_settings(&self.settings);
-            self.peers.shutdown();
-            if let Some(ix) = &self.indexer { ix.save_if_dirty(true); }
-            self.stop_ops_for_exit();
-            remove_archive_cache();
-            finish_journal();
-            terminate_now();
+        if std::mem::take(&mut self.require_restart) {
+            self.restart(ctx, frame);
         }
 
         let theme = ctx.theme();
@@ -486,12 +469,7 @@ impl Explorer {
             .then(|| self.settings.transparency_effect.or_supported());
 
         // True if the theme was changed.
-        let changed_theme = if self.settings.theme != self.theme_choice {
-            self.theme_choice = self.settings.theme;
-            true
-        } else {
-            false
-        };
+        let changed_theme = std::mem::replace(&mut self.theme_choice, self.settings.theme) != self.settings.theme;
 
         let changed_backdrop = self.backdrop_transparency != wanted_transparency;
         self.backdrop_transparency = wanted_transparency;
@@ -524,13 +502,30 @@ impl Explorer {
         }
     }
 
-    pub(crate) fn get_accent(&mut self, ) -> Accent{
-        let accent = if self.settings.use_system_accent {
-        self.sys_accent.unwrap_or_else(Accent::fallback)
+    /// Starts a fresh window at the same position with the current session, then exits.
+    fn restart(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let pos = ctx.input(|i| i.viewport().outer_rect).map_or(egui::Pos2::ZERO, |r| r.min);
+        // Before spawning: the new window reads these files while starting.
+        self.settings.session = self.session_snapshot();
+        save_settings(&self.settings);
+        spawn_restart((pos.x, pos.y));
+        hide_window(frame);
+        self.peers.shutdown();
+        if let Some(ix) = &self.indexer {
+            ix.save_if_dirty(true);
+        }
+        self.stop_ops_for_exit();
+        remove_archive_cache();
+        finish_journal();
+        terminate_now();
+    }
+
+    pub(crate) fn get_accent(&self) -> Accent {
+        if self.settings.use_system_accent {
+            self.sys_accent.unwrap_or_else(Accent::fallback)
         } else {
-        let c = self.settings.custom_accent;
-        Accent::from_base(Color32::from_rgb(c[0], c[1], c[2]))
-        };
-        accent
+            let [r, g, b] = self.settings.custom_accent;
+            Accent::from_base(Color32::from_rgb(r, g, b))
+        }
     }
 }

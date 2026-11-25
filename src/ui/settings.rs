@@ -9,7 +9,6 @@ pub(crate) struct SettingsPage {
     pub(crate) s: Settings,
     pub(crate) font: f32,
     pub(crate) font_edit: Option<f32>,
-    pub(crate) index_dir: String,
     pub(crate) cache_len: usize,
     pub(crate) rescan: bool,
     pub(crate) choose: bool,
@@ -31,7 +30,6 @@ impl SettingsPage {
     pub(crate) fn new(
         settings: &Settings,
         font_edit: Option<f32>,
-        index_dir: String,
         cache_len: usize,
         default_on: bool,
         default_error: Option<String>,
@@ -42,7 +40,6 @@ impl SettingsPage {
             s: settings.clone(),
             font: font_edit.unwrap_or(settings.font_size),
             font_edit,
-            index_dir,
             cache_len,
             rescan: false,
             choose: false,
@@ -856,16 +853,10 @@ impl Explorer {
             if s.theme != old.theme {
                 ui.set_theme(theme_pref(s.theme));
             }
-            if s.custom_frame != old.custom_frame {
-                self.settings.custom_frame = s.custom_frame;
-                self.require_restart = true;
-            }
-            if s.git_activated != old.git_activated {
-                self.settings.git_activated = s.git_activated;
-                self.require_restart = true;
-            }
-            if s.blur_paning != old.blur_paning {
-                self.settings.blur_paning = s.blur_paning;
+            // For settings requiring restarts. Will be deprecated once logic is moved out of eframe.
+            let restart_fields = |x: &Settings| (x.custom_frame, x.git_activated, x.blur_paning);
+            if restart_fields(&s) != restart_fields(&old) {
+                (self.settings.custom_frame, self.settings.git_activated, self.settings.blur_paning) = restart_fields(&s);
                 self.require_restart = true;
             }
             if s.show_hidden != old.show_hidden || s.date_format != old.date_format {
