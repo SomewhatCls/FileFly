@@ -1,4 +1,4 @@
-# FileFly - a cross-platform, quad-panning file manager
+# FileFly - a cross-platform, quad-paning file manager
 <img width="1804" height="1328" alt="image" src="https://github.com/user-attachments/assets/60aab92b-76a3-4a78-871d-e3a83e1d5a10" />
 
 ## Table of contents
@@ -17,7 +17,7 @@
 
 I started working on this project for 4 reasons:
 - I was tired of Windows Explorers lack of features and slow speed
-- I was also not a fan of the proprietary nature of its superior Windows alternatives (FilePilot, Directory Opus etc.)
+- I was also not a fan of the proprietary nature of its superior Windows alternatives (File Pilot, Directory Opus etc.)
 - I wanted to experience the capabilities of current chatbots in coding
 - I wanted to familiarize myself with the Rust programming language
 
@@ -37,10 +37,10 @@ FileFly is a WiP. However, I do daily drive it for a number of features:
 In my Testing, FileFly searches through Windows directories about 1000x faster than Windows File Explorer. It also supports global (system wide) search
 
 ### Resources:
-In my Testing, FileFly uses between 3-5x less RAM than the Windows File Explorer in regular use. Thus, it usually stays below 100MB RAM usage, and often below 60MB too. It is also possible to further reduce the RAM usage in the indexer cache section of the settings.
+In my Testing, FileFly uses between 3-5x less RAM than the Windows File Explorer in regular use. Thus, it usually stays below 100MB RAM usage, and often below 60MB too.
 
-### Panning: 
-FileFly supports intelligent panning, with up to 4 directories being open at once. "Intelligent" here refers to the panes automatically being split along the shorter axis.
+### Paning: 
+FileFly supports intelligent paning, with up to 4 directories being open at once. "Intelligent" here refers to the panes automatically being split along the shorter axis.
 
 ### Folder Sizes:
 To obtain folder sizes in Windows File Explorer, one has to individually observe the properties of each folder. In addition, Windows takes a very long time to calculate them. On modern systems, this is unacceptable. Therefore, FileFly indexes folder sizes automatically and saves them in a compact binary format. Folder sizes are shown in the same Row as file sizes.
@@ -74,7 +74,7 @@ All common file operations, such as copy, paste, cut (move), delete, rename, dra
 - Font size, accessibility scaling and date/time format options.
 
 ## Feature Gallery
-### Panning
+### Paning
 <img width="1804" height="1328" alt="image" src="https://github.com/user-attachments/assets/f2311272-e328-451c-8ce6-75c289b57583" />
 <br><br>
 <img width="2880" height="1800" alt="image" src="https://github.com/user-attachments/assets/51c866fd-53b3-415d-b361-3467fa4f0de6" />
@@ -195,4 +195,4 @@ In addition, FileFly will contact the Internet ONLY if you decide to check for u
 ## Re: Project Background and Quality
 A short preamble; At its current state, I believe this project has already proven both much faster and more efficient than Windows File Explorer, achieving results similar enough to those of proprietary projects such as File Pilot while being open source. At the same time, I find it file operation safe and stable enough to use it in my own daily use. However, this code was not written by an expert or a professional, but by a student.
 
-I have long held that chatbots supplied me with insufficient code in languages I am well versed in. Although I am thoroughly impressed by Claude's ability to write absurdly more complex and functional code than previous chatbots I have tried in other years, I did not pay for access to it (which also means it does not have access to my code base). As such, this code has been increasingly written by me and my likely lacking Rust abilities. Nonetheless, the 10 or so minutes a day I get to use Claude for free are still highly useful in understanding the various crate APIs I implement. As such, while I am impressed by Claude's capabilities and while this project has achieved a much more performant and efficient result than the Windows File Explorer, current feature progress is gonna be determined by my Rust abilities.
+I have long held that chatbots supplied me with insufficient code in languages I am well versed in. Although I am thoroughly impressed by Claude's ability to write absurdly more complex and functional code than previous chatbots I have tried in other years, I did not pay for access to it (which also means it does not have access to my code base). As such, this code has been increasingly written by me and my likely lacking Rust abilities. Nonetheless, the 10 or so minutes a day I get to use Claude for free are still highly useful in understanding the various crate APIs I implement. As such, while I am impressed by Claude's capabilities and while this project has achieved a much more performant and efficient result than the Windows File Explorer, current feature progress is affected by my Rust abilities.

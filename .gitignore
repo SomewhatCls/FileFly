@@ -4,3 +4,4 @@ installer
 .backup
 *.AppImage
 unused
+msix
