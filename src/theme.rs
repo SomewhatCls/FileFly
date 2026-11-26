@@ -260,7 +260,7 @@ impl Palette {
             Self {
                 dark, transparency, accent: acc, on_accent,
                 base: rgb(50, 50, 50),
-                layer: if transparency != TransparencyEffect::None { grey(55, 0.5) } else { Color32::from_rgb(40, 40, 40) },
+                layer: if transparency != TransparencyEffect::None { grey(55, 0.5) } else { rgb(40, 40, 40) },
                 flyout: rgb(80, 80, 80),
                 text: Color32::WHITE,
                 text_secondary: grey(255, 0.785),
@@ -278,13 +278,17 @@ impl Palette {
                 danger_bg: rgb(68, 39, 38),
                 success:    rgb(108,203,95),
                 success_bg: rgb(30,59,38),
-                chrome: grey(255, 0.05),
+                chrome: if transparency != TransparencyEffect::None {
+                    grey(45, 0.22)
+                } else {
+                    rgb(32, 32, 32)
+                },
             }
         } else {
             Self {
                 dark, transparency, accent: acc, on_accent,
                 base: rgb(230, 230, 230),
-                layer: if transparency != TransparencyEffect::None { grey(255, 0.6) } else { Color32::from_rgb(250, 250, 250) },
+                layer: if transparency != TransparencyEffect::None { grey(255, 0.6) } else { rgb(250, 250, 250) },
                 flyout: rgb(230, 230, 230),
                 text: rgb(26, 26, 26),
                 text_secondary: grey(0, 0.6),
@@ -302,7 +306,11 @@ impl Palette {
                 danger_bg: rgb(253, 231, 233),
                 success:    rgb(15,115,15),
                 success_bg: rgb(210,230,205),
-                chrome: Color32::TRANSPARENT,
+                chrome: if transparency != TransparencyEffect::None {
+                    grey(245, 0.3)
+                } else {
+                    rgb(243, 243, 243)
+                },
             }
         }
     }
@@ -543,9 +551,14 @@ pub fn apply_style(ctx: &egui::Context, m: &Metrics, accent: Accent) {
 pub fn popup_shadow(dark: bool) -> egui::Shadow {
     egui::Shadow {
         offset: [0, 8],
-        blur: if dark { 32 } else { 64 },
+        blur: 16,
         spread: 0,
-        color: if dark { grey(80, 0.1) } else { Color32::from_black_alpha(42) },
+        color: if dark {
+            // Keep alpha high enough to prevent HDR artifacting over DWM effects.
+            Color32::from_rgba_unmultiplied(10, 10, 12, 105)
+        } else {
+            Color32::from_black_alpha(28)
+        },
     }
 }
 

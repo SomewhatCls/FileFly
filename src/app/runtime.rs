@@ -28,16 +28,13 @@ impl Explorer{
             _ => 15.0,
         };
 
-         // draws a slight overlay (chrome) over the entire frame to achieve the desired transparency effect look.
-         if self.transparency && self.pal.transparency != TransparencyEffect::None {
-             painter.rect_filled(
-                 rect,
-                 corner_radius,
-                 self.pal.chrome,
-             );
-         } else {
-             painter.rect_filled(rect, if !Self::is_maximized(ui.ctx()){corner_radius}else{0.0}, self.pal.layer);
-         }
+         // Removes rounded corners on maximization for Linux installs.
+        // On Windows, corner_radius is already 0.0.
+        let radius = if !Self::is_maximized(ui.ctx()) { corner_radius } else { 0.0 };
+        // Applies the chrome to achieve a proper Mica effect for transparency effects.
+        // Although Acrylic looks different, for now we will use the same layer.
+        let bg = if self.transparency { self.pal.chrome } else { self.pal.base };
+        painter.rect_filled(rect, radius, bg);
 
         // Draw the interface.
         self.ui_tabs(ui, actions);
