@@ -45,7 +45,7 @@ FileFly supports intelligent paning, with up to 4 directories being open at once
 ### Folder Sizes:
 To obtain folder sizes in Windows File Explorer, one has to individually observe the properties of each folder. In addition, Windows takes a very long time to calculate them. On modern systems, this is unacceptable. Therefore, FileFly indexes folder sizes automatically and saves them in a compact binary format. Folder sizes are shown in the same Row as file sizes.
 ### WSL (Windows Subsystem for Linux):
-WSL support is important to me for development. FileFly not only correctly resolves WSL paths, but also supports network drives in general. As usual, it also opens WSL directories much faster than the Windows File Explorer.
+WSL support is important to me for development. As such, FileFly correctly resolves WSL paths and loads them non-blocking.
 ### Git integration: 
 FileFly shows your current local branch and allows you to checkout different local branches, should you not have unstaged changes for the current branch (This feature has to be turned on in the Settings).
 ### Quick access:
