@@ -29,7 +29,7 @@ impl TransparencyEffect {
             if !cfg!(windows) {
                 return &[TransparencyEffect::None];
             }
-            let build = System::kernel_version().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            let build = System::kernel_version().ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
             if build >= 22000 {
                 &[TransparencyEffect::Mica, TransparencyEffect::Acrylic, TransparencyEffect::None]
             } else {

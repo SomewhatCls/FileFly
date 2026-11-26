@@ -1,6 +1,6 @@
 [package]
 name = "FileFly"
-version = "2026.11.25-1"
+version = "2026.11.26"
 edition = "2024"
 license="AGPL-3.0-or-later"
 
@@ -14,7 +14,7 @@ file_icon_provider = "1.0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 freedesktop-icons = "0.4.0"
 mime_guess = "2.0.5"
-resvg = "0.45.1"
+resvg = "0.50.0"
 
 [dependencies]
 device_query = "4.0.1"
@@ -26,20 +26,20 @@ dirs = "7.0.0"
 drag = "2.1.1"
 dunce = "1.0.5"
 open = "5.4.4"
-rfd = "0.17.2"
-sysinfo = "0.39.6"
+rfd = "0.18.0"
+sysinfo = "0.40.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 image = { version = "0.25.10", features = ["ico"] }
 trash = "5.2.9"
 chrono = "0.4.45"
-notify = "8.2.0"
+notify = "9.0.0"
 raw-window-handle = "0.6.2"
 jwalk = "0.9.0"
 num-format = "0.4.4"
-libc = "0.2.190"
+libc = "0.2.191"
 semver = "1.0.28"
-ureq = { version = "3.5.1", features = ["json"] }
+ureq = { version = "3.5.2", features = ["json"] }
 
 [build-dependencies]
 winres = "0.1.12"
