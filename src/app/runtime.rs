@@ -199,7 +199,7 @@ impl eframe::App for Explorer {
 
         // Keep the session current, and write it to disk a second after the last change
         // (the clean-exit save also includes it).
-        if !SESSION_READONLY.load(AtomicOrdering::Relaxed) {
+        if !self.session_ended && !SESSION_READONLY.load(AtomicOrdering::Relaxed) {
             let snap = self.session_snapshot();
             let id = Id::unique("saved_session");
             let (mut seen, mut at, mut saved) = ui

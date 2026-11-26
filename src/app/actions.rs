@@ -65,6 +65,13 @@ impl Explorer {
             }
             Action::CloseTab(i) => {
                 if self.tabs.len() <= 1 {
+                    self.session_ended = true;
+                    self.settings.session = Session {
+                        tabs: Vec::new(),
+                        active: 0,
+                        tiles: None,
+                        sidebar_width: self.sidebar_width,
+                    };
                     self.ui.send_viewport_cmd(egui::ViewportCommand::Close);
                 } else if i < self.tabs.len() {
                     let closed_id = self.tabs[i].id;

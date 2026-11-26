@@ -9,6 +9,9 @@ pub(crate) struct Explorer {
     pub(crate) active: usize,
     pub(crate) next_tab_id: u64,
 
+    /// True when the last tab was closed, thereby finishing the session.
+    pub(crate) session_ended: bool,
+
     /// The session cache for git repository checks.
     pub(crate) git: Option<GitState>,
 
@@ -218,6 +221,7 @@ impl Explorer {
             tabs: vec![Tab::new(1, start)],
             active: 0,
             next_tab_id: 2,
+            session_ended: false,
             drives: Vec::new(),
             drive_ctl,
             drives_ready: false,
