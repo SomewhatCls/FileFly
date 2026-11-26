@@ -82,7 +82,7 @@ impl Explorer {
                 actions.push(Action::NewFile);
             }
             if i.consume_key(M::CTRL, Key::Comma) {
-                actions.push(Action::OpenSettings);
+                actions.push(Action::OpenPage(Page::Settings));
             }
 
             if typing || modal || in_settings {

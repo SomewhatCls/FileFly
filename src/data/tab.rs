@@ -41,18 +41,12 @@ impl Notice {
     }
 }
 
-/// A spot in a tab's back/forward history: a folder, or the Recycle Bin view.
-#[derive(Clone, PartialEq)]
-pub(crate) enum Place {
-    Folder(PathBuf),
-    Trash,
-}
-
-/// A tab that shows an app page instead of a folder.
+/// A tab view that is not a folder listing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Page {
     Settings,
     Licenses,
+    RecycleBin,
 }
 
 impl Page {
@@ -60,12 +54,32 @@ impl Page {
         match self {
             Page::Settings => "Settings",
             Page::Licenses => "Licenses",
+            Page::RecycleBin => "Recycle Bin",
         }
     }
     pub(crate) fn icon(self) -> &'static str {
         match self {
             Page::Settings => "settings",
             Page::Licenses => "info",
+            Page::RecycleBin => "recycle_bin",
+        }
+    }
+}
+
+/// Anything a tab can show, and therefore a history entry.
+#[derive(Clone, PartialEq)]
+pub(crate) enum Place {
+    Folder(PathBuf),
+    Page(Page),
+}
+
+impl Place {
+    /// The only place that knows the raw Recycle Bin folder means the Recycle Bin page.
+    pub(crate) fn from_path(p: PathBuf) -> Self {
+        if trash_bin::SUPPORTED && Explorer::is_recycle_bin_dir(&p) {
+            Place::Page(Page::RecycleBin)
+        } else {
+            Place::Folder(p)
         }
     }
 }
@@ -124,7 +138,7 @@ pub(crate) fn path_key(p: &Path) -> u64 {
 impl Tab {
     /// Where the tab is right now, as a history entry.
     pub(crate) fn place(&self) -> Place {
-        if self.trash.is_some() { Place::Trash } else { Place::Folder(self.dir.clone()) }
+        self.page.map_or_else(|| Place::Folder(self.dir.clone()), Place::Page)
     }
 
     pub(crate) fn new(id: u64, dir: PathBuf) -> Self {
@@ -215,12 +229,7 @@ impl Tab {
     }
 
     pub(crate) fn title(&self) -> String {
-        if self.trash.is_some() {
-            return "Recycle Bin".to_owned();
-        }
-        if let Some(page) = self.page {
-            return page.title().to_owned();
-        }
+        if let Some(page) = self.page { return page.title().to_owned(); }
         let dir = self.shown_dir();
         dir.file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -229,10 +238,7 @@ impl Tab {
     pub(crate) fn searching(&self) -> bool {
         !self.search.trim().is_empty()
     }
-    /// Recycle Bin or Settings: the tab shows a page of its own, not the files of `dir`.
-    pub(crate) fn special(&self) -> bool {
-        self.trash.is_some() || self.page.is_some()
-    }
+    pub(crate) fn special(&self) -> bool { self.page.is_some() }
     /// Everything that indexes into `view` (the table, selection, context menu) must read from this instead of `self.entries`.
     pub(crate) fn source(&self) -> &[Entry] {
         if self.search.trim().is_empty() { &self.entries } else { &self.search_results }

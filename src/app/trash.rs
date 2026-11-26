@@ -14,30 +14,10 @@ impl Explorer {
             && matches!(c.next(), Some(Component::Normal(n)) if n.to_string_lossy().eq_ignore_ascii_case("$Recycle.Bin"))
     }
 
-    /// `navigate`, except that a drive's `$Recycle.Bin` folder opens the Recycle Bin view
-    /// (so the sidebar entry and the Recycle Bin toolbar show up, like when clicking the sidebar entry).
-    pub(crate) fn navigate_or_bin(&mut self, ti: usize, path: PathBuf) {
-        if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&path) {
-            self.open_trash();
-        } else {
-            self.navigate(ti, path);
-        }
-    }
-
-    /// Opens the Recycle Bin in a tab of its own (or focuses the one that already shows it).
-    pub(crate) fn open_trash(&mut self) {
-        if let Some(i) = self.tabs.iter().position(|t| t.trash.is_some()) {
-            self.activate_tab(i);
-            return;
-        }
-        let ti = self.push_special_tab();
-        self.show_trash(ti);
-    }
-
     /// Switches the tab to the Recycle Bin view (no history change) and (re)loads it.
     pub(crate) fn show_trash(&mut self, ti: usize) {
         let tab = &mut self.tabs[ti];
-        tab.page = None;
+        tab.page = Some(Page::RecycleBin);
         if tab.trash.is_none() {
             tab.trash = Some(TrashState::new());
             tab.search.clear();

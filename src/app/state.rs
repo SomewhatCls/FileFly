@@ -9,6 +9,9 @@ pub(crate) struct Explorer {
     pub(crate) active: usize,
     pub(crate) next_tab_id: u64,
 
+    /// True when the last tab was closed, thereby finishing the session.
+    pub(crate) session_ended: bool,
+
     /// The session cache for git repository checks.
     pub(crate) git: Option<GitState>,
 
@@ -132,7 +135,7 @@ pub(crate) struct Explorer {
 /// The special tabs in a saved session: (its page, None for the Recycle Bin) and the marker written instead of
 /// a folder. Index 0 is the Recycle Bin.
 const SPECIAL_TABS: [(Option<Page>, &str); 3] = [
-    (None, "::recycle-bin"),
+    (Some(Page::RecycleBin), "::recycle-bin"),
     (Some(Page::Settings), "::settings"),
     (Some(Page::Licenses), "::licenses"),
 ];
@@ -218,6 +221,7 @@ impl Explorer {
             tabs: vec![Tab::new(1, start)],
             active: 0,
             next_tab_id: 2,
+            session_ended: false,
             drives: Vec::new(),
             drive_ctl,
             drives_ready: false,
@@ -368,10 +372,8 @@ impl Explorer {
     /// How a tab is written in the session: its folder, or for a special tab a marker that no path can
     /// look like (`SPECIAL_TABS`), which an older version just skips.
     fn saved_tab(t: &Tab) -> String {
-        if t.trash.is_some() {
-            return SPECIAL_TABS[0].1.to_owned();
-        }
         match t.page {
+            Some(Page::RecycleBin) => SPECIAL_TABS[0].1.to_owned(),
             Some(Page::Settings) => SPECIAL_TABS[1].1.to_owned(),
             Some(Page::Licenses) => SPECIAL_TABS[2].1.to_owned(),
             None => folder_outside(&t.dir).to_string_lossy().into_owned(),
@@ -416,7 +418,6 @@ impl Explorer {
                 Some(0) => bin_tabs.push(tabs.len()),
                 Some(i) => {
                     tab.page = SPECIAL_TABS[i].0;
-                    tab.load_gen = 1; // nothing to read: not a folder listing
                 }
                 None => {}
             }

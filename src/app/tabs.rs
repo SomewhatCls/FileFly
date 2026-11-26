@@ -3,18 +3,21 @@
 use crate::prelude::*;
 
 impl Explorer {
-    pub(crate) fn new_tab(&mut self, dir: PathBuf) {
+    pub(crate) fn new_tab(&mut self, place: Place) {
+        let (dir, page) = match place {
+            Place::Folder(p) => (p, None),
+            Place::Page(pg) => (self.tabs[self.active].dir.clone(), Some(pg)),
+        };
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        if let Some(tree) = self.tiles.as_mut() {
-            // In tiled mode the new tab takes over the focused pane.
-            let cur = self.tabs[self.active].id;
-            tree.replace(cur, id);
-        }
         self.tabs.push(Tab::new(id, dir));
         self.active = self.tabs.len() - 1;
         self.load_tab(self.active);
         self.on_active_changed();
+        match page {
+            None => { self.load_tab(self.active); self.on_active_changed(); }
+            Some(pg) => self.show_page(self.active, pg), // calls on_active_changed itself
+        }
     }
 
     /// Makes tab `i` the focused one. In tiled mode a tab that is not on screen replaces the focused pane.

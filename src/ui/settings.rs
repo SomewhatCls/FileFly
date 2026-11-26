@@ -800,55 +800,13 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
 }
 
 impl Explorer {
-    /// Opens the Settings tab (or focuses it if it is already open; pressing the button again closes it).
-    pub(crate) fn open_settings(&mut self) {
-        self.default_on = default_app::is_default();
-        self.default_error = None;
-        if let Some(i) = self.tabs.iter().position(|t| t.page == Some(Page::Settings)) {
-            if i == self.active && self.tabs.len() > 1 {
-                self.apply(Action::CloseTab(i));
-            } else {
-                self.activate_tab(i);
-            }
-            return;
-        }
-        self.open_page(Page::Settings);
-    }
-
-    /// Opens `page` in a tab of its own (or focuses the one that is already open).
-    pub(crate) fn open_page(&mut self, page: Page) {
-        if let Some(i) = self.tabs.iter().position(|t| t.page == Some(page)) {
-            self.activate_tab(i);
-            return;
-        }
-        let ti = self.push_special_tab();
-        self.tabs[ti].page = Some(page);
-    }
-
-    /// Adds a tab for a page or the Recycle Bin (the caller sets which) and makes it the active one.
-    /// In tiled mode it takes over the focused pane. Returns its index.
-    pub(crate) fn push_special_tab(&mut self) -> usize {
-        let dir = self.tabs[self.active].dir.clone();
-        let id = self.next_tab_id;
-        self.next_tab_id += 1;
-        if let Some(tree) = self.tiles.as_mut() {
-            let cur = self.tabs[self.active].id;
-            tree.replace(cur, id);
-        }
-        let mut tab = Tab::new(id, dir);
-        tab.load_gen = 1; // nothing to read: it is not a folder listing
-        self.tabs.push(tab);
-        self.active = self.tabs.len() - 1;
-        self.on_active_changed();
-        self.active
-    }
 
     /// Applies what the Settings tab changed this frame (it works on a copy of the settings).
     pub(crate) fn finish_settings_page(&mut self, ui: &mut Ui, sp: SettingsPage) {
         let SettingsPage { old, s, font_edit, rescan, choose, delete_index, reset_quick, default_request, show_licenses, check_update, download_update, .. } = sp;
         self.font_edit = font_edit;
         if show_licenses {
-            self.open_page(Page::Licenses);
+            self.open_place(self.active ,Place::Page(Page::Licenses));
         }
         if s != old {
             // Only the fields the page edits: window geometry, columns and the session belong to the app.

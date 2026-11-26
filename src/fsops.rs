@@ -939,26 +939,6 @@ pub fn move_item_with(source: &Path, destination: &Path, prog: &OpProgress) -> i
     }
 }
 
-pub fn open_recycle_bin() -> io::Result<()> {
-    #[cfg(windows)]
-    {
-        return Command::new("explorer.exe").arg("shell:RecycleBinFolder").spawn().map(|_| ());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let trash = dirs::home_dir()
-            .map(|h| h.join(".Trash"))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home directory not found"))?;
-        return open::that(trash).map_err(io::Error::other);
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        return open::that("trash:///").map_err(io::Error::other);
-    }
-    #[allow(unreachable_code)]
-    Err(io::Error::new(io::ErrorKind::Unsupported, "Recycle Bin is not available here"))
-}
-
 /// Opens a terminal window in `dir` (Windows Terminal if installed, else the classic console).
 pub fn open_terminal(dir: &Path) -> io::Result<()> {
     #[cfg(windows)]

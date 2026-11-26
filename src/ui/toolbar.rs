@@ -710,17 +710,11 @@ impl Explorer {
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if settings_open{
-                            if icon_button(ui, &m, &pal, "settings", "Close Settings", true, true)
-                                .clicked()
-                            {
-                                actions.push(Action::OpenSettings);
-                            }
-                        } else {
+                        if !settings_open {
                             if icon_button(ui, &m, &pal, "settings", "Settings", true, settings_open)
                                 .clicked()
                             {
-                                actions.push(Action::OpenSettings);
+                                actions.push(Action::OpenPage(Page::Settings));
                             }
                         }
                         if whats_new_visible {

@@ -60,9 +60,7 @@ impl Explorer {
     /// The tab's target folder turned out to be `path` (see `navigate_selecting`): shows it.
     pub(crate) fn finish_navigate(&mut self, ti: usize, path: PathBuf, select: Option<PathBuf>) {
         let tab = &mut self.tabs[ti];
-        if tab.page.is_some() {
-            // Leaving a page (Settings, Licenses): the tab turns into a normal folder tab.
-            tab.page = None;
+        if matches!(tab.page, Some(Page::Settings | Page::Licenses)) {
             tab.back.clear();
             tab.fwd.clear();
         } else if path == tab.dir && tab.trash.is_none() {
@@ -85,11 +83,57 @@ impl Explorer {
         }
     }
 
-    /// Shows a history entry without touching the history stacks.
+    /// Shows `place` without touching history (Back/Forward).
     pub(crate) fn goto_place(&mut self, ti: usize, place: Place) {
         match place {
-            Place::Folder(p) => self.set_dir(ti, p),
-            Place::Trash => self.show_trash(ti),
+            Place::Folder(p) => self.set_dir(ti, p), // clears page and trash already
+            Place::Page(page) => self.show_page(ti, page),
+        }
+    }
+
+    /// User-initiated: sidebar, toolbar, address bar, Up. Always replaces what tab `ti` shows.
+    pub(crate) fn open_place(&mut self, ti: usize, place: Place) {
+        match place {
+            Place::Folder(p) => self.navigate(ti, p), // async; finish_navigate records history
+            Place::Page(page) => {
+                let tab = &mut self.tabs[ti];
+                if tab.page == Some(page) {
+                    return;
+                }
+                let cur = tab.place();
+                tab.back.push(cur);
+                tab.fwd.clear();
+                self.show_page(ti, page);
+            }
+        }
+    }
+
+    pub(crate) fn show_page(&mut self, ti: usize, page: Page) {
+        let tab = &mut self.tabs[ti];
+        tab.nav_seq += 1; // a folder lookup still in flight must not replace the page when it arrives
+        tab.loading = false;
+        tab.page = Some(page);
+        tab.search.clear();
+        tab.clear_selection();
+        tab.rename = None;
+        tab.editing_addr = false;
+        tab.view_dirty = true;
+        match page {
+            Page::RecycleBin => {
+                if tab.trash.is_none() {
+                    tab.trash = Some(TrashState::new());
+                }
+                self.load_trash(ti);
+            }
+            Page::Settings => {
+                tab.trash = None;
+                self.default_on = default_app::is_default();
+                self.default_error = None;
+            }
+            Page::Licenses => tab.trash = None,
+        }
+        if ti == self.active {
+            self.on_active_changed();
         }
     }
 

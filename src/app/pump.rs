@@ -236,7 +236,7 @@ impl Explorer {
                         }
                     }
                     if let (true, Some(first)) = (open, created.first()) {
-                        self.new_tab(first.clone());
+                        self.new_tab(Place::from_path(first.clone()));
                     }
                 }
                 AppMsg::ExtractStaged { op, tab, plan, stagings, errors, open } => {
@@ -373,7 +373,7 @@ impl Explorer {
         // Folders other windows dragged over to us arrive as new tabs.
         for dir in self.peers.take_inbox() {
             if dir.is_dir() {
-                self.new_tab(dir);
+                self.new_tab(Place::from_path(dir));
                 self.ui.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
         }
