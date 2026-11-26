@@ -7,7 +7,7 @@ GNU Affero General Public License v3.0 or later
 ================================================================================
 
 Used by:
-  - FileFly 2026.11.25-1
+  - FileFly 2026.11.26
 
 --------------------------------------------------------------------------------
 
@@ -2348,7 +2348,9 @@ BSD 3-Clause "New" or "Revised" License
 
 Used by:
   - tiny-skia-path 0.11.4  https://github.com/RazrFalcon/tiny-skia/tree/master/path
+  - tiny-skia-path 0.12.0  https://github.com/linebender/tiny-skia/tree/master/path
   - tiny-skia 0.11.4  https://github.com/RazrFalcon/tiny-skia
+  - tiny-skia 0.12.0  https://github.com/linebender/tiny-skia
 
 --------------------------------------------------------------------------------
 
@@ -2490,6 +2492,7 @@ Boost Software License 1.0
 Used by:
   - error-code 3.4.0  https://github.com/DoumanAsh/error-code
   - windows-win 3.0.0  https://github.com/DoumanAsh/windows-win-rs
+  - xxhash-rust 0.8.21  https://github.com/DoumanAsh/xxhash-rust
 
 --------------------------------------------------------------------------------
 
@@ -2541,7 +2544,7 @@ Creative Commons Zero v1.0 Universal
 ================================================================================
 
 Used by:
-  - notify 8.2.0  https://github.com/notify-rs/notify.git
+  - notify 9.0.0  https://github.com/notify-rs/notify.git
 
 --------------------------------------------------------------------------------
 
@@ -2801,38 +2804,6 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
-
-
-================================================================================
-MIT License
-================================================================================
-
-Used by:
-  - rustybuzz 0.20.1  https://github.com/harfbuzz/rustybuzz
-
---------------------------------------------------------------------------------
-
-    MIT License
-
-    Copyright (c) Microsoft Corporation.
-
-    Permission is hereby granted, free of charge, to any person obtaining a copy
-    of this software and associated documentation files (the "Software"), to deal
-    in the Software without restriction, including without limitation the rights
-    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-    copies of the Software, and to permit persons to whom the Software is
-    furnished to do so, subject to the following conditions:
-
-    The above copyright notice and this permission notice shall be included in all
-    copies or substantial portions of the Software.
-
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-    SOFTWARE
 
 
 ================================================================================
@@ -4785,6 +4756,7 @@ MIT License
 
 Used by:
   - svgtypes 0.15.3  https://github.com/linebender/svgtypes
+  - svgtypes 0.16.2  https://github.com/linebender/svgtypes
   - ttf-parser 0.25.1  https://github.com/harfbuzz/ttf-parser
 
 --------------------------------------------------------------------------------
@@ -5069,9 +5041,11 @@ MIT License
 ================================================================================
 
 Used by:
-  - font-types 0.12.6  https://github.com/googlefonts/fontations
+  - font-types 0.12.7  https://github.com/googlefonts/fontations
   - read-fonts 0.41.0  https://github.com/googlefonts/fontations
+  - read-fonts 0.46.0  https://github.com/googlefonts/fontations
   - skrifa 0.44.0  https://github.com/googlefonts/fontations
+  - skrifa 0.49.0  https://github.com/googlefonts/fontations
 
 --------------------------------------------------------------------------------
 
@@ -5435,7 +5409,6 @@ MIT License
 ================================================================================
 
 Used by:
-  - pollster 0.4.0  https://github.com/zesterer/pollster
   - pollster 1.0.1  https://github.com/zesterer/pollster
 
 --------------------------------------------------------------------------------
@@ -5750,7 +5723,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - notify-types 2.1.0  https://github.com/notify-rs/notify.git
+  - notify-types 2.3.1  https://github.com/notify-rs/notify.git
 
 --------------------------------------------------------------------------------
 
@@ -5969,7 +5942,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - libc 0.2.190  https://github.com/rust-lang/libc
+  - libc 0.2.191  https://github.com/rust-lang/libc
 
 --------------------------------------------------------------------------------
 
@@ -6096,7 +6069,9 @@ MIT License
 
 Used by:
   - resvg 0.45.1  https://github.com/linebender/resvg
+  - resvg 0.50.0  https://github.com/linebender/resvg
   - usvg 0.45.1  https://github.com/linebender/resvg
+  - usvg 0.50.0  https://github.com/linebender/resvg
 
 --------------------------------------------------------------------------------
 
@@ -6674,6 +6649,38 @@ MIT License
 ================================================================================
 
 Used by:
+  - imagesize 0.15.0  https://github.com/Roughsketch/imagesize
+
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2017 Maiddog
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
   - static_assertions 1.1.0  https://github.com/nvzqz/static-assertions-rs
 
 --------------------------------------------------------------------------------
@@ -6951,7 +6958,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - ureq 3.5.1  https://github.com/algesten/ureq
+  - ureq 3.5.2  https://github.com/algesten/ureq
 
 --------------------------------------------------------------------------------
 
@@ -7080,7 +7087,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - rfd 0.17.2  https://github.com/PolyMeilex/rfd
+  - rfd 0.18.0  https://github.com/PolyMeilex/rfd
 
 --------------------------------------------------------------------------------
 
@@ -7272,7 +7279,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - rfd 0.17.2  https://github.com/PolyMeilex/rfd
+  - rfd 0.18.0  https://github.com/PolyMeilex/rfd
   - sctk-adwaita 0.10.1  https://github.com/PolyMeilex/sctk-adwaita
 
 --------------------------------------------------------------------------------
@@ -7532,37 +7539,6 @@ MIT License
 ================================================================================
 
 Used by:
-  - core_maths 0.1.1  https://github.com/robertbastian/core_maths
-
---------------------------------------------------------------------------------
-
-MIT License
-
-Copyright (c) 2024 Robert Bastian
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-MIT License
-================================================================================
-
-Used by:
   - clipboard-rs 0.3.5  https://github.com/ChurchTao/clipboard-rs
 
 --------------------------------------------------------------------------------
@@ -7701,9 +7677,7 @@ Used by:
   - windows_x86_64_msvc 0.48.5  https://github.com/microsoft/windows-rs
   - windows_x86_64_msvc 0.52.6  https://github.com/microsoft/windows-rs
   - windows_x86_64_msvc 0.53.1  https://github.com/microsoft/windows-rs
-  - zune-core 0.4.12
   - zune-inflate 0.2.54
-  - zune-jpeg 0.4.21  https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg
 
 --------------------------------------------------------------------------------
 
@@ -8641,7 +8615,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - sysinfo 0.39.6  https://github.com/GuillaumeGomez/sysinfo
+  - sysinfo 0.40.4  https://github.com/GuillaumeGomez/sysinfo
 
 --------------------------------------------------------------------------------
 
@@ -8674,7 +8648,6 @@ MIT License
 ================================================================================
 
 Used by:
-  - gif 0.13.3  https://github.com/image-rs/image-gif
   - gif 0.14.2  https://github.com/image-rs/image-gif
 
 --------------------------------------------------------------------------------
@@ -8909,6 +8882,7 @@ MIT License
 
 Used by:
   - roxmltree 0.20.0  https://github.com/RazrFalcon/roxmltree
+  - roxmltree 0.21.2  https://github.com/RazrFalcon/roxmltree
 
 --------------------------------------------------------------------------------
 
@@ -9077,9 +9051,7 @@ MIT License
 ================================================================================
 
 Used by:
-  - fontdb 0.23.0  https://github.com/RazrFalcon/fontdb
-  - unicode-bidi-mirroring 0.4.0  https://github.com/RazrFalcon/unicode-bidi-mirroring
-  - unicode-ccc 0.4.0  https://github.com/RazrFalcon/unicode-ccc
+  - fontdb 0.24.0  https://github.com/RazrFalcon/fontdb
 
 --------------------------------------------------------------------------------
 
@@ -9208,7 +9180,7 @@ MIT License
 
 Used by:
   - harfrust 0.12.0  https://github.com/harfbuzz/harfrust
-  - rustybuzz 0.20.1  https://github.com/harfbuzz/rustybuzz
+  - harfrust 0.15.0  https://github.com/harfbuzz/harfrust
 
 --------------------------------------------------------------------------------
 
