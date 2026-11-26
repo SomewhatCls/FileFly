@@ -44,24 +44,24 @@ impl Explorer {
             return;
         }
         match action {
-            Action::Navigate(p) => self.navigate_or_bin(ti, p),
-            Action::NewTabAt(p) => {
-                if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
-                    // The raw folder is shown as the Recycle Bin view, in a tab of its own.
-                    self.open_trash();
-                } else if has_archive_ext(&p) && p.is_file() {
-                    // A zip gets its own tab next to its folder, then opens like a folder.
-                    let home = p.parent().map(Path::to_path_buf).unwrap_or_else(|| p.clone());
-                    self.new_tab(home);
-                    let tab = self.active;
-                    self.navigate(tab, p);
-                } else {
-                    self.new_tab(p);
+            Action::Navigate(p) => self.open_place(ti, Place::from_path(p)),
+            Action::GoToAddress(s) => {
+                let s = s.trim().trim_matches('"'); // pasted paths often come quoted
+                if !s.is_empty() {
+                    self.open_place(ti, Place::from_path(PathBuf::from(s)));
                 }
             }
+            Action::OpenPage(page) => self.open_place(ti, Place::Page(page)), // settings button, bin entry
+            Action::NewTabAt(p) => self.new_tab(Place::from_path(p)),
+            Action::Refresh => match self.tabs[ti].page {
+                Some(Page::RecycleBin) => self.load_trash(ti),
+                Some(Page::Settings) => self.refresh_drives(),
+                Some(Page::Licenses) => {}
+                None => { self.reindex_force = true; self.load_tab(ti); }
+            },
             Action::NewTab => {
                 let home = dirs::home_dir().unwrap_or_else(|| self.tabs[ti].dir.clone());
-                self.new_tab(home);
+                self.new_tab(Place::from_path(home));
             }
             Action::CloseTab(i) => {
                 if self.tabs.len() <= 1 {
@@ -98,6 +98,17 @@ impl Explorer {
                 let next = (self.active as i32 + d).rem_euclid(n) as usize;
                 self.activate_tab(next);
             }
+            Action::Up => {
+                let tab = &self.tabs[ti];
+                let parent = if tab.special() {
+                    None // a page (Settings, Recycle Bin, …) has no parent folder
+                } else {
+                    tab.shown_dir().parent().map(Path::to_path_buf)
+                };
+                if let Some(parent) = parent {
+                    self.open_place(ti, Place::from_path(parent));
+                }
+            }
             Action::Back => {
                 let tab = &mut self.tabs[ti];
                 if let Some(p) = tab.back.pop() {
@@ -114,28 +125,6 @@ impl Explorer {
                     self.goto_place(ti, p);
                 }
             }
-            Action::Up => {
-                // From the top of an opened zip, "Up" leaves the zip (its parent as shown, not the cache).
-                if let Some(parent) = self.tabs[ti].shown_dir().parent().map(Path::to_path_buf) {
-                    self.navigate_or_bin(ti, parent);
-                }
-            }
-            Action::Refresh => {
-                if self.tabs[ti].trash.is_some() {
-                    self.load_trash(ti);
-                } else if self.tabs[ti].page == Some(Page::Settings) {
-                    self.refresh_drives();
-                } else {
-                    self.reindex_force = true; // F5 also recalculates folder sizes
-                    self.load_tab(ti);
-                }
-            }
-            Action::GoToAddress(s) => {
-                let typed = expand_env(s.trim().trim_matches('"'));
-                if !typed.is_empty() {
-                    self.navigate_or_bin(ti, PathBuf::from(typed));
-                }
-            }
             Action::FocusAddress => {
                 let tab = &mut self.tabs[ti];
                 // A page's address bar starts empty: its label is not a path.
@@ -149,7 +138,7 @@ impl Explorer {
                 .memory_mut(|m| m.request_focus(Id::unique("search_box"))),
             Action::Open(p) => {
                 if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
-                    self.open_trash();
+                    self.open_place(ti, Place::Page(Page::RecycleBin));
                 } else {
                     self.open_path(&p);
                 }
@@ -467,7 +456,7 @@ impl Explorer {
             Action::OpenContaining(p) => {
                 if let Some(parent) = p.parent().map(Path::to_path_buf) {
                     if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&parent) {
-                        self.open_trash();
+                        self.open_place(ti, Place::Page(Page::RecycleBin));
                     } else {
                         self.navigate_selecting(ti, parent, Some(p));
                     }
@@ -493,17 +482,9 @@ impl Explorer {
                 self.settings_dirty = true;
                 self.reload_all();
             }
-            Action::OpenSettings => self.open_settings(),
             Action::OpenWhatsNew => self.open_whats_new(),
             Action::PinQuick(p) => self.pin_quick(p),
             Action::UnpinQuick(p) => self.unpin_quick(&p),
-            Action::OpenRecycleBin => {
-                if trash_bin::SUPPORTED {
-                    self.open_trash();
-                } else if let Err(e) = open_recycle_bin() {
-                    self.tabs[ti].error(format!("Could not open the Recycle Bin: {e}"));
-                }
-            }
             Action::TrashRestoreSelected => {
                 let items = self.trash_items_with_kind(ti, false);
                 self.begin_restore(items);

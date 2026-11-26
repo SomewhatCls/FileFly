@@ -195,7 +195,7 @@ impl Explorer {
             }
         }
         if let Some(dir) = open {
-            self.new_tab(dir);
+            self.new_tab(Place::from_path(dir));
         }
         if self.conflict.is_some() {
             self.deferred_extracts.push(plan); // a question is already on screen: ask afterwards

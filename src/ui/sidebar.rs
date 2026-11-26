@@ -568,7 +568,7 @@ impl Explorer {
                         resp
                     };
                     if bin.clicked() {
-                        actions.push(Action::OpenRecycleBin);
+                        actions.push(Action::OpenPage(Page::RecycleBin));
                     }
                     if collapsed {
                         // Below the divider is the Recycle Bin row, above it the drive rings.

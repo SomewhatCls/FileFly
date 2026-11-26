@@ -714,13 +714,13 @@ impl Explorer {
                             if icon_button(ui, &m, &pal, "settings", "Close Settings", true, true)
                                 .clicked()
                             {
-                                actions.push(Action::OpenSettings);
+                                actions.push(Action::OpenPage(Page::Settings));
                             }
                         } else {
                             if icon_button(ui, &m, &pal, "settings", "Settings", true, settings_open)
                                 .clicked()
                             {
-                                actions.push(Action::OpenSettings);
+                                actions.push(Action::OpenPage(Page::Settings));
                             }
                         }
                         if whats_new_visible {

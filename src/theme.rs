@@ -541,7 +541,6 @@ pub fn apply_style(ctx: &egui::Context, m: &Metrics, accent: Accent) {
 
 /// One shadow for every popup: menus, dialogs, tooltips.
 pub fn popup_shadow(dark: bool) -> egui::Shadow {
-    // This is broken; While working on tiny popups such as the close buttons, it fails to draw proper shadows behind large popups such as the property window.
     egui::Shadow {
         offset: [0, 8],
         blur: if dark { 32 } else { 64 },

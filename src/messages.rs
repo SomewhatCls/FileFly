@@ -80,6 +80,7 @@ pub(crate) enum AppMsg {
 #[derive(Clone)]
 pub(crate) enum Action {
     Navigate(PathBuf),
+    OpenPage(Page),
     NewTabAt(PathBuf),
     NewTab,
     OpenWhatsNew,
@@ -131,8 +132,6 @@ pub(crate) enum Action {
     /// "Extract to…": ask for a destination folder (see picker.rs), then unpack there.
     ExtractTo(Vec<PathBuf>),
     ToggleHidden,
-    OpenSettings,
-    OpenRecycleBin,
     PinQuick(PathBuf),
     UnpinQuick(PathBuf),
     MoveSelection(i32),
