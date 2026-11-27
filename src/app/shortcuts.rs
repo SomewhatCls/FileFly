@@ -29,10 +29,18 @@ impl Explorer {
         let mut split = false;
         let mut close_active = false;
         ui.input_mut(|i| {
+            // Always keep more specific shortcuts above more generic ones to prevent
+            // supersets from consuming their actions.
             if i.consume_key(M::CTRL | M::SHIFT, Key::Tab) {
                 actions.push(Action::StepTab(-1));
             } else if i.consume_key(M::CTRL, Key::Tab) {
                 actions.push(Action::StepTab(1));
+            }
+            if i.consume_key(M::CTRL | M::SHIFT, Key::F) {
+                actions.push(Action::NewFile);
+            }
+            if i.consume_key(M::CTRL | M::SHIFT, Key::N) {
+                actions.push(Action::NewFolder);
             }
             if i.consume_key(M::CTRL, Key::T) {
                 actions.push(Action::NewTab);
