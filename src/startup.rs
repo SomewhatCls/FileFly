@@ -155,7 +155,11 @@ fn host_options(icon: Arc<egui::IconData>) -> eframe::NativeOptions {
             .with_decorations(false)
             .with_inner_size([1.0, 1.0]),
         renderer: eframe::Renderer::Glow,
-        ..Default::default()
+        glow_options: eframe::egui_glow::GlowConfiguration {
+            vsync: false, // Used for testing vsync impact on frame delivery.
+            ..Default::default()
+        },
+            ..Default::default()
     }
 }
 

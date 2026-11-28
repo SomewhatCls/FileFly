@@ -12,8 +12,6 @@ impl Explorer {
         self.core.next_tab_id += 1;
         self.win.tabs.push(Tab::new(id, dir));
         self.win.active = self.win.tabs.len() - 1;
-        self.load_tab(self.win.active);
-        self.on_active_changed();
         match page {
             None => { self.load_tab(self.win.active); self.on_active_changed(); }
             Some(pg) => self.show_page(self.win.active, pg), // calls on_active_changed itself
