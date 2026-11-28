@@ -31,6 +31,8 @@ impl Explorer {
             to: dir_of(&items[0].dst),
             cancelable: true,
         };
+        // Register on the UI thread, before the job starts, so the next paste already sees these items.
+        let ticket = self.core.paste_reg.enter(&items, cut);
         let op = self.run_op(spec, move |prog| {
             prog.total_items.store(n as u64, AO::Relaxed);
             // Size of every item (copies only), so a skipped item can take its share back out.
@@ -46,22 +48,22 @@ impl Explorer {
                             sizes[i] = b;
                             total += b;
                         }
-                        Err(_) => return Ok(String::new()), // cancelled while measuring
+                        Err(_) => return Ok(String::new()), // cancelled while measuring (the ticket drops with the closure)
                     }
                 }
                 prog.total_bytes.store(total, AO::Relaxed);
                 prog.preparing.store(false, AO::Relaxed);
             }
 
-            // Items that don't overlap run side by side (up to PASTE_WORKERS at a time); an item that
-            // overlaps one that is running or queued ahead of it waits for its turn. Cancelling one
-            // item (its button in the dialog) stops only that item; cancelling the whole operation
-            // stops everything that has not finished.
-            // Waiting and running items are indices into `items`. A failure is (item, message, refused for
-            // lack of access rights).
+            // Items start in order; an item waits while an earlier pending item of ANY operation overlaps
+            // it (see `PasteRegistry`). Up to PASTE_WORKERS items run side by side. Cancelling one item
+            // (its button in the dialog) stops only that item; cancelling the whole operation stops
+            // everything that has not finished.
+            // `queue` holds the indices (into `items`) that have not started yet. A failure is (item,
+            // message, refused for lack of access rights).
             let items = &items;
-            let queue: std::sync::Mutex<(VecDeque<usize>, Vec<usize>)> =
-                std::sync::Mutex::new(((0..n).collect(), Vec::new()));
+            let tk = &ticket; // CHANGED: was a (queue, running) pair behind one mutex
+            let queue: std::sync::Mutex<VecDeque<usize>> = std::sync::Mutex::new((0..n).collect());
             let cv = std::sync::Condvar::new();
             let errors: std::sync::Mutex<Vec<(usize, String, bool)>> = std::sync::Mutex::new(Vec::new());
             let sizes = &sizes;
@@ -73,23 +75,17 @@ impl Explorer {
                             let mut g = queue.lock().unwrap_or_else(|e| e.into_inner());
                             loop {
                                 if prog.cancelled() {
-                                    g.0.clear();
+                                    g.clear();
                                     cv.notify_all();
                                     return;
                                 }
-                                if g.0.is_empty() {
+                                if g.is_empty() {
                                     return;
                                 }
-                                let pick = (0..g.0.len()).find(|&k| {
-                                    let cand = &items[g.0[k]];
-                                    g.1.iter().all(|&r| !paste_overlaps(cand, &items[r]))
-                                        && g.0.iter().take(k).all(|&e| !paste_overlaps(cand, &items[e]))
-                                });
-                                if let Some(k) = pick {
-                                    if let Some(idx) = g.0.remove(k) {
-                                        g.1.push(idx);
-                                        break idx;
-                                    }
+                                // CHANGED: the registry decides (it also covers earlier items of this operation)
+                                let pick = (0..g.len()).find(|&k| tk.may_start(g[k], &items[g[k]]));
+                                if let Some(idx) = pick.and_then(|k| g.remove(k)) {
+                                    break idx;
                                 }
                                 g = cv.wait_timeout(g, Duration::from_millis(100)).unwrap_or_else(|e| e.into_inner()).0;
                             }
@@ -122,12 +118,15 @@ impl Explorer {
                                 prog.done_items.fetch_add(1, AO::Relaxed);
                             }
                         }
-                        let mut g = queue.lock().unwrap_or_else(|e| e.into_inner());
-                        g.1.retain(|&i| i != idx);
+                        // CHANGED: leave the registry, then wake the workers of this operation. Taking the queue
+                        // lock before notifying means a worker that just decided to wait cannot miss this.
+                        tk.finish(idx);
+                        let _q = queue.lock().unwrap_or_else(|e| e.into_inner());
                         cv.notify_all();
                     });
                 }
             });
+            tk.release(); // Anything cancelled or never started leaves the registry now, not at the end of the closure
 
             if cut {
                 // Only empty folders go; ones still holding skipped or failed items stay.
@@ -179,7 +178,7 @@ impl Explorer {
             return; // a question is already on screen
         }
         let mut plan = PastePlan::default();
-        let mut claimed: HashSet<PathBuf> = HashSet::new();
+        let mut claimed: HashSet<PathBuf> = self.core.paste_reg.destinations();
         for source in sources {
             let Some(name) = source.file_name() else {
                 continue;

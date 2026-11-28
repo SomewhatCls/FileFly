@@ -73,6 +73,7 @@ pub(crate) struct Core {
     /// Holds staged files whose extraction was deferred because the target folder holds
     /// files with the same name.
     pub(crate) deferred_extracts: Vec<PastePlan>,
+    pub(crate) paste_reg: PasteRegistry,
 }
 
 /// Progress of the resize that makes eframe refit its surface after a live frame change.
@@ -406,6 +407,7 @@ impl Explorer {
             probed_icons: HashSet::new(),
             extract_staging: Vec::new(),
             deferred_extracts: Vec::new(),
+            paste_reg: PasteRegistry::default(),
         };
         let first = Window::new(
             1,

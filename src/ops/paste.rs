@@ -1,6 +1,79 @@
 //! Copy/move (paste) worker logic and conflict-free naming.
 
 use crate::prelude::*;
+use std::sync::{Mutex, MutexGuard};
+
+#[derive(Default)]
+struct RegistryState {
+    next: u64,
+    /// (sequence number, item, whether its operation is a cut), in start order.
+    pending: Vec<(u64, PasteItem, bool)>,
+}
+
+/// Every paste item that has not finished yet (waiting or running), of all operations in all windows.
+/// Planning treats their destinations as taken, and an item only starts once no earlier pending
+/// item (of any operation) overlaps it.
+#[derive(Clone, Default)]
+pub(crate) struct PasteRegistry(Arc<Mutex<RegistryState>>);
+
+impl PasteRegistry {
+    fn lock(&self) -> MutexGuard<'_, RegistryState> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Registers the items of a new operation. Call it on the UI thread before the work starts,
+    /// so the next paste already sees them.
+    pub(crate) fn enter(&self, items: &[PasteItem], cut: bool) -> PasteTicket {
+        let mut g = self.lock();
+        let first = g.next;
+        g.next += items.len() as u64;
+        g.pending.extend(items.iter().cloned().enumerate().map(|(i, it)| (first + i as u64, it, cut)));
+        PasteTicket { reg: self.clone(), first, count: items.len(), cut }
+    }
+
+    /// Destinations that pending items are about to fill: for planning another paste they are taken.
+    pub(crate) fn destinations(&self) -> HashSet<PathBuf> {
+        self.lock().pending.iter().map(|(_, it, _)| it.dst.clone()).collect()
+    }
+}
+
+/// One operation's registration; whatever is still pending when it is dropped
+/// (cancelled, failed, never started) is removed.
+pub(crate) struct PasteTicket {
+    reg: PasteRegistry,
+    first: u64,
+    count: usize,
+    cut: bool,
+}
+
+impl PasteTicket {
+    /// True once no earlier pending item overlaps `it` (`idx` = its index in the operation).
+    pub(crate) fn may_start(&self, idx: usize, it: &PasteItem) -> bool {
+        let seq = self.first + idx as u64;
+        self.reg
+            .lock()
+            .pending
+            .iter()
+            .all(|(s, other, other_cut)| *s >= seq || !paste_overlaps(it, self.cut, other, *other_cut))
+    }
+
+    pub(crate) fn finish(&self, idx: usize) {
+        let seq = self.first + idx as u64;
+        self.reg.lock().pending.retain(|(s, _, _)| *s != seq);
+    }
+
+    /// Removes whatever of this operation is still pending. Safe to call more than once.
+    pub(crate) fn release(&self) {
+        let (lo, hi) = (self.first, self.first + self.count as u64);
+        self.reg.lock().pending.retain(|(s, _, _)| *s < lo || *s >= hi);
+    }
+}
+
+impl Drop for PasteTicket {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
 
 /// One decided paste operation.
 #[derive(Clone)]
@@ -38,10 +111,14 @@ pub(crate) fn paths_equal(a: &Path, b: &Path) -> bool {
     a == b || (cfg!(windows) && a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase())
 }
 
-/// Two paste items overlap when either touches (as source or destination) something inside the
-/// other's source or destination. Items that overlap must not run at the same time.
-pub(crate) fn paste_overlaps(a: &PasteItem, b: &PasteItem) -> bool {
-    [&a.src, &a.dst].iter().any(|x| [&b.src, &b.dst].iter().any(|y| paths_related(x, y)))
+/// Two paste items must not run at the same time when one touches what the other writes or removes.
+/// Copies may read the same source side by side; when a cut is involved the source is removed, so
+/// then the sources count too.
+pub(crate) fn paste_overlaps(a: &PasteItem, a_cut: bool, b: &PasteItem, b_cut: bool) -> bool {
+    paths_related(&a.dst, &b.dst)
+        || paths_related(&a.dst, &b.src)
+        || paths_related(&a.src, &b.dst)
+        || ((a_cut || b_cut) && paths_related(&a.src, &b.src))
 }
 
 /// True for a real directory (a symlink to a directory does not count, so we never merge through links).

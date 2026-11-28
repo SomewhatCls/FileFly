@@ -127,15 +127,19 @@ impl DirWatcher {
                 }
                 return;
             }
+            let paths: Vec<PathBuf> = ev.paths.into_iter().filter(|p| !crate::fsops::is_in_part_item(p)).collect();
+            if paths.is_empty() {
+                return;
+            }
             // The updater ignores the index file and system noise; the UI sees everything.
             if let Some(s) = &live {
-                let fwd: Vec<PathBuf> = ev.paths.iter().filter(|p| s.accepts(p)).cloned().collect();
+                let fwd: Vec<PathBuf> = paths.iter().filter(|p| s.accepts(p)).cloned().collect();
                 if !fwd.is_empty() {
                     s.push(fwd);
                 }
             }
             if let Ok(mut set) = ui_set.lock() {
-                for p in ev.paths {
+                for p in paths {
                     if set.len() < MAX_PENDING {
                         set.insert(p);
                     } else {

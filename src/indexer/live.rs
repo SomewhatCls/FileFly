@@ -72,7 +72,7 @@ pub fn is_pseudo(_: &Path) -> bool { false }
 
 /// True for names that are never worth reacting to (also used to pick folders to watch).
 pub fn is_noisy(p: &Path) -> bool {
-    is_pseudo(p) || p.components().any(|c| {
+    is_pseudo(p) || crate::fsops::is_in_part_item(p) || p.components().any(|c| {
         let s = c.as_os_str().to_string_lossy();
         NOISY.iter().any(|n| s.eq_ignore_ascii_case(n))
     })
