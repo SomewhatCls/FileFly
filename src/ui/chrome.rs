@@ -221,7 +221,7 @@ pub(crate) fn caption_buttons_windows(ui: &mut Ui, m: &Metrics, pal: &Palette, m
     // injected after the OS resize loop would complete that click, so ignore it.
     let resize_started = ui
         .ctx()
-        .data(|d| d.get_temp::<bool>(Id::unique("resize_started")))
+        .data(|d| d.get_temp::<bool>(win_id("resize_started")))
         .unwrap_or(false);
 
     for (slot, &k) in kinds.iter().enumerate() {
@@ -308,7 +308,7 @@ fn can_resize(ctx: &egui::Context) -> bool {
 pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
     // A new press starts afresh; set below when a resize begins (see `caption_buttons_windows`).
     if ctx.input(|i| i.pointer.primary_pressed()) {
-        ctx.data_mut(|d| d.remove_temp::<bool>(Id::unique("resize_started")));
+        ctx.data_mut(|d| d.remove_temp::<bool>(win_id("resize_started")));
     }
     if !can_resize(ctx) {
         return;
@@ -322,35 +322,9 @@ pub(crate) fn handle_resize(ctx: &egui::Context, m: &Metrics) {
     ctx.set_cursor_icon(cursor);
     if ctx.input(|i| i.pointer.primary_pressed()) {
         ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
-        ctx.data_mut(|d| d.insert_temp(Id::unique("resize_started"), true));
-        // The OS resize loop swallows the button/touch release (see `raw_input_hook`).
-        ctx.data_mut(|d| d.insert_temp(Id::unique("pointer_reset"), true));
-        ctx.request_repaint();
-    }
-}
-
-/// Call from `raw_input_hook`: a press on a resize edge starts the resize and is removed from the
-/// input, so the widgets underneath the edge (sidebar items, tabs, ...) never see it.
-pub(crate) fn begin_resize_on_press(ctx: &egui::Context, raw_input: &mut egui::RawInput, m: &Metrics) {
-    if !can_resize(ctx) {
-        return;
-    }
-    let rect = ctx.content_rect();
-    let mut started = false;
-    raw_input.events.retain(|e| {
-        let egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } = e else {
-            return true;
-        };
-        let Some((dir, _)) = resize_edge(rect, *pos, m) else {
-            return true;
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
-        started = true;
-        false
-    });
-    if started {
-        // The OS resize loop swallows the button release (re-injected by `raw_input_hook`).
-        ctx.data_mut(|d| d.insert_temp(Id::unique("pointer_reset"), true));
+        ctx.data_mut(|d| d.insert_temp(win_id("resize_started"), true));
+        // The OS resize loop swallows the button/touch release (see `Explorer::window_frame`).
+        ctx.data_mut(|d| d.insert_temp(win_id("pointer_reset"), true));
         ctx.request_repaint();
     }
 }

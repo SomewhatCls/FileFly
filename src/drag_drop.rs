@@ -107,7 +107,7 @@ pub(crate) struct ItemDrag {
 }
 
 pub(crate) fn item_drag_id() -> Id {
-    Id::unique("item_drag_state")
+    win_id("item_drag_state")
 }
 
 /// The paths being dragged right now (None when no drag is in progress).
@@ -166,7 +166,7 @@ impl Explorer {
     /// the pointer has moved a few pixels. Releasing over a folder row, a sidebar entry or another
     /// pane copies the dragged items there; leaving the window hands them to the OS as a file drag,
     /// so any other program (or FileFly window) can take them.
-    pub(crate) fn drive_item_drag(&mut self, _frame: &eframe::Frame, ui: &mut Ui, actions: &mut Vec<Action>) {
+    pub(crate) fn drive_item_drag(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let id = item_drag_id();
         let ctx = ui.ctx().clone();
         let (down, released, pressed, latest, esc) = ui.input(|i| {
@@ -182,9 +182,9 @@ impl Explorer {
 
         // After an OS drag the button-up was swallowed by the OS, so egui may still think the
         // button is held. Ignore everything until the button is seen up or pressed again.
-        if self.drag_lock {
+        if self.win.drag_lock {
             if pressed || !down {
-                self.drag_lock = false;
+                self.win.drag_lock = false;
             } else {
                 clear(&ctx);
                 return;
@@ -196,7 +196,7 @@ impl Explorer {
 
         if st.active && esc {
             clear(&ctx);
-            self.drag_lock = down; // keep ignoring the still-held button
+            self.win.drag_lock = down; // keep ignoring the still-held button
             return;
         }
 
@@ -208,7 +208,7 @@ impl Explorer {
             if (p - st.press).length() < 6.0 {
                 return;
             }
-            let Some(tab) = self.tabs.iter_mut().find(|t| t.id == st.tab) else {
+            let Some(tab) = self.win.tabs.iter_mut().find(|t| t.id == st.tab) else {
                 clear(&ctx);
                 return;
             };
@@ -233,8 +233,8 @@ impl Explorer {
             target = st.target.take();
             if target.is_none() {
                 if let Some(p) = latest {
-                    if let Some((tid, r)) = self.pane_rects.iter().find(|(_, r)| r.contains(p)) {
-                        if let Some(t) = self.tabs.iter().find(|t| t.id == *tid) {
+                    if let Some((tid, r)) = self.win.pane_rects.iter().find(|(_, r)| r.contains(p)) {
+                        if let Some(t) = self.win.tabs.iter().find(|t| t.id == *tid) {
                             let same = st
                                 .paths
                                 .iter()
@@ -271,7 +271,7 @@ impl Explorer {
         if outside {
             // The OS drag blocks the UI loop, so whatever was painted last stays on screen.
             // Let one frame without the ghost go out first.
-            let handoff_id = Id::unique("item_drag_handoff");
+            let handoff_id = win_id("item_drag_handoff");
             if !ctx.data(|d| d.get_temp::<bool>(handoff_id)).unwrap_or(false) {
                 ctx.data_mut(|d| {
                     d.insert_temp(handoff_id, true);
@@ -282,14 +282,14 @@ impl Explorer {
             }
             ctx.data_mut(|d| d.remove_temp::<bool>(handoff_id));
             clear(&ctx);
-            self.drag_lock = true;
-            self.start_os_drag(_frame, (*st.paths).clone());
+            self.win.drag_lock = true;
+            self.start_os_drag((*st.paths).clone());
             return;
         }
-        ctx.data_mut(|d| d.remove_temp::<bool>(Id::unique("item_drag_handoff")));
+        ctx.data_mut(|d| d.remove_temp::<bool>(win_id("item_drag_handoff")));
 
         // Feedback inside the window.
-        let (m, pal) = (self.m, self.pal);
+        let (m, pal) = (self.win.m, self.win.pal);
         ui.set_cursor_icon(if target.is_some() {
             egui::CursorIcon::Copy
         } else {
@@ -299,7 +299,7 @@ impl Explorer {
         if let Some(r) = pane_rect {
             ui.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,
-                Id::unique("item_drop_preview"),
+                win_id("item_drop_preview"),
             ))
             .rect_stroke(
                 r.shrink(1.5),
@@ -329,7 +329,7 @@ impl Explorer {
             };
             let tip = ui.layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
-                Id::unique("item_drag_ghost"),
+                win_id("item_drag_ghost"),
             ));
             let galley = tip.layout_no_wrap(label, FontId::proportional(m.font), pal.text);
             let r = Rect::from_min_size(
@@ -350,7 +350,7 @@ impl Explorer {
 
     /// Starts a real OS file drag on Windows. Blocks until the user drops or cancels.
     #[cfg(target_os = "windows")]
-    pub(crate) fn start_os_drag(&mut self, frame: &eframe::Frame, paths: Vec<PathBuf>) {
+    pub(crate) fn start_os_drag(&mut self, paths: Vec<PathBuf>) {
         // Shell paths only: `\\?\C:\x` and `\\?\UNC\wsl.localhost\...` (verbatim forms, which
         // canonicalising produces) can't be turned into shell items and made the drag code fail
         // for WSL / network files.
@@ -362,8 +362,8 @@ impl Explorer {
         if paths.is_empty() {
             return;
         }
-        let preview = drag_preview_png(self.pal.accent, paths.len());
-        let Some(window) = frame.winit_window() else {
+        let preview = drag_preview_png(self.win.pal.accent, paths.len());
+        let Some(window) = self.win.native.as_ref() else {
             return;
         };
         // A panic inside the drag crate (e.g. on a path the shell can't parse) must not take the
@@ -387,12 +387,12 @@ impl Explorer {
             ),
         };
         if let Some(msg) = msg {
-            let ti = self.active.min(self.tabs.len().saturating_sub(1));
-            if let Some(t) = self.tabs.get_mut(ti) {
+            let ti = self.win.active.min(self.win.tabs.len().saturating_sub(1));
+            if let Some(t) = self.win.tabs.get_mut(ti) {
                 t.error(msg);
             }
         }
-        self.ui.request_repaint();
+        self.win.ui.request_repaint();
     }
 
     /// Files dropped onto the window from outside (Explorer, another FileFly window, ...) are
@@ -411,22 +411,22 @@ impl Explorer {
         // While an OS drag hovers the window egui gets no pointer events, so ask the OS where the
         // cursor is and convert it to window coordinates.
         let ppp = ui.ctx().pixels_per_point();
-        let local = match (cursor_screen_pos(), self.own_info) {
+        let local = match (cursor_screen_pos(), self.win.own_info) {
             (Some((cx, cy)), Some(o)) => {
                 Some(pos2((cx - o.rect[0]) / ppp, (cy - o.rect[1]) / ppp))
             }
             _ => ui.input(|i| i.pointer.latest_pos()),
         };
         let hit = local
-            .and_then(|p| self.pane_rects.iter().find(|(_, r)| r.contains(p)))
+            .and_then(|p| self.win.pane_rects.iter().find(|(_, r)| r.contains(p)))
             .map(|(t, _)| *t);
         let ti = hit
-            .and_then(|id| self.tabs.iter().position(|t| t.id == id))
-            .unwrap_or(self.active);
-        if self.tabs[ti].special() {
+            .and_then(|id| self.win.tabs.iter().position(|t| t.id == id))
+            .unwrap_or(self.win.active);
+        if self.win.tabs[ti].special() {
             return;
         }
-        let dest = self.tabs[ti].dir.clone();
+        let dest = self.win.tabs[ti].dir.clone();
         if files.iter().all(|f| f.parent() == Some(dest.as_path())) {
             return; // dropped back where it came from
         }

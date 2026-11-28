@@ -116,6 +116,20 @@ impl ActiveOp {
     }
 }
 
+/// Everything the running operations work on (`ActiveOp::paths`). The one lock every window consults:
+/// call it with the shared `Core::ops`, never with a per-window copy. A path is locked until its operation's
+/// entry leaves the list, i.e. until the operation really ended.
+pub(crate) fn locked_paths(ops: &[ActiveOp]) -> Vec<PathBuf> {
+    ops.iter().flat_map(|o| o.paths.iter().cloned()).collect()
+}
+
+/// Records what operation `id` works on, until it is over. Does nothing for an unknown id.
+pub(crate) fn lock_op_paths(ops: &mut [ActiveOp], id: u64, paths: impl IntoIterator<Item = PathBuf>) {
+    if let Some(op) = ops.iter_mut().find(|o| o.id == id) {
+        op.paths.extend(paths);
+    }
+}
+
 /// Shortens the middle of a long name for use in a title.
 pub(crate) fn truncate(s: &str, max: usize) -> String {
     let n = s.chars().count();
@@ -139,5 +153,37 @@ pub(crate) fn format_eta(secs: f64) -> String {
         format!("About {mn} minute{}", if mn == 1 { "" } else { "s" })
     } else {
         format!("About {} h {} min", s / 3600, (s % 3600 + 30) / 60)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn op(id: u64) -> ActiveOp {
+        let spec = OpSpec { title: String::new(), from: String::new(), to: String::new(), cancelable: true };
+        ActiveOp::new(id, spec, Arc::default())
+    }
+
+    #[test]
+    fn a_lock_lasts_as_long_as_its_operation_is_listed() {
+        let mut ops = vec![op(1), op(2)];
+        lock_op_paths(&mut ops, 1, [PathBuf::from("C:/a/file")]);
+        lock_op_paths(&mut ops, 2, [PathBuf::from("C:/b")]);
+        assert!(touches_locked(&locked_paths(&ops), &[PathBuf::from("C:/a/file")]));
+        // Containing and contained paths count as touching.
+        assert!(touches_locked(&locked_paths(&ops), &[PathBuf::from("C:/a")]));
+        assert!(touches_locked(&locked_paths(&ops), &[PathBuf::from("C:/b/sub/x")]));
+        assert!(!touches_locked(&locked_paths(&ops), &[PathBuf::from("C:/c")]));
+        ops.remove(0);
+        assert!(!touches_locked(&locked_paths(&ops), &[PathBuf::from("C:/a/file")]));
+        assert!(touches_locked(&locked_paths(&ops), &[PathBuf::from("C:/b")]));
+    }
+
+    #[test]
+    fn locking_for_an_unknown_op_changes_nothing() {
+        let mut ops = vec![op(1)];
+        lock_op_paths(&mut ops, 9, [PathBuf::from("C:/x")]);
+        assert!(locked_paths(&ops).is_empty());
     }
 }

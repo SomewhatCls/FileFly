@@ -18,8 +18,8 @@ pub(crate) struct ToolWindow<'a> {
     pub(crate) hold_open: bool,
 }
 
-/// Keys of the state remembered about a window: the backdrop that was applied to it, and the height it was
-/// last sized to.
+/// Keys of the state remembered about a window: the backdrop that was applied to it (and to which OS window),
+/// and the height it was last sized to.
 fn state_keys(key: &str) -> (Id, Id) {
     (Id::unique((key, "backdrop")), Id::unique((key, "height")))
 }
@@ -43,9 +43,9 @@ fn near_pointer(ctx: &egui::Context, m: &Metrics, window_width: f32) -> Option<e
     Some(at)
 }
 
-/// A native window is destroyed by egui as soon as a frame passes without `show_viewport_immediate` for it.
-/// The next one gets a brand new window that has neither the backdrop effect nor the fitted size, so what was
-/// remembered about the old one must go, or the new window would be taken for already set up.
+/// A native window is destroyed by egui as soon as a frame passes without `show_viewport` for it.
+/// The next one gets a brand new window without the fitted size, so what was remembered about the old one must
+/// go (the backdrop needs no care here: it is remembered per OS window, see `ensure_backdrop`).
 pub(crate) fn forget_tool_window(ctx: &egui::Context, key: &str) {
     let (backdrop_key, height_key) = state_keys(key);
     ctx.data_mut(|d| {
@@ -101,15 +101,11 @@ pub(crate) fn tool_window(
 
     let mut close_requested = false;
     let mut content = Some(content);
-    ctx.show_viewport_immediate(vid, builder, |ui, _class| {
-        // Backdrop over the whole window (the native window only exists once it has been shown, so this is
-        // retried until it works and redone when the theme changes).
-        let want = (pal.dark, spec.transparency);
-        if ui.ctx().data(|d| d.get_temp::<(bool, TransparencyEffect)>(backdrop_key)) != Some(want)
-            && backdrop_by_title(&win_title, pal.dark, spec.transparency)
-        {
-            ui.ctx().data_mut(|d| d.insert_temp(backdrop_key, want));
-        }
+    show_viewport(ctx, vid, builder, |ui, _class| {
+        // Backdrop over the whole window. The native window only exists once it has been shown and can be
+        // replaced by a new one later (the window that draws a shared dialog changes with the focus), so this
+        // is checked every frame against the actual OS window.
+        ensure_backdrop(ui.ctx(), backdrop_key, &win_title, pal.dark, spec.transparency);
         let full = ui.max_rect();
         ui.layer_painter(egui::LayerId::background()).rect_filled(full, 0.0, pal.layer);
 

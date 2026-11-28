@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 /// Windows-specific Import and constant to hide the console window.
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use crate::prelude::egui;
+use crate::waker::Waker;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -110,6 +110,7 @@ const REFRESH_EVERY: Duration = Duration::from_secs(5);
 
 /// Provides all the information the GUI needs regarding the current dirs git state.
 pub struct GitState {
+    waker: Waker,
     paths: GitPaths,
     root: Option<PathBuf>,
     last_dir: Option<PathBuf>,
@@ -124,8 +125,9 @@ pub struct GitState {
 }
 
 impl GitState {
-    pub fn new() -> Self {
+    pub fn new(waker: Waker) -> Self {
         Self {
+            waker,
             paths: GitPaths::new(),
             root: None,
             last_dir: None,
@@ -143,15 +145,8 @@ impl GitState {
         self.op.is_some()
     }
 
-    /// Forcefully refreshes the git state.
-    /*
-    pub fn request_refresh(&mut self, ctx: &egui::Context) {
-        self.pending = None; // Drops any occurring refresh.
-        self.start_refresh(ctx);
-    }*/
-
     /// Call once per frame unless the directory changed.
-    pub fn update(&mut self, ctx: &egui::Context, dir: &Path) {
+    pub fn update(&mut self, dir: &Path) {
         // Finished background refresh?
         if let Some(rx) = &self.pending {
             match rx.try_recv() {
@@ -176,7 +171,7 @@ impl GitState {
                     self.error = res.err();
                     self.op = None;
                     self.pending = None;
-                    self.start_refresh(ctx);
+                    self.start_refresh();
                 }
                 Err(TryRecvError::Disconnected) => self.op = None,
                 Err(TryRecvError::Empty) => {}
@@ -192,7 +187,7 @@ impl GitState {
                 self.snapshot = None;
                 self.pending = None;
                 self.error = None;
-                self.start_refresh(ctx);
+                self.start_refresh();
             }
         }
 
@@ -201,34 +196,34 @@ impl GitState {
             if self.pending.is_none() && self.op.is_none()
                 && self.last_refresh.elapsed() > REFRESH_EVERY
             {
-                self.start_refresh(ctx);
+                self.start_refresh();
             }
-            ctx.request_repaint_after(REFRESH_EVERY);
+            self.waker.wake_after(REFRESH_EVERY);
         }
     }
 
-    fn start_refresh(&mut self, ctx: &egui::Context) {
+    fn start_refresh(&mut self) {
         let Some(root) = self.root.clone() else { return };
         if self.pending.is_some() { return; }
         let (tx, rx) = mpsc::channel();
-        let ctx = ctx.clone();
+        let waker = self.waker.clone();
         std::thread::spawn(move || {
             let _ = tx.send(take_snapshot(&root));
-            ctx.request_repaint(); // wake egui so it sees the result
+            waker.wake(); // wake egui so it sees the result
         });
         self.pending = Some(rx);
     }
 
-    pub fn git_async(&mut self, ctx: &egui::Context, command: GitCommand) {
+    pub fn git_async(&mut self, command: GitCommand) {
         let Some(root) = self.root.clone() else { return };
         if self.op.is_some() { return; }
         self.op_reloads = matches!(command, GitCommand::Checkout { .. });
         let (tx, rx) = mpsc::channel();
-        let ctx = ctx.clone();
+        let waker = self.waker.clone();
         std::thread::spawn(move || {
             let res = git(command, &root);
             let _ = tx.send(res);
-            ctx.request_repaint();
+            waker.wake();
         });
         self.op = Some(rx);
     }

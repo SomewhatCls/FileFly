@@ -44,23 +44,23 @@ fn resolve_shortcut(_: &Path) -> Result<PathBuf, String> {
 
 impl Explorer {
     pub(crate) fn open_shortcut_location(&mut self, ti: usize, lnk: PathBuf) {
-        let tab = self.tabs[ti].id;
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        let tab = self.win.tabs[ti].id;
+        let (tx, ui) = (self.core.msg_tx.clone(), self.core.waker.clone());
         std::thread::spawn(move || {
             let _ = tx.send(AppMsg::ShortcutTarget { tab, result: resolve_shortcut(&lnk) });
-            ui.request_repaint();
+            ui.wake();
         });
     }
 
     pub(crate) fn shortcut_resolved(&mut self, tab: u64, result: Result<PathBuf, String>) {
-        let Some(ti) = self.tabs.iter().position(|t| t.id == tab) else { return };
+        let Some(ti) = self.win.tabs.iter().position(|t| t.id == tab) else { return };
         match result {
             Ok(target) => {
                 self.activate_tab(ti);
                 self.apply(Action::OpenContaining(target));
             }
             Err(e) => {
-                self.tabs[ti].error(format!("Could not open the shortcut's location: {e}."));
+                self.win.tabs[ti].error(format!("Could not open the shortcut's location: {e}."));
             }
         }
     }

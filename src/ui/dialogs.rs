@@ -4,8 +4,8 @@ use crate::prelude::*;
 
 impl Explorer {
     pub(crate) fn ui_confirm(&mut self, ui: &mut Ui) {
-        let Some(c) = self.confirm.take() else { return };
-        let (m, pal) = (self.m, self.pal);
+        let Some(c) = self.win.confirm.take() else { return };
+        let (m, pal) = (self.win.m, self.win.pal);
         let mut choice = 0;
         let closed = dialog_shell_with_footer(
             ui,
@@ -38,14 +38,14 @@ impl Explorer {
             }
             // Cancel or X: `c` is dropped here, which releases the lock with it.
             (2, _) | (_, true) => {}
-            _ => self.confirm = Some(c),
+            _ => self.win.confirm = Some(c),
         }
     }
 
     /// "What's new": the release notes of this version from GitHub.
     pub(crate) fn ui_whats_new(&mut self, ui: &mut Ui) {
-        let Some(state) = &self.whats_new else { return };
-        let (m, pal) = (self.m, self.pal);
+        let Some(state) = &self.win.whats_new else { return };
+        let (m, pal) = (self.win.m, self.win.pal);
         let height = (ui.content_rect().height() * 0.6).clamp(m.accessibility_scale * 160.0, m.accessibility_scale * 520.0);
         let (mut retry, mut close) = (false, false);
         let failed = matches!(state, WhatsNew::Failed(_));
@@ -94,9 +94,9 @@ impl Explorer {
 
     /// Asks, one clashing item at a time (like Explorer), whether to replace it, keep both with a
     /// "(n)" suffix, or skip it. "Do this for all" answers the remaining ones the same way.
-    pub(crate) fn ui_conflict(&mut self, ui: &mut Ui) {
-        let Some(mut c) = self.conflict.take() else {
-            forget_tool_window(ui.ctx(), "conflict-paste");
+    pub(crate) fn ui_conflict(&mut self, ctx: &egui::Context) {
+        let Some(mut c) = self.core.conflict.take() else {
+            forget_tool_window(ctx, "conflict-paste");
             return;
         };
         let Some((src, dst)) = c.todo.front().cloned() else {
@@ -126,7 +126,7 @@ impl Explorer {
         };
         let mut all = c.apply_all;
         let (choice, closed) = self.conflict_window(
-            ui,
+            ctx,
             "conflict-paste",
             ConflictAsk { message, keep_name, remaining, replaceable: !same },
             &mut all,
@@ -135,7 +135,7 @@ impl Explorer {
             (4, _) | (_, true) => {} // cancel the whole paste
             (0, false) => {
                 c.apply_all = all;
-                self.conflict = Some(c);
+                self.core.conflict = Some(c);
             }
             (ch, _) => {
                 let n = if all { c.todo.len() } else { 1 };
@@ -170,26 +170,26 @@ impl Explorer {
                     self.run_paste(c.ready, c.cut, c.merged_dirs);
                 } else {
                     c.apply_all = all;
-                    self.conflict = Some(c);
+                    self.core.conflict = Some(c);
                 }
             }
         }
     }
     /// The "Item already exists" question in a window of its own. Returns the pressed button
     /// (0: none, 1: Replace, 2: Keep both, 3: Skip, 4: Cancel) and whether the window was closed.
-    fn conflict_window(&self, ui: &Ui, key: &str, ask: ConflictAsk, all: &mut bool) -> (u8, bool) {
-        let (m, pal) = (self.m, self.pal);
+    fn conflict_window(&self, ctx: &egui::Context, key: &str, ask: ConflictAsk, all: &mut bool) -> (u8, bool) {
+        let (m, pal) = (self.win.m, self.win.pal);
         let spec = ToolWindow {
             key,
             caption: "Item already exists",
             width: m.accessibility_scale * 440.0,
             max_height: m.accessibility_scale * 420.0,
-            transparency: self.backdrop_transparency.unwrap_or(TransparencyEffect::None),
-            custom_frame: self.settings.custom_frame,
+            transparency: self.win.backdrop_transparency.unwrap_or(TransparencyEffect::None),
+            custom_frame: self.core.settings.custom_frame,
             hold_open: false,
         };
         let mut choice = 0;
-        let closed = tool_window(ui.ctx(), &m, &pal, &spec, |ui| {
+        let closed = tool_window(ctx, &m, &pal, &spec, |ui| {
             ui.label(&ask.message);
             ui.add_space(m.pad * 0.5);
             ui.label(RichText::new(format!("Keep both saves the new item as “{}”.", ask.keep_name)).color(pal.text_secondary));
@@ -225,9 +225,9 @@ impl Explorer {
     }
 
     /// Like `ui_conflict`, for Recycle Bin items whose original place is taken.
-    pub(crate) fn ui_restore_conflict(&mut self, ui: &mut Ui) {
-        let Some(mut c) = self.restore_conflict.take() else {
-            forget_tool_window(ui.ctx(), "conflict-restore");
+    pub(crate) fn ui_restore_conflict(&mut self, ctx: &egui::Context) {
+        let Some(mut c) = self.core.restore_conflict.take() else {
+            forget_tool_window(ctx, "conflict-restore");
             return;
         };
         let Some((item, is_dir)) = c.todo.front().cloned() else {
@@ -260,12 +260,12 @@ impl Explorer {
             replaceable: occupied(&dst),
         };
         let mut all = c.apply_all;
-        let (choice, closed) = self.conflict_window(ui, "conflict-restore", ask, &mut all);
+        let (choice, closed) = self.conflict_window(ctx, "conflict-restore", ask, &mut all);
         match (choice, closed) {
             (4, _) | (_, true) => {} // cancel the whole restore: `c` is dropped, which frees the items
             (0, false) => {
                 c.apply_all = all;
-                self.restore_conflict = Some(c);
+                self.core.restore_conflict = Some(c);
             }
             (ch, _) => {
                 let n = if all { c.todo.len() } else { 1 };
@@ -286,7 +286,7 @@ impl Explorer {
                     self.run_restore(ready, guard);
                 } else {
                     c.apply_all = all;
-                    self.restore_conflict = Some(c);
+                    self.core.restore_conflict = Some(c);
                 }
             }
         }

@@ -6,24 +6,24 @@ impl Explorer {
     pub(crate) fn collect_shortcuts(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         use egui::{Key, Modifiers as M};
         let typing = ui.egui_wants_keyboard_input();
-        let modal = self.conflict.is_some()
-            || self.restore_conflict.is_some()
-            || self.confirm.is_some()
-            || self.picker.is_some()
-            || self.whats_new.is_some();
+        let modal = self.core.conflict.is_some()
+            || self.core.restore_conflict.is_some()
+            || self.win.confirm.is_some()
+            || self.win.picker.is_some()
+            || self.win.whats_new.is_some();
 
-        let in_trash = self.tabs[self.active].trash.is_some();
-        let in_settings = self.tabs[self.active].page.is_some();
+        let in_trash = self.win.tabs[self.win.active].trash.is_some();
+        let in_settings = self.win.tabs[self.win.active].page.is_some();
         let sel: Vec<PathBuf> = if in_trash || in_settings {
             Vec::new()
         } else {
-            self.tabs[self.active].selected_paths()
+            self.win.tabs[self.win.active].selected_paths()
         };
 
-        let active = self.active;
+        let active = self.win.active;
         let key_down = self.paste_key_down();
-        let paste_edge = key_down && !self.prev_paste_key.get();
-        self.prev_paste_key.set(key_down);
+        let paste_edge = key_down && !self.win.prev_paste_key.get();
+        self.win.prev_paste_key.set(key_down);
 
         //Keyboard Shortcuts
         let mut split = false;
@@ -60,11 +60,11 @@ impl Explorer {
                 actions.push(Action::FocusAddress);
             }
             if i.consume_key(M::CTRL, Key::F) {
-                self.tabs[active].chosen_search_scope = SearchScope::CurrentDir;
+                self.win.tabs[active].chosen_search_scope = SearchScope::CurrentDir;
                 actions.push(Action::FocusSearch);
             }
             if i.consume_key(M::CTRL, Key::G) {
-                self.tabs[active].chosen_search_scope = SearchScope::System;
+                self.win.tabs[active].chosen_search_scope = SearchScope::System;
                 actions.push(Action::FocusSearch);
             }
             if i.consume_key(M::NONE, Key::F5) {
@@ -154,9 +154,9 @@ impl Explorer {
                 }
             }
             if (ev_paste || (paste_edge && i.focused))
-                && self.last_paste.get().elapsed() > Duration::from_millis(300)
+                && self.win.last_paste.get().elapsed() > Duration::from_millis(300)
             {
-                self.last_paste.set(Instant::now());
+                self.win.last_paste.set(Instant::now());
                 actions.push(Action::Paste);
             }
             if i.consume_key(M::NONE, Key::Backspace) {
@@ -187,9 +187,9 @@ impl Explorer {
 
         // Adds smooth closing animation to ctrl+w close tab shortcut.
         if close_active {
-            if self.tabs.len() > 1 {
-                let tab_id = self.tabs[active].id;
-                let closing_id = Id::unique("tabs_closing");
+            if self.win.tabs.len() > 1 {
+                let tab_id = self.win.tabs[active].id;
+                let closing_id = win_id("tabs_closing");
                 ui.data_mut(|d| {
                     let mut v: Vec<u64> = d.get_temp(closing_id).unwrap_or_default();
                     if !v.contains(&tab_id) {

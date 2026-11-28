@@ -36,6 +36,7 @@ pub(crate) use crate::drives::{
     clean_path, is_network_path, load_drives, path_available, spawn_watcher,
 };
 pub(crate) use crate::peers::{Peers, WinInfo, cursor_screen_pos, now_ms};
+pub(crate) use crate::waker::Waker;
 // Sibling crate modules that are referenced by path (`trashbin::Item`, `defaultapp::is_default()`, ...).
 pub(crate) use crate::{default_app, trash_bin};
 

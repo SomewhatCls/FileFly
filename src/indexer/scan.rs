@@ -413,6 +413,7 @@ impl Walk<'_> {
             } else if ft.is_dir() {
                 let md = de.metadata().ok();
                 let name = de.file_name();
+                if is_part_name(&name) { continue; }
                 let path = node.path.join(&name);
                 if super::live::is_pseudo(&path) || md.as_ref().is_some_and(|m| dev_of(m) != node.root.dev) {
                     continue;
@@ -450,6 +451,7 @@ impl Walk<'_> {
                 return false;
             }
             if e.is_dir {
+                if e.name.first() == Some(&(b'.' as u16)) && crate::fsops::is_part_name(&win::name(&e)) { return true; }
                 let stamp = win::systime(e.written).map(stamp_of).unwrap_or(0);
                 let state = extend_wide(node.state, e.name);
                 self.sub_folder(

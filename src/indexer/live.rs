@@ -25,7 +25,7 @@ use super::{
     scan::scan_one,
     store::Cache,
 };
-use eframe::egui;
+use crate::waker::Waker;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -72,7 +72,7 @@ pub fn is_pseudo(_: &Path) -> bool { false }
 
 /// True for names that are never worth reacting to (also used to pick folders to watch).
 pub fn is_noisy(p: &Path) -> bool {
-    is_pseudo(p) || p.components().any(|c| {
+    is_pseudo(p) || crate::fsops::is_in_part_item(p) || p.components().any(|c| {
         let s = c.as_os_str().to_string_lossy();
         NOISY.iter().any(|n| s.eq_ignore_ascii_case(n))
     })
@@ -289,7 +289,7 @@ pub struct LiveCtx {
     pub hot: Arc<HotFiles>,
     pub sink: Arc<ChangeSink>,
     pub tx: Sender<IndexMsg>,
-    pub ctx: egui::Context,
+    pub waker: Waker,
 }
 
 pub fn spawn(lc: LiveCtx, epoch: u64) {
@@ -422,7 +422,7 @@ fn run(lc: LiveCtx, epoch: u64) {
                     if lc.tx.send(IndexMsg::Size(t, size)).is_err() {
                         return; // the UI is gone
                     }
-                    lc.ctx.request_repaint();
+                    lc.waker.wake();
                 }
                 None => {
                     queue.insert(t);

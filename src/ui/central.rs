@@ -104,28 +104,7 @@ pub(crate) fn layout_tiles(
             b,
         } => {
             let gap = m.accessibility_scale * 5.0;
-            let span = (if *side_by_side {
-                rect.width()
-            } else {
-                rect.height()
-            } - gap)
-                .max(1.0);
-            let split = (span * *ratio).round();
-            let (ra, rb, handle) = if *side_by_side {
-                let x = rect.left() + split;
-                (
-                    Rect::from_min_max(rect.min, pos2(x, rect.bottom())),
-                    Rect::from_min_max(pos2(x + gap, rect.top()), rect.max),
-                    Rect::from_min_max(pos2(x, rect.top()), pos2(x + gap, rect.bottom())),
-                )
-            } else {
-                let y = rect.top() + split;
-                (
-                    Rect::from_min_max(rect.min, pos2(rect.right(), y)),
-                    Rect::from_min_max(pos2(rect.left(), y + gap), rect.max),
-                    Rect::from_min_max(pos2(rect.left(), y), pos2(rect.right(), y + gap)),
-                )
-            };
+            let (ra, rb, handle, span) = split_rects(*side_by_side, *ratio, rect, gap);
             let id = Id::unique(("tile_divider", a.first_leaf(), b.first_leaf()));
             let resp = ui.interact(handle, id, Sense::drag());
             let hot = resp.hovered() || resp.dragged();
@@ -166,39 +145,41 @@ pub(crate) fn layout_tiles(
 impl Explorer {
     pub(crate) fn ui_central(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         self.fix_tiles();
-        let (m, pal) = (self.m, self.pal);
+        let (m, pal) = (self.win.m, self.win.pal);
         // The Settings tab edits a working copy of the settings (see `finish_settings_page`).
-        let mut sp: Option<SettingsPage> = if self.visible_tabs().iter().any(|&i| self.tabs[i].page == Some(Page::Settings)) {
+        let mut sp: Option<SettingsPage> = if self.visible_tabs().iter().any(|&i| self.win.tabs[i].page == Some(Page::Settings)) {
             Some(SettingsPage::new(
-                &self.settings,
-                self.font_edit,
-                self.indexer.as_ref().map_or(0, |ix| ix.len()),
-                self.default_on,
-                self.default_error.clone(),
-                self.update.clone(),
+                &self.core.settings,
+                self.win.font_edit,
+                self.core.indexer.as_ref().map_or(0, |ix| ix.len()),
+                self.core.default_on,
+                self.core.default_error.clone(),
+                self.core.update.clone(),
             ))
         } else {
             None
         };
         let busy = self.trash_busy_ids();
-        let locked = self.locked_paths();
+        let locked = locked_paths(&self.core.ops);
         let can_paste = self.can_paste();
-        let has_peazip = self.peazip.is_some();
+        let has_peazip = self.core.peazip.is_some();
         let cut_set: Option<HashSet<PathBuf>> = self
-            .clipboard
+            .core.clipboard
             .as_ref()
             .filter(|c| c.1)
             .map(|c| c.0.iter().cloned().collect());
-        let active = self.active;
+        let active = self.win.active;
         let mut panes: Vec<(u64, Rect)> = Vec::new();
         let mut focus: Option<usize> = None;
-        let mut tree = self.tiles.take();
+        // The pane whose header was grabbed this frame: it is dragged like a tab (see `tab_drag_overlay`).
+        let mut grabbed: Option<u64> = None;
+        let mut tree = self.win.tiles.take();
         let frame = layer_frame(&pal, m.radius, 0.0, 0.0, 0.0, 0.0, false);
 
         match tree.as_mut() {
             None => {
-                let cols = &mut self.settings.col_widths;
-                let tab = &mut self.tabs[active];
+                let cols = &mut self.core.settings.col_widths;
+                let tab = &mut self.win.tabs[active];
                 let tab_id = tab.id;
                 egui::CentralPanel::default().frame(frame).show(ui, |ui| {
                     let rect = ui.max_rect();
@@ -215,15 +196,15 @@ impl Explorer {
                         has_peazip,
                         actions,
                         sp.as_mut(),
-                        if self.indexer.is_some(){true}else {false},
+                        if self.core.indexer.is_some(){true}else {false},
                         &busy,
                         &locked,
                     );
                 });
             }
             Some(t) => {
-                let tabs = &mut self.tabs;
-                let cols = &mut self.settings.col_widths;
+                let tabs = &mut self.win.tabs;
+                let cols = &mut self.core.settings.col_widths;
                 egui::CentralPanel::default().frame(frame).show(ui, |ui| {
                     let full = ui.max_rect();
                     let mut rects: Vec<(u64, Rect)> = Vec::new();
@@ -304,6 +285,19 @@ impl Explorer {
                         if cr.clicked() {
                             actions.push(Action::ClosePane(tid));
                         }
+                        // The rest of the header is a handle: drag it to rearrange the panes, into another
+                        // window, or out of this one into a window of its own.
+                        let grip = ui.interact(
+                            Rect::from_min_max(hdr.min, pos2(close_rect.left(), hdr.bottom())),
+                            Id::unique(("pane_grab", tid)),
+                            Sense::drag(),
+                        );
+                        if grip.hovered() {
+                            ui.set_cursor_icon(egui::CursorIcon::Grab);
+                        }
+                        if grip.drag_started_by(egui::PointerButton::Primary) {
+                            grabbed = Some(tid);
+                        }
 
                         let tab = &mut tabs[idx];
                         ui.scope_builder(
@@ -324,7 +318,7 @@ impl Explorer {
                                     has_peazip,
                                     actions,
                                     sp.as_mut(),
-                                    self.indexer.is_some(),
+                                    self.core.indexer.is_some(),
                                     &busy,
                                     &locked,
                                 );
@@ -334,15 +328,18 @@ impl Explorer {
                 });
             }
         }
-        self.tiles = tree;
-        self.pane_rects = panes.clone();
+        self.win.tiles = tree;
+        if grabbed.is_some() {
+            self.win.tab_drag = grabbed;
+        }
+        self.win.pane_rects = panes.clone();
         if let Some(sp) = sp {
             self.finish_settings_page(ui, sp);
         }
 
         if let Some(i) = focus {
-            if i != self.active && i < self.tabs.len() {
-                self.active = i;
+            if i != self.win.active && i < self.win.tabs.len() {
+                self.win.active = i;
                 self.on_active_changed();
                 self.load_tab(i); // the pane may have been out of date: only the focused folder is watched
             }

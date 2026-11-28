@@ -5,19 +5,19 @@ use crate::prelude::*;
 impl Explorer{
 
     /// Function to draw the Apps entire interface.
-     fn draw_interface(&mut self, ui: &mut Ui, actions: &mut Vec<Action>){
+     pub(crate) fn draw_interface(&mut self, ui: &mut Ui, actions: &mut Vec<Action>){
          // Background painting.
          let rect = ui.content_rect();
 
          // "Try as administrator" is only offered while the error it belongs to is still showing
          // (the error bar of the table reads which tab that is).
-        if self.admin_retry.as_ref().is_some_and(|(m, _)| {
-            self.tabs[self.active].notice.as_ref().map(|n| &n.text) != Some(m)
+        if self.win.admin_retry.as_ref().is_some_and(|(m, _)| {
+            self.win.tabs[self.win.active].notice.as_ref().map(|n| &n.text) != Some(m)
         }) {
-            self.admin_retry = None;
+            self.win.admin_retry = None;
         }
-         let retry_tab = if self.admin_retry.is_some() { self.tabs[self.active].id } else { u64::MAX };
-         ui.data_mut(|d| d.insert_temp(Id::unique("admin_retry_tab"), retry_tab));
+         let retry_tab = if self.win.admin_retry.is_some() { self.win.tabs[self.win.active].id } else { u64::MAX };
+         ui.data_mut(|d| d.insert_temp(win_id("admin_retry_tab"), retry_tab));
          let painter = ui.layer_painter(egui::LayerId::background());
 
         // Draws chrome layer depending on desktop environment
@@ -33,7 +33,7 @@ impl Explorer{
         let radius = if !Self::is_maximized(ui.ctx()) { corner_radius } else { 0.0 };
         // Applies the chrome to achieve a proper Mica effect for transparency effects.
         // Although Acrylic looks different, for now we will use the same layer.
-        let bg = if self.transparency { self.pal.chrome } else { self.pal.base };
+        let bg = if self.core.transparency { self.win.pal.chrome } else { self.win.pal.base };
         painter.rect_filled(rect, radius, bg);
 
         // Draw the interface.
@@ -75,207 +75,52 @@ impl Explorer{
 
          // Rounded inner corner where the band above meets the file
          // view, to the right of the sidebar.
-         if let Some(r) = self.sidebar_rect {
+         if let Some(r) = self.win.sidebar_rect {
              let painter = ui.layer_painter(egui::LayerId::background());
 
              corner_fillet(
                  &painter,
                  pos2(r.right(), r.top()),
-                 self.m.radius as f32 * 2.0,
+                 self.win.m.radius as f32 * 2.0,
                  -1.0,
                  1.0,
-                 self.pal.layer,
+                 self.win.pal.layer,
              );
          }
     }
 
-    fn draw_backdrop_blur(&mut self, ui: &Ui) {
-        let accent = self.sys_accent.unwrap_or_else(Accent::fallback);
-        let Some(mut backdrop) = self.backdrop_blur.take() else { return };
+    pub(crate) fn draw_backdrop_blur(&mut self, ui: &Ui) {
+        let accent = self.core.sys_accent.unwrap_or_else(Accent::fallback);
+        let Some(mut backdrop) = self.blur.take() else { return };
 
-        apply_style(backdrop.ctx(), &self.m, accent);
+        apply_style(backdrop.ctx(), &self.win.m, accent);
 
-        let clear = self.pal.layer;
+        let clear = self.win.pal.layer;
         backdrop.render(ui.ctx(), clear, |ui2| {
-            self.is_backdrop = true;
+            self.win.is_backdrop = true;
             let mut discard = Vec::new();
             self.draw_interface(ui2, &mut discard);
-            self.is_backdrop = false;
+            self.win.is_backdrop = false;
         });
-        self.backdrop_blur = Some(backdrop);
+        self.blur = Some(backdrop);
     }
 }
 
-impl eframe::App for Explorer {
-    fn logic(
-        &mut self,
-        ctx: &egui::Context,
-        frame: &mut eframe::Frame,
-    ) {
-        // System/window state and background processing.
-        self.sync_system(ctx, frame);
-        self.track_window(ctx);
-        if self.use_custom_window_frame {
-            handle_resize(ctx, &self.m);
+impl Explorer {
+    /// The clean-quit sequence. The order matters: settings and index are saved first, then running operations
+    /// are cancelled and given a moment to remove their temp items, and only then is the journal closed
+    /// (it keeps its entries if an operation is still mid-write, so the next start can recover).
+    /// Runs once, when the last window closed (`Explorer::quit`) or the host ended on its own (`Host::on_exit`).
+    /// Must be the last thing the process does besides ending; it is not repeatable after `peers.shutdown`.
+    /// Closing any other window does not come through here: operations belong to the core, not to a window.
+    pub(crate) fn shutdown(&mut self) {
+        save_settings(&self.core.settings);
+        self.core.peers.shutdown();
+        if let Some(ix) = &self.core.indexer {
+            ix.save_if_dirty(true);
         }
-
-        self.pump_messages();
-        self.pump_search(ctx);
-
-        // Load a fallback font the first time a script that needs one is on screen
-        // (names are noted as listings arrive; typed text is checked here).
-        {
-            let tab = &self.tabs[self.active];
-            note_name(&tab.address);
-            note_name(&tab.search);
-            if let Some(r) = &tab.rename {
-                note_name(&r.text);
-            }
-        }
-        sync_fonts(ctx);
-        icons_begin_frame(ctx);
-
-        // Sets number dividers globally.
-        ctx.all_styles_mut(|style| {
-            style.number_formatter = egui::style::NumberFormatter::new(|val, _decimal_range| {
-                // This needs to be changed when different locales are supported.
-                (val as i64).to_formatted_string(&Locale::en)
-            });
-        });
-
-        // Handle closing the app before the UI is drawn.
-        if ctx.input(|i| i.viewport().close_requested()) {
-            // Vanish first, then save.
-            hide_window(frame);
-            save_settings(&self.settings);
-            self.peers.shutdown();
-            if let Some(ix) = &self.indexer { ix.save_if_dirty(true); }
-            self.stop_ops_for_exit();
-            remove_archive_cache(); // unpacked zips are temporary
-            finish_journal(); // (keeps its entries if a copy was still running)
-
-            // The OS cleans up at once.
-            terminate_now();
-        }
-    }
-
-    fn ui(
-        &mut self,
-        ui: &mut Ui,
-        frame: &mut eframe::Frame
-    ) {
-        // Load tabs that are on screen but have never been read (restored session).
-        for ti in self.visible_tabs() {
-            if self.tabs[ti].load_gen == 0 {
-                self.load_tab(ti);
-            }
-        }
-
-        // Collect actions triggered by the UI and shortcuts.
-        let mut actions: Vec<Action> = Vec::new();
-        self.collect_shortcuts(ui, &mut actions);
-
-        if self.tab_drag.is_some() {
-            self.draw_backdrop_blur(ui);
-        } else if let Some(b) = self.backdrop_blur.as_mut() {
-            b.release(); // frees the textures when no drag is active
-        }
-        self.draw_interface( ui, &mut actions);
-        self.drive_item_drag(frame, ui, &mut actions);
-        self.handle_dropped_files(ui);
-
-        self.ui_props(ui);
-        self.ui_conflict(ui);
-        self.ui_restore_conflict(ui);
-        self.ui_confirm(ui);
-        self.ui_ops(ui);
-        self.ui_picker(ui);
-        self.ui_whats_new(ui);
-
-        // Apply actions after rendering, as in your original code.
-        for action in actions {
-            self.apply(action);
-        }
-
-        // Keep the session current, and write it to disk a second after the last change
-        // (the clean-exit save also includes it).
-        if !self.session_ended && !SESSION_READONLY.load(AtomicOrdering::Relaxed) {
-            let snap = self.session_snapshot();
-            let id = Id::unique("saved_session");
-            let (mut seen, mut at, mut saved) = ui
-                .data(|d| d.get_temp::<(Session, Instant, Session)>(id))
-                .unwrap_or_else(|| (snap.clone(), Instant::now(), snap.clone()));
-            if snap != seen {
-                seen = snap.clone();
-                at = Instant::now();
-            }
-            self.settings.session = snap;
-            if seen != saved {
-                if at.elapsed() >= Duration::from_secs(1) {
-                    save_settings(&self.settings);
-                    saved = seen.clone();
-                } else {
-                    ui.ctx().request_repaint_after(Duration::from_millis(1100));
-                }
-            }
-            ui.data_mut(|d| {
-                d.insert_temp(id, (seen, at, saved));
-            });
-        }
-
-        // Save column widths as soon as a resize drag ends, not only on a clean exit.
-        {
-            let id = Id::unique("saved_col_widths");
-            let cols = self.settings.col_widths;
-            match ui.data(|d| d.get_temp::<[f32; 3]>(id)) {
-                None => {
-                    ui.data_mut(|d| d.insert_temp(id, cols));
-                }
-                Some(prev) if prev != cols && !ui.input(|i| i.pointer.any_down()) => {
-                    save_settings(&self.settings);
-                    ui.data_mut(|d| d.insert_temp(id, cols));
-                }
-                _ => {}
-            }
-        }
-
-        // Update the title after applying actions, so tab changes
-        // can update the title in the same UI pass.
-        let title = format!(
-            "{} – FileFly{}",
-            self.tabs[self.active].title(),
-            if is_elevated() { " (Administrator)" } else { "" }
-        );
-
-        if title != self.last_title {
-            ui.ctx().send_viewport_cmd(
-                egui::ViewportCommand::Title(title.clone()),
-            );
-            self.last_title = title;
-        }
-    }
-
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        if self.use_custom_window_frame {
-            begin_resize_on_press(ctx, raw_input, &self.m);
-        }
-        let reset = ctx
-            .data_mut(|d| d.remove_temp::<bool>(Id::unique("pointer_reset")))
-            .unwrap_or(false);
-        if reset {
-            let pos = ctx.input(|i| i.pointer.latest_pos()).unwrap_or_default();
-            raw_input.events.push(egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            });
-        }
-    }
-
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // Every panel paints its own background; Mica/Acrylic shows through
-        // the transparent parts.
-        [0.0, 0.0, 0.0, 0.0]
+        self.stop_ops_for_exit();
+        remove_archive_cache(); // unpacked zips are temporary
+        finish_journal(); // (keeps its entries if a copy was still running)
     }
 }

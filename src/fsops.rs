@@ -1463,21 +1463,32 @@ pub fn finish_journal() {
     }
 }
 
-/// `<dot><name>.<tag>-<pid>-<n>` (optionally followed by ".zip" for archives) with the pid of the
-/// run that created it: the exact shape `free_sibling` produces, nothing else.
-fn is_our_temp(path: &Path, tag: &str, pid: u32) -> bool {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
-    if !name.starts_with('.') {
-        return false;
-    }
+/// Splits a hidden temp name `.<name>.<tag>-<pid>-<n>[.zip]` (the shape `free_sibling` makes) into (tag, pid).
+fn temp_shape(name: &str) -> Option<(&str, u32)> {
+    let name = name.strip_prefix('.')?;
     let name = name.strip_suffix(".zip").unwrap_or(name);
-    let Some(i) = name.rfind(&format!(".{tag}-")) else { return false };
-    let mut parts = name[i + tag.len() + 2..].split('-');
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(a), Some(b), None) => a == pid.to_string() && digits(b),
-        _ => false,
+    let (_, tail) = name.rsplit_once('.')?;
+    let (tag, rest) = tail.split_once('-')?;
+    let (pid, n) = rest.split_once('-')?;
+    if n.is_empty() || !n.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
     }
+    Some((tag, pid.parse().ok()?))
+}
+
+fn is_our_temp(path: &Path, tag: &str, pid: u32) -> bool {
+    path.file_name().and_then(|n| n.to_str()).and_then(temp_shape).is_some_and(|(t, p)| t == tag && p == pid)
+}
+
+/// A half-written copy/extract/compress of any run. Indexer and watcher ignore these: the finished
+/// item arrives through its final rename.
+pub fn is_part_name(name: &OsStr) -> bool {
+    name.to_str().and_then(temp_shape).is_some_and(|(tag, _)| tag == "part")
+}
+
+/// True if `p` is a part item or lies inside one.
+pub fn is_in_part_item(p: &Path) -> bool {
+    p.components().any(|c| is_part_name(c.as_os_str()))
 }
 
 /// Returns true when the entry is dealt with (cleaned, or nothing there, or not ours to touch).

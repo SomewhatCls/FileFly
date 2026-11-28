@@ -19,7 +19,7 @@
 
 use super::live::{is_noisy, ChangeSink};
 use super::priority::lower_priority;
-use eframe::egui;
+use crate::waker::Waker;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     collections::HashSet,
@@ -50,12 +50,27 @@ impl Group {
     fn covers(&self, dir: &Path) -> bool {
         self.watches.iter().any(|(p, deep)| *deep && dir.starts_with(p))
     }
+
+    /// Does this group keep `dir` watched, as its own folder or through a recursive watch?
+    fn watches_folder(&self, dir: &Path) -> bool {
+        self.anchor == dir || self.covers(dir)
+    }
+}
+
+/// The group to drop when there are too many: the least recently used one, but never the newest (the last) and
+/// never one that keeps a shown folder watched. None when every other group is needed.
+fn eviction_victim(groups: &[Group], shown: &[PathBuf]) -> Option<usize> {
+    let last = groups.len().checked_sub(1)?;
+    (0..last)
+        .filter(|&i| !shown.iter().any(|d| groups[i].watches_folder(d)))
+        .min_by_key(|&i| groups[i].used)
 }
 
 pub struct DirWatcher {
     /// Folders to watch go to a background thread: on Linux, a recursive watch means one
     /// `inotify_add_watch` per sub-folder, which can take seconds and must not block the UI.
-    tx: mpsc::Sender<PathBuf>,
+    /// Each message is the complete set of folders the windows show.
+    tx: mpsc::Sender<Vec<PathBuf>>,
     pending: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
@@ -64,22 +79,25 @@ struct Inner {
     watcher: RecommendedWatcher,
     groups: Vec<Group>,
     current: Option<PathBuf>,
+    /// The folders the windows show right now (the latest request): their watches are never dropped to stay
+    /// within `MAX_GROUPS`, or a window would silently stop updating.
+    shown: Vec<PathBuf>,
     sink: Option<Arc<ChangeSink>>,
 }
 
 impl DirWatcher {
     /// Refreshes the UI because of changes and reports folder/file size changes.
-    pub fn new(ctx: egui::Context, sink: Arc<ChangeSink>) -> Option<Self> {
-        Self::build(ctx, Some(sink))
+    pub fn new(waker: Waker, sink: Arc<ChangeSink>) -> Option<Self> {
+        Self::build(waker, Some(sink))
     }
 
     /// Only refreshes the UI because of changes: no size reporting, no recursive watches.
     /// Used while folder sizes are turned off.
-    pub fn ui_only(ctx: egui::Context) -> Option<Self> {
-        Self::build(ctx, None)
+    pub fn ui_only(waker: Waker) -> Option<Self> {
+        Self::build(waker, None)
     }
 
-    fn build(ctx: egui::Context, sink: Option<Arc<ChangeSink>>) -> Option<Self> {
+    fn build(waker: Waker, sink: Option<Arc<ChangeSink>>) -> Option<Self> {
         // Events go into a bounded set that the UI drains once per frame. (An unbounded channel
         // grows without limit while the window is minimised or hidden and nobody reads it.)
         let pending: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -105,19 +123,23 @@ impl DirWatcher {
                     if let Ok(mut set) = ui_set.lock() {
                         set.insert(PathBuf::new());
                     }
-                    ctx.request_repaint_after(Duration::from_millis(300));
+                    waker.wake_after(Duration::from_millis(300));
                 }
+                return;
+            }
+            let paths: Vec<PathBuf> = ev.paths.into_iter().filter(|p| !crate::fsops::is_in_part_item(p)).collect();
+            if paths.is_empty() {
                 return;
             }
             // The updater ignores the index file and system noise; the UI sees everything.
             if let Some(s) = &live {
-                let fwd: Vec<PathBuf> = ev.paths.iter().filter(|p| s.accepts(p)).cloned().collect();
+                let fwd: Vec<PathBuf> = paths.iter().filter(|p| s.accepts(p)).cloned().collect();
                 if !fwd.is_empty() {
                     s.push(fwd);
                 }
             }
             if let Ok(mut set) = ui_set.lock() {
-                for p in ev.paths {
+                for p in paths {
                     if set.len() < MAX_PENDING {
                         set.insert(p);
                     } else {
@@ -126,21 +148,24 @@ impl DirWatcher {
                     }
                 }
             }
-            ctx.request_repaint_after(Duration::from_millis(300));
+            waker.wake_after(Duration::from_millis(300));
         })
             .ok()?;
-        let mut inner = Inner { watcher, groups: Vec::new(), current: None, sink };
-        let (tx, rx) = mpsc::channel::<PathBuf>();
+        let mut inner = Inner { watcher, groups: Vec::new(), current: None, shown: Vec::new(), sink };
+        let (tx, rx) = mpsc::channel::<Vec<PathBuf>>();
         std::thread::Builder::new()
             .name("dir-watch".into())
             .spawn(move || {
                 lower_priority();
                 // Only the newest request matters: quick navigation must not queue up several walks.
-                while let Ok(mut dir) = rx.recv() {
+                while let Ok(mut dirs) = rx.recv() {
                     while let Ok(newer) = rx.try_recv() {
-                        dir = newer;
+                        dirs = newer;
                     }
-                    inner.watch(&dir);
+                    inner.shown = dirs.clone();
+                    for dir in &dirs {
+                        inner.watch(dir);
+                    }
                 }
             })
             .ok()?;
@@ -155,10 +180,11 @@ impl DirWatcher {
         }
     }
 
-    /// Call whenever the listed folder changes. Returns immediately; the watches are set up in
-    /// the background.
-    pub fn watch(&self, dir: &Path) {
-        let _ = self.tx.send(dir.to_path_buf());
+    /// Call whenever a folder shown by any window changes; `dirs` is every window's folder, the one that
+    /// changed last. Returns immediately; the watches are set up in the background. Each call refreshes the
+    /// watches of all of them, so a folder one window keeps showing is not the least recently used one.
+    pub fn watch(&self, dirs: Vec<PathBuf>) {
+        let _ = self.tx.send(dirs);
     }
 }
 
@@ -219,10 +245,10 @@ impl Inner {
             }
         }
 
-        // Too many remembered folders: drop the least recently used one (never the newest).
+        // Too many remembered folders: drop the least recently used one (never the newest, and never one that
+        // keeps a shown folder watched: with many windows open the limit may be exceeded by those).
         while self.groups.len() > MAX_GROUPS {
-            let last = self.groups.len() - 1;
-            let Some(i) = (0..last).min_by_key(|&i| self.groups[i].used) else { break };
+            let Some(i) = eviction_victim(&self.groups, &self.shown) else { break };
             let old = self.groups.remove(i);
             self.drop_group(&old, true);
         }
@@ -278,4 +304,37 @@ fn child_dirs(dir: &Path) -> Vec<PathBuf> {
         .map(|de| de.path())
         .filter(|p| !is_noisy(p) && !p.file_name().is_some_and(|n| n.eq_ignore_ascii_case("windows")))
         .collect()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn group(anchor: &str, deep: bool) -> Group {
+        Group { anchor: PathBuf::from(anchor), watches: vec![(PathBuf::from(anchor), deep)], used: Instant::now() }
+    }
+
+    #[test]
+    fn a_group_watches_its_own_folder_and_everything_below_a_recursive_one() {
+        let deep = group("C:/data", true);
+        assert!(deep.watches_folder(Path::new("C:/data")));
+        assert!(deep.watches_folder(Path::new("C:/data/sub/x")));
+        assert!(!deep.watches_folder(Path::new("C:/other")));
+        let shallow = group("C:/", false);
+        assert!(shallow.watches_folder(Path::new("C:/")));
+        assert!(!shallow.watches_folder(Path::new("C:/data")), "a shallow watch covers only its own folder");
+    }
+
+    #[test]
+    fn the_oldest_group_goes_unless_a_window_still_shows_it() {
+        let mut groups: Vec<Group> = ["C:/a", "C:/b", "C:/c", "C:/d"].iter().map(|a| group(a, true)).collect();
+        for (i, g) in groups.iter_mut().enumerate() {
+            g.used += Duration::from_millis(i as u64); // a is the oldest
+        }
+        assert_eq!(eviction_victim(&groups, &[]), Some(0));
+        // a and b are on screen: the next oldest that is not goes (c); the newest (d) never does.
+        let shown = [PathBuf::from("C:/a/inner"), PathBuf::from("C:/b")];
+        assert_eq!(eviction_victim(&groups, &shown), Some(2));
+        let all = [PathBuf::from("C:/a"), PathBuf::from("C:/b"), PathBuf::from("C:/c")];
+        assert_eq!(eviction_victim(&groups, &all), None, "everything left is shown or newest: the limit is exceeded");
+    }
 }
