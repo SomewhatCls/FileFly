@@ -463,11 +463,11 @@ pub(crate) fn table_ui(
     if !picker {
         scroll_context_menu(&body_resp, |ui| {
             let ro = archive_of(dir).is_some(); // inside an opened zip: nothing can be added
-            if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+F"), !ro, ) {
+            if menu_item(ui, m, pal, Some("new_folder"), "New folder", Some("Ctrl+Shift+N"), !ro, ) {
                 actions.push(Action::NewFolder);
 
             }
-            if menu_item(ui, m, pal, Some("new_file"), "New file", Some("Ctrl+Shift+N"), !ro, ) {
+            if menu_item(ui, m, pal, Some("new_file"), "New file", Some("Ctrl+Shift+F"), !ro, ) {
                 actions.push(Action::NewFile);
 
             }
@@ -920,6 +920,10 @@ pub(crate) fn table_ui(
                     if menu_item(ui, m, pal, Some("delete"), "Delete", Some("Del"), !in_archive && !restoring) {
                         actions.push(Action::Delete(targets.clone()));
                         
+                    }
+                    if menu_item(ui, m, pal, Some("delete"), "Delete permanently", Some("Shift+Del"), !in_archive && !restoring) {
+                        actions.push(Action::DeletePermanently(targets.clone()));
+
                     }
                     ui.separator();
                     // Native zip support: unzipped items can be compressed, zip files extracted.

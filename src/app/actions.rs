@@ -18,7 +18,7 @@ impl Explorer {
         let touches_archive = match &action {
             Action::NewFolder | Action::Paste => archive_of(&self.tabs[ti].dir).is_some(),
             Action::DropCopy(_, dest) => archive_of(dest).is_some(),
-            Action::Cut(p) | Action::Delete(p) | Action::Compress(p) => {
+            Action::Cut(p) | Action::Delete(p) | Action::DeletePermanently(p) | Action::Compress(p) => {
                 p.iter().any(|x| archive_of(x).is_some())
             }
             Action::Rename(p) | Action::CommitRename(p, _) => archive_of(p).is_some(),
@@ -34,7 +34,7 @@ impl Explorer {
         }
         // Something that is being restored into place can't be changed until that is done.
         let into_restore = match &action {
-            Action::Cut(p) | Action::Delete(p) | Action::Compress(p) => touches_locked(&self.locked_paths(), p),
+            Action::Cut(p) | Action::Delete(p) | Action::DeletePermanently(p) | Action::Compress(p) => touches_locked(&self.locked_paths(), p),
             Action::Rename(p) | Action::CommitRename(p, _) => touches_locked(&self.locked_paths(), std::slice::from_ref(p)),
             _ => false,
         };
@@ -43,6 +43,8 @@ impl Explorer {
             self.tabs[ti].error("Not available while items are being restored here.".to_owned());
             return;
         }
+        // `Delete` and `DeletePermanently` share one code path; this must be read before the match moves `action`.
+        let permanent = matches!(action, Action::DeletePermanently(_));
         match action {
             Action::Navigate(p) => self.open_place(ti, Place::from_path(p)),
             Action::GoToAddress(s) => {
@@ -93,6 +95,12 @@ impl Explorer {
                     self.tiles = remove_leaf(t, id);
                 }
                 self.fix_tiles();
+            }
+            Action::NewWindow(dir, at) => {
+                let dir = dir
+                    .or_else(|| dirs::home_dir())
+                    .unwrap_or_else(|| self.tabs[ti].dir.clone());
+                spawn_window(&dir, at);
             }
             Action::OpenTerminal(dir) => {
                 if let Err(e) = open_terminal(&dir) {
@@ -241,14 +249,15 @@ impl Explorer {
                     Err(e) => self.tabs[ti].error(format!("Could not rename item: {e}")),
                 }
             }
-            Action::Delete(p) => {
+            Action::Delete(p) | Action::DeletePermanently(p) => {
                 if p.is_empty() {
                     return;
                 }
                 // Folders arrive in the bin with the size the list shows for them (a running total
                 // if the scan wasn't finished), or else the indexer's stored one; the Recycle Bin
                 // size in the sidebar starts from it. It is exact only if the indexer vouches for it.
-                if let Some(ix) = &self.indexer {
+                // (Not for permanent deletion: those items never arrive in the bin.)
+                if let Some(ix) = self.indexer.as_ref().filter(|_| !permanent) {
                     let sel: HashSet<&PathBuf> = p.iter().collect();
                     let shown: HashMap<&PathBuf, u64> = self.tabs[ti]
                         .entries
@@ -265,7 +274,7 @@ impl Explorer {
                 }
                 let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
                 let spec = OpSpec {
-                    title: "Moving to Recycle Bin".to_owned(),
+                    title: if permanent { "Deleting permanently" } else { "Moving to Recycle Bin" }.to_owned(),
                     from: p[0].parent().map(|d| d.display().to_string()).unwrap_or_default(),
                     to: String::new(),
                     cancelable: true,
@@ -273,7 +282,7 @@ impl Explorer {
                 let locked = p.clone();
                 let op = self.run_op(spec, move |prog| {
                     use std::sync::atomic::Ordering::Relaxed;
-                    let _settle = trash_bin::DeletionGuard;
+                    let _settle = (!permanent).then_some(trash_bin::DeletionGuard);
                     // Batches: progress between them and Cancel in the gaps. One call per file would be much
                     // slower, because each starts its own shell operation. A running shell operation
                     // itself cannot be interrupted, so Cancel takes effect at the next gap.
@@ -285,9 +294,16 @@ impl Explorer {
                     // Like Explorer, find out up front what the Recycle Bin can't take (no bin on this
                     // drive, bin turned off, single items bigger than its limit). Summing sizes can take a
                     // moment: the panel shows "Calculating…" with the item being measured.
-                    prog.preparing.store(true, Relaxed);
-                    let (bin_ok, forced, forced_reason) = crate::recycle_check::split(&p, &|| prog.cancelled(), &|x| prog.set_current(&name_of(x)));
-                    prog.preparing.store(false, Relaxed);
+                    // Deleting permanently on purpose skips the check: everything is "forced" and goes
+                    // through the same question and the same deletion below.
+                    let (bin_ok, forced, forced_reason) = if permanent {
+                        (Vec::new(), p.clone(), String::new())
+                    } else {
+                        prog.preparing.store(true, Relaxed);
+                        let r = crate::recycle_check::split(&p, &|| prog.cancelled(), &|x| prog.set_current(&name_of(x)));
+                        prog.preparing.store(false, Relaxed);
+                        r
+                    };
                     if prog.cancelled() {
                         return Ok(String::new());
                     }
@@ -301,6 +317,8 @@ impl Explorer {
                     let mut denied: Vec<PathBuf> = Vec::new(); // no access rights -> offer administrator retry
                     let mut refused: Vec<PathBuf> = Vec::new(); // -> ask: delete permanently?
                     let mut denied_msg = String::new();
+                    let mut denied_perm: Vec<PathBuf> = Vec::new(); // permanent deletion without access rights -> administrator retry
+                    let mut denied_perm_msg = String::new();
 
                     for batch in bin_ok.chunks(BATCH) {
                         if prog.cancelled() {
@@ -369,6 +387,10 @@ impl Explorer {
                         }) {
                             Ok(true) => {}
                             Ok(false) => break, // cancelled: what is left of this folder stays as it is
+                            Err(e) if is_denied_io(&e) && !is_elevated() => {
+                                denied_perm.push(path.clone());
+                                denied_perm_msg = format!("Could not delete “{}”: {e}", name_of(path));
+                            }
                             Err(e) => {
                                 failed += 1;
                                 failed_msg = format!("Could not delete “{}”: {e}", name_of(path));
@@ -377,11 +399,17 @@ impl Explorer {
                         prog.done_items.fetch_add(1, Relaxed);
                     }
 
-                    if !denied.is_empty() {
-                        let retry = AdminRetry::Op(AdminOp::Delete { paths: denied });
-                        let _ = tx.send(AppMsg::AdminOffer { msg: denied_msg.clone(), retry });
+                    // One administrator offer (one UAC prompt) covers whatever was denied, bin or permanent.
+                    if !denied.is_empty() || !denied_perm.is_empty() {
+                        let (msg, op) = if denied_perm.is_empty() {
+                            (denied_msg, AdminOp::Delete { paths: denied })
+                        } else {
+                            let msg = if denied.is_empty() { denied_perm_msg } else { denied_msg };
+                            (msg, AdminOp::DeleteMixed { bin: denied, permanent: denied_perm })
+                        };
+                        let _ = tx.send(AppMsg::AdminOffer { msg: msg.clone(), retry: AdminRetry::Op(op) });
                         ui.request_repaint();
-                        return Err(denied_msg);
+                        return Err(msg);
                     }
                     if failed > 0 {
                         return Err(if failed == 1 { failed_msg } else { format!("{failed} items could not be deleted. Last error: {failed_msg}") });

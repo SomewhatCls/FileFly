@@ -257,12 +257,10 @@ impl Explorer {
                 if only {
                     return; // the only tab already is a window of its own
                 }
-                let dir = self.tabs[ti].dir.clone();
+                let dir = Some(self.tabs[ti].dir.clone());
                 let ppp = self.ui.pixels_per_point().max(0.1);
-                spawn_window(
-                    &dir,
-                    Some(((cx / ppp - 80.0).max(0.0), (cy / ppp - 20.0).max(0.0))),
-                );
+                let at = ((cx / ppp - 80.0).max(0.0), (cy / ppp - 20.0).max(0.0));
+                self.apply(Action::NewWindow(dir, Some(at)));
                 self.apply(Action::CloseTab(ti));
             }
         }
