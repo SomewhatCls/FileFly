@@ -672,6 +672,12 @@ thread_local! {
     static ICON_CACHE: RefCell<Option<IconCache>> = const { RefCell::new(None) };
 }
 
+/// Drops the icon cache (textures and worker threads belong to one egui context): called when a window ends
+/// and when a new one starts.
+pub fn icons_reset() {
+    ICON_CACHE.with(|c| *c.borrow_mut() = None);
+}
+
 pub fn icons_begin_frame(ctx: &egui::Context) {
     // Something may have been trashed or restored outside the app while it was in the background.
     if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))) {

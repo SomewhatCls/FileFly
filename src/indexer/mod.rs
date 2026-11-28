@@ -34,9 +34,9 @@
 //! # Wiring (one change in the app)
 //!
 //! ```ignore
-//! let watcher = DirWatcher::new(ctx.clone(), indexer.change_sink());
+//! let watcher = DirWatcher::new(waker.clone(), indexer.change_sink());
 //! ```
-//! `DirWatcher::ui_only(ctx)` works too, but then only the UI refreshes; sizes are not updated live.
+//! `DirWatcher::ui_only(waker)` works too, but then only the UI refreshes; sizes are not updated live.
 
 mod engine;
 mod hot;

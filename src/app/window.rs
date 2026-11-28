@@ -6,7 +6,7 @@ impl Explorer {
     /// True when the OS cursor is outside this window (only known on Windows).
     pub(crate) fn cursor_outside_window(&self) -> Option<bool> {
         let (cx, cy) = cursor_screen_pos()?;
-        let o = self.own_info?;
+        let o = self.win.own_info?;
         Some(!(cx >= o.rect[0] && cx < o.rect[2] && cy >= o.rect[1] && cy < o.rect[3]))
     }
 
@@ -25,9 +25,10 @@ impl Explorer {
         });
         // Once at startup: if the saved position is on a monitor that is no longer connected
         // the (undecorated) window would be unreachable, so bring it back to the primary one.
+        let owner = self.owns_session();
         let mut off_screen = false;
         if !maxi && !mini && !full {
-            let id = Id::unique("onscreen_checked");
+            let id = win_id("onscreen_checked");
             let done = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
             if !done {
                 if let Some(r) = outer.or(inner) {
@@ -48,18 +49,20 @@ impl Explorer {
                         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos2(
                             80.0, 80.0,
                         )));
-                        self.settings.window_pos = None;
+                        if owner {
+                            self.core.settings.window_pos = None;
+                        }
                     }
                 }
             }
         }
-        if !mini && !full {
-            self.settings.maximized = maxi;
+        if owner && !mini && !full {
+            self.core.settings.maximized = maxi;
             if !maxi {
                 if let Some(r) = inner {
                     let s = [r.width().round(), r.height().round()];
                     if s[0] >= 520.0 && s[1] >= 340.0 {
-                        self.settings.window_size = Some(s);
+                        self.core.settings.window_size = Some(s);
                     }
                 }
                 // Position: only while the window is in its normal state, so restoring from
@@ -67,7 +70,7 @@ impl Explorer {
                 if let Some(r) = outer.or(inner).filter(|_| !off_screen) {
                     let p = [r.left().round(), r.top().round()];
                     if window_pos_is_sane(p) {
-                        self.settings.window_pos = Some(p);
+                        self.core.settings.window_pos = Some(p);
                     }
                 }
             }
@@ -75,13 +78,13 @@ impl Explorer {
 
         // Write the geometry to disk shortly after the window stops moving or resizing, so a
         // crash, kill or power loss doesn't lose it (the clean-exit save still runs too).
-        {
+        if owner {
             type Geo = (Option<[f32; 2]>, Option<[f32; 2]>, bool);
-            let id = Id::unique("saved_window_geo");
+            let id = win_id("saved_window_geo");
             let geo: Geo = (
-                self.settings.window_pos,
-                self.settings.window_size,
-                self.settings.maximized,
+                self.core.settings.window_pos,
+                self.core.settings.window_size,
+                self.core.settings.maximized,
             );
             let (mut seen, mut at, mut saved) = ctx
                 .data(|d| d.get_temp::<(Geo, Instant, Geo)>(id))
@@ -92,7 +95,7 @@ impl Explorer {
             }
             if seen != saved {
                 if at.elapsed() >= Duration::from_secs(1) {
-                    save_settings(&self.settings);
+                    save_settings(&self.core.settings);
                     saved = seen;
                 } else {
                     ctx.request_repaint_after(Duration::from_millis(1100));
@@ -104,19 +107,22 @@ impl Explorer {
             let ppp = ctx.pixels_per_point();
             let rect = [r.left() * ppp, r.top() * ppp, r.right() * ppp, r.bottom() * ppp];
             let moved = self
-                .own_info
+                .win.own_info
                 .map_or(true, |o| o.rect.iter().zip(rect.iter()).any(|(a, b)| (a - b).abs() > 0.5));
-            let refocus = focused && self.info_stamp.elapsed() > Duration::from_secs(1);
+            let refocus = focused && self.win.info_stamp.elapsed() > Duration::from_secs(1);
             if moved || refocus {
                 let focus_ms = if focused {
                     now_ms()
                 } else {
-                    self.own_info.map_or(0, |o| o.focus_ms)
+                    self.win.own_info.map_or(0, |o| o.focus_ms)
                 };
                 let info = WinInfo { rect, focus_ms };
-                self.peers.set_info(info);
-                self.own_info = Some(info);
-                self.info_stamp = Instant::now();
+                // Other processes see one rectangle: the one of the window the user last worked in.
+                if self.is_focus_window() {
+                    self.core.peers.set_info(info);
+                }
+                self.win.own_info = Some(info);
+                self.win.info_stamp = Instant::now();
             }
         }
     }

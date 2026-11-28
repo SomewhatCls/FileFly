@@ -41,7 +41,7 @@ impl Explorer {
     /// item of the list, in the order shown, whose name starts with it. Without a match the selection
     /// stays where it is.
     pub(crate) fn type_ahead(&mut self, ti: usize, typed: &str) {
-        let ta = &mut self.typeahead;
+        let ta = &mut self.win.typeahead;
         if !ta.active() {
             ta.text.clear();
         }
@@ -51,7 +51,7 @@ impl Explorer {
         }
         ta.text.push_str(typed);
         let needle = ta.text.to_lowercase();
-        let tab = &mut self.tabs[ti];
+        let tab = &mut self.win.tabs[ti];
         if tab.special() {
             return;
         }
@@ -83,13 +83,13 @@ impl Explorer {
 
     /// The typed string as a subtle label in the corner of the active pane while it is still valid.
     pub(crate) fn draw_type_ahead(&self, ui: &Ui, panes: &[(u64, Rect)]) {
-        let ta = &self.typeahead;
+        let ta = &self.win.typeahead;
         if !ta.active() {
             return;
         }
-        let Some(&(_, rect)) = panes.iter().find(|(id, _)| *id == self.tabs[self.active].id) else { return };
-        let (m, pal) = (&self.m, &self.pal);
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::unique("type_ahead")));
+        let Some(&(_, rect)) = panes.iter().find(|(id, _)| *id == self.win.tabs[self.win.active].id) else { return };
+        let (m, pal) = (&self.win.m, &self.win.pal);
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, win_id("type_ahead")));
         let galley = painter.layout_no_wrap(ta.text.clone(), FontId::proportional(m.font), pal.text);
         let pad = m.pad;
         let size = galley.size() + vec2(pad * 2.0, pad);

@@ -133,6 +133,37 @@ pub fn hide_window(window: &impl raw_window_handle::HasWindowHandle) {
 #[cfg(not(windows))]
 pub fn hide_window(_window: &impl raw_window_handle::HasWindowHandle) {}
 
+/// Gives the window the application icon as its big icon, which is the one the taskbar button shows. egui
+/// only sets the small icon of a window it creates, and a window without a big one gets the generic exe icon
+/// in the taskbar. The icon is the one `build.rs` embeds in the exe (resource id 1), a shared handle that
+/// must not be destroyed.
+#[cfg(windows)]
+pub fn set_taskbar_icon(window: &impl raw_window_handle::HasWindowHandle) {
+    use raw_window_handle::RawWindowHandle;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn LoadImageW(instance: isize, name: *const u16, kind: u32, cx: i32, cy: i32, flags: u32) -> isize;
+        fn SendMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> isize;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> isize;
+    }
+    if let Ok(handle) = window.window_handle() {
+        if let RawWindowHandle::Win32(w) = handle.as_raw() {
+            unsafe {
+                // IMAGE_ICON, LR_DEFAULTSIZE | LR_SHARED; WM_SETICON with ICON_BIG.
+                let icon = LoadImageW(GetModuleHandleW(std::ptr::null()), 1usize as *const u16, 1, 0, 0, 0x40 | 0x8000);
+                if icon != 0 {
+                    SendMessageW(w.hwnd.get(), 0x80, 1, icon);
+                }
+            }
+        }
+    }
+}
+#[cfg(not(windows))]
+pub fn set_taskbar_icon(_window: &impl raw_window_handle::HasWindowHandle) {}
+
 /// Ends the process immediately. Normal exit runs every DLL's detach code (GPU drivers, DWM
 /// helpers), which is what can stall or freeze a transparent window while it is being destroyed.
 #[cfg(windows)]
@@ -151,6 +182,27 @@ pub fn terminate_now() -> ! {
 pub fn terminate_now() -> ! {
     std::process::exit(0)
 }
+
+/// Hands the process's resident pages back to the OS shortly after a window was closed. The GPU driver keeps
+/// the memory of a destroyed window's surface mapped (about 30 MB each) until Windows trims it on its own, so
+/// without this the working set stays at its peak. Pages that are still needed simply fault back in.
+#[cfg(windows)]
+pub fn trim_memory_soon() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn K32EmptyWorkingSet(h: isize) -> i32;
+    }
+    // Waits until eframe has actually destroyed the window (it does so in the frame after).
+    let _ = std::thread::Builder::new().name("trim".into()).spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        unsafe {
+            K32EmptyWorkingSet(GetCurrentProcess());
+        }
+    });
+}
+#[cfg(not(windows))]
+pub fn trim_memory_soon() {}
 
 // ----------------------------------------------------------------------------------------------
 // Mica
@@ -503,9 +555,12 @@ fn install_fonts_for(ctx: &egui::Context, scripts: u32) {
     }
 }
 
-/// Initial fonts: just the primary font. Fallbacks follow on demand (`sync_fonts`).
+/// Fonts for a fresh context: the primary font plus the fallbacks for every script seen so far (none at
+/// first start, all of them when a window is rebuilt). More follow on demand (`sync_fonts`).
 pub fn install_fonts(ctx: &egui::Context) {
-    install_fonts_for(ctx, 0);
+    let seen = SCRIPTS_SEEN.load(AtomicOrdering::Relaxed);
+    SCRIPTS_LOADED.store(seen, AtomicOrdering::Relaxed);
+    install_fonts_for(ctx, seen);
 }
 
 /// Call once per frame: loads the fallback font for any newly seen script.
@@ -636,12 +691,20 @@ pub fn style_frameless(window: &impl raw_window_handle::HasWindowHandle) {
     }
 }
 
-/// A bare Win32 window handle, so the backdrop helpers above can be applied to windows that
-/// egui/eframe doesn't hand out handles for (the extra viewports).
+/// The OS handle of one of this process's windows, for the helpers above (backdrop, hide, OS drag).
+/// egui only hands out the handle of the root window, so windows are found by title (`find_window`).
+/// Valid for as long as its viewport exists; never keep one past the window's life.
 #[cfg(windows)]
-struct Hwnd(isize);
+pub(crate) struct NativeWindow(isize);
 #[cfg(windows)]
-impl raw_window_handle::HasWindowHandle for Hwnd {
+impl NativeWindow {
+    /// The OS handle value, to tell one OS window from another.
+    pub(crate) fn id(&self) -> isize {
+        self.0
+    }
+}
+#[cfg(windows)]
+impl raw_window_handle::HasWindowHandle for NativeWindow {
     fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
         let h = std::num::NonZeroIsize::new(self.0).ok_or(raw_window_handle::HandleError::Unavailable)?;
         let raw = raw_window_handle::RawWindowHandle::Win32(raw_window_handle::Win32WindowHandle::new(h));
@@ -649,11 +712,26 @@ impl raw_window_handle::HasWindowHandle for Hwnd {
     }
 }
 
-/// Gives the extra (undecorated) windows of this process whose title is `title` the same Mica
-/// backdrop, rounded corners and shadow as the main window. Returns false while no such window
-/// exists yet, so the caller can simply try again next frame.
+/// Other platforms have no handle lookup: the helpers there do nothing.
+#[cfg(not(windows))]
+pub(crate) struct NativeWindow;
+#[cfg(not(windows))]
+impl NativeWindow {
+    pub(crate) fn id(&self) -> isize {
+        0
+    }
+}
+#[cfg(not(windows))]
+impl raw_window_handle::HasWindowHandle for NativeWindow {
+    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        Err(raw_window_handle::HandleError::Unavailable)
+    }
+}
+
+/// The window of this process whose title is exactly `title` (None while it does not exist yet, so the
+/// caller can try again next frame). Titles must be unique among windows for this to be meaningful.
 #[cfg(windows)]
-pub fn backdrop_by_title(title: &str, dark: bool, transparency_effect: TransparencyEffect) -> bool {
+pub(crate) fn find_window(title: &str) -> Option<NativeWindow> {
     #[link(name = "user32")]
     unsafe extern "system" {
         fn EnumThreadWindows(tid: u32, f: unsafe extern "system" fn(isize, isize) -> i32, lparam: isize) -> i32;
@@ -665,27 +743,44 @@ pub fn backdrop_by_title(title: &str, dark: bool, transparency_effect: Transpare
     }
     struct Search {
         title: Vec<u16>,
-        found: Vec<isize>,
+        found: Option<isize>,
     }
     unsafe extern "system" fn visit(h: isize, lp: isize) -> i32 {
         let s = unsafe { &mut *(lp as *mut Search) };
         let mut buf = [0u16; 256];
         let n = unsafe { GetWindowTextW(h, buf.as_mut_ptr(), buf.len() as i32) };
         if n > 0 && buf[..n as usize] == s.title[..] {
-            s.found.push(h);
+            s.found = Some(h);
+            return 0;
         }
         1
     }
-    let mut s = Search { title: title.encode_utf16().take(255).collect(), found: Vec::new() };
+    let mut s = Search { title: title.encode_utf16().take(255).collect(), found: None };
     unsafe { EnumThreadWindows(GetCurrentThreadId(), visit, &mut s as *mut Search as isize) };
-    for h in &s.found {
-        let w = Hwnd(*h);
-        apply_backdrop(&w, dark, transparency_effect);
-        style_frameless(&w);
-    }
-    !s.found.is_empty()
+    s.found.map(NativeWindow)
 }
 #[cfg(not(windows))]
-pub fn backdrop_by_title(_title: &str, _dark: bool, _transparency_effect: TransparencyEffect) -> bool {
-    true
+pub(crate) fn find_window(_title: &str) -> Option<NativeWindow> {
+    Some(NativeWindow)
+}
+
+/// What was applied to a tool window: which OS window (egui may destroy and recreate it, for example when
+/// the window drawing it changes), and with which look.
+type AppliedBackdrop = (isize, bool, TransparencyEffect);
+
+/// Gives the window of this process titled `title` the same backdrop, rounded corners and shadow as the main
+/// window, unless exactly that OS window already has this look (`memo` is where the caller keeps that fact).
+/// Remembering the OS handle rather than a flag matters: a recreated window starts bare, and a flag set for
+/// its predecessor would keep it that way (see-through). Does nothing while the window does not exist yet,
+/// so the caller can simply call it every frame.
+pub(crate) fn ensure_backdrop(ctx: &egui::Context, memo: egui::Id, title: &str, dark: bool, effect: TransparencyEffect) {
+    let Some(w) = find_window(title) else { return };
+    let want: AppliedBackdrop = (w.id(), dark, effect);
+    if ctx.data(|d| d.get_temp::<AppliedBackdrop>(memo)) == Some(want) {
+        return;
+    }
+    apply_backdrop(&w, dark, effect);
+    #[cfg(windows)]
+    style_frameless(&w);
+    ctx.data_mut(|d| d.insert_temp(memo, want));
 }

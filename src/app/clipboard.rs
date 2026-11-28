@@ -12,10 +12,10 @@ impl Explorer {
             return;
         }
         if cut {
-            self.clipboard = None;
+            self.core.clipboard = None;
         }
         let n = items.len();
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        let (tx, ui) = (self.core.msg_tx.clone(), self.core.waker.clone());
         let verb = if cut { "Moving" } else { "Copying" };
         let title = if n == 1 {
             let name = items[0].dst.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -152,11 +152,11 @@ impl Explorer {
             if !denied.is_empty() {
                 let retry = AdminRetry::Op(AdminOp::Paste { items: denied, cut });
                 let _ = tx.send(AppMsg::AdminOffer { msg: text.clone(), retry });
-                ui.request_repaint();
+                ui.wake();
             }
             Err(text)
         });
-        self.lock_op_paths(op, locked);
+        lock_op_paths(&mut self.core.ops, op, locked);
     }
 
     pub(crate) fn paste(&mut self) {
@@ -164,18 +164,18 @@ impl Explorer {
         #[cfg(windows)]
         let clip = get_clipboard();
         #[cfg(not(windows))]
-        let clip = self.clipboard.clone();
+        let clip = self.core.clipboard.clone();
 
         let Some((sources, cut)) = clip else {
             return;
         };
-        let dir = self.tabs[self.active].dir.clone();
+        let dir = self.win.tabs[self.win.active].dir.clone();
         self.paste_into(dir, sources, cut);
     }
 
     /// Pastes (or drops) `sources` into `dir`; name clashes are asked about like in a normal paste.
     pub(crate) fn paste_into(&mut self, dir: PathBuf, sources: Vec<PathBuf>, cut: bool) {
-        if self.conflict.is_some() {
+        if self.core.conflict.is_some() {
             return; // a question is already on screen
         }
         let mut plan = PastePlan::default();
@@ -196,7 +196,7 @@ impl Explorer {
                 continue;
             }
             if source.is_dir() && dir.starts_with(&source) {
-                self.tabs[self.active].error(format!(
+                self.win.tabs[self.win.active].error(format!(
                     "Can't {} “{}” into itself or one of its subfolders.",
                     if cut { "move" } else { "copy" },
                     name.to_string_lossy()
@@ -215,14 +215,14 @@ impl Explorer {
                     plan.merged_dirs.extend(sub.merged_dirs);
                 }
                 Err(e) => {
-                    self.tabs[self.active].error(format!("Can't read “{label}”: {e}"));
+                    self.win.tabs[self.win.active].error(format!("Can't read “{label}”: {e}"));
                 }
             }
         }
         if plan.todo.is_empty() {
             self.run_paste(plan.ready, cut, plan.merged_dirs);
         } else {
-            self.conflict = Some(PendingPaste {
+            self.core.conflict = Some(PendingPaste {
                 cut,
                 ready: plan.ready,
                 todo: plan.todo,
@@ -242,11 +242,32 @@ impl Explorer {
     pub(crate) fn can_paste(&self) -> bool {
         #[cfg(windows)]
         {
-            get_clipboard().is_some()
+            // Reading the clipboard opens it and stats every path on it, far too much to do every frame (a copied
+            // folder with thousands of files froze the window). The answer is kept until the clipboard changes;
+            // a path that vanished meanwhile is dealt with by the paste itself.
+            let seq = clipboard_sequence();
+            if let Some((s, answer)) = self.core.clip_probe.get() {
+                if s == seq {
+                    return answer;
+                }
+            }
+            let answer = get_clipboard().is_some();
+            self.core.clip_probe.set(Some((seq, answer)));
+            answer
         }
         #[cfg(not(windows))]
         {
-            self.clipboard.is_some()
+            self.core.clipboard.is_some()
         }
     }
+}
+
+/// The system's clipboard change counter: cheap, needs no access to the clipboard itself.
+#[cfg(windows)]
+fn clipboard_sequence() -> u32 {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetClipboardSequenceNumber() -> u32;
+    }
+    unsafe { GetClipboardSequenceNumber() }
 }

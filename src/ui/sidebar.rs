@@ -502,17 +502,17 @@ pub(crate) fn drive_collapsed(
 impl Explorer {
     pub(crate) fn ui_sidebar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         self.start_trash_index();
-        let (m, pal) = (self.m, self.pal);
-        let collapsed = self.sidebar_collapsed;
+        let (m, pal) = (self.win.m, self.win.pal);
+        let collapsed = self.win.sidebar_collapsed;
         let mut toggle_collapse = false;
-        let cur = self.tabs[self.active].dir.clone();
-        let special_active = self.tabs[self.active].special();
-        let trash_active = self.tabs[self.active].trash.is_some();
-        let (quick, drives) = (&self.quick, &self.drives);
+        let cur = self.win.tabs[self.win.active].dir.clone();
+        let special_active = self.win.tabs[self.win.active].special();
+        let trash_active = self.win.tabs[self.win.active].trash.is_some();
+        let (quick, drives) = (&self.core.quick, &self.core.drives);
         // Folder context menus (file list) need to know what is pinned.
         ui.data_mut(|d| {
             d.insert_temp(
-                Id::unique("pinned_paths"),
+                win_id("pinned_paths"),
                 Arc::new(quick.iter().map(|q| q.path.clone()).collect::<HashSet<PathBuf>>()),
             )
         });
@@ -532,7 +532,7 @@ impl Explorer {
             } else {
                 // Only used the first time the panel is shown; egui remembers the dragged width
                 // after that. The size range below keeps a stale saved value in bounds.
-                self.sidebar_width
+                self.win.sidebar_width
                     .unwrap_or(m.accessibility_scale * 200.0)
             })
             .size_range(if collapsed {
@@ -546,7 +546,7 @@ impl Explorer {
                     CornerRadius {
                         nw: 0,
                         ne: 0,
-                        sw: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()) && self.settings.custom_frame {15}else{0},
+                        sw: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()) && self.core.settings.custom_frame {15}else{0},
                         se: 0,
                     },
                 ),
@@ -699,14 +699,14 @@ impl Explorer {
             });
         // Reset the style's drag radius for other widgets.
         ui.style_mut().interaction.resize_grab_radius_side = old_grab_radius;
-        self.sidebar_rect = Some(panel.response.rect);
+        self.win.sidebar_rect = Some(panel.response.rect);
         // Track the expanded width for the session (the collapsed width is fixed, not saved).
         // Whole points, so sub-pixel jitter doesn't count as a change.
         if !collapsed {
-            self.sidebar_width = Some(panel.response.rect.width().round());
+            self.win.sidebar_width = Some(panel.response.rect.width().round());
         }
         if toggle_collapse {
-            self.sidebar_collapsed = !self.sidebar_collapsed;
+            self.win.sidebar_collapsed = !self.win.sidebar_collapsed;
         }
     }
 }

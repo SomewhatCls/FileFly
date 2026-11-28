@@ -146,14 +146,14 @@ fn fetch_latest() -> Result<Option<UpdateInfo>, String> {
 
 impl Explorer {
     pub(crate) fn check_for_update(&mut self, announce: bool) {
-        if self.update == UpdateState::Checking {
+        if self.core.update == UpdateState::Checking {
             return;
         }
-        self.update = UpdateState::Checking;
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        self.core.update = UpdateState::Checking;
+        let (tx, ui) = (self.core.msg_tx.clone(), self.core.waker.clone());
         std::thread::spawn(move || {
             let _ = tx.send(AppMsg::UpdateChecked { announce, result: fetch_latest() });
-            ui.request_repaint();
+            ui.wake();
         });
     }
 
@@ -161,22 +161,22 @@ impl Explorer {
     /// before the user asks).
     pub(crate) fn open_whats_new(&mut self) {
         // A fetch is already in flight; don't start a second one.
-        if matches!(self.whats_new, Some(WhatsNew::Loading)) {
+        if matches!(self.win.whats_new, Some(WhatsNew::Loading)) {
             return;
         }
-        self.whats_new = Some(WhatsNew::Loading);
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        self.win.whats_new = Some(WhatsNew::Loading);
+        let (tx, ui) = (self.core.msg_tx.clone(), self.core.waker.clone());
         std::thread::spawn(move || {
             let _ = tx.send(AppMsg::ReleaseNotes(fetch_release_notes()));
-            ui.request_repaint();
+            ui.wake();
         });
     }
 
     /// The popup was closed: the button has done its job.
     pub(crate) fn close_whats_new(&mut self) {
-        self.whats_new = None;
-        self.settings.whats_new_seen = env!("CARGO_PKG_VERSION").to_owned();
-        save_settings(&self.settings);
+        self.win.whats_new = None;
+        self.core.settings.whats_new_seen = env!("CARGO_PKG_VERSION").to_owned();
+        save_settings(&self.core.settings);
     }
 
     pub(crate) fn update_checked(
@@ -185,12 +185,12 @@ impl Explorer {
         result: Result<Option<UpdateInfo>, String>,
     ) {
         if let (true, Ok(Some(info))) = (announce, &result) {
-            self.tabs[self.active].notify(
+            self.win.tabs[self.win.active].notify(
                 Notice::info(format!("Version {} is available!", info.version))
                     .with_button("Download", Action::DownloadUpdate),
             );
         }
-        self.update = match result {
+        self.core.update = match result {
             Ok(None) => UpdateState::UpToDate,
             Ok(Some(info)) => UpdateState::Available(info),
             Err(e) => UpdateState::Failed(e),
@@ -198,14 +198,14 @@ impl Explorer {
     }
 
     pub(crate) fn open_update_download(&mut self) {
-        let UpdateState::Available(info) = &self.update else {
+        let UpdateState::Available(info) = &self.core.update else {
             return;
         };
         // Only hand GitHub links to the browser
         if info.url.starts_with("https://github.com/") {
-            self.ui.open_url(egui::OpenUrl::new_tab(&info.url));
+            self.win.ui.open_url(egui::OpenUrl::new_tab(&info.url));
         } else {
-            self.tabs[self.active].error("Refusing to open a download link that isn't on github.com.");
+            self.win.tabs[self.win.active].error("Refusing to open a download link that isn't on github.com.");
         }
     }
 }

@@ -1,14 +1,15 @@
 //! Per-frame processing of background results and system state.
 
+use crate::peers::Handover;
 use crate::prelude::*;
 
 impl Explorer {
     /// Starts/cancels the recursive search whenever a tab's search text changes (this also
     /// covers Escape, the clear button and navigation, which all just clear `tab.search`),
     /// and drains results from the running job.
-    pub(crate) fn pump_search(&mut self, ctx: &egui::Context) {
-        let (show_hidden, fmt) = (self.settings.show_hidden, self.settings.date_format);
-        for t in &mut self.tabs {
+    pub(crate) fn pump_search(&mut self) {
+        let (show_hidden, fmt) = (self.core.settings.show_hidden, self.core.settings.date_format);
+        for t in &mut self.win.tabs {
             let q = if t.special() {
                 String::new()
             } else {
@@ -17,23 +18,21 @@ impl Explorer {
             if q != t.search_query || t.chosen_search_scope !=  t.current_search_scope{
                 t.search_query = q;
                 t.current_search_scope = t.chosen_search_scope;
-                on_search_changed(t, show_hidden, fmt, ctx);
+                on_search_changed(t, show_hidden, fmt, &self.core.waker);
             }
-            poll_search(t, self.indexer.as_ref());
+            poll_search(t, self.core.indexer.as_ref());
         }
     }
 
-    pub(crate) fn pump_messages(&mut self) {
+    /// Handles one background message in the window that owns its tab (or in the focused window when it
+    /// belongs to no tab). `self.win` is that window.
+    fn handle_msg(&mut self, msg: AppMsg) {
         // Every pane on screen needs sizes, not just the active tab.
-        let visible_ids: Vec<_> = self.visible_tabs().into_iter().map(|i| self.tabs[i].id).collect();
-        let mut reindex = false;
-        let mut reindex_force = false;
-
-        while let Ok(msg) = self.msg_rx.try_recv() {
+        let visible_ids: Vec<_> = self.visible_tabs().into_iter().map(|i| self.win.tabs[i].id).collect();
             match msg {
                 AppMsg::Listing { tab, seq, result } => {
                     if let Some(t) = self
-                        .tabs
+                        .win.tabs
                         .iter_mut()
                         .find(|t| t.id == tab && t.load_gen == seq)
                     {
@@ -41,7 +40,7 @@ impl Explorer {
                         match result {
                             Ok(mut entries) => {
                                 for e in entries.iter_mut().filter(|e| e.is_dir && !e.is_link) {
-                                    e.dir_size = self.indexer.as_ref().and_then(|ix| ix.lookup(&e.path));
+                                    e.dir_size = self.core.indexer.as_ref().and_then(|ix| ix.lookup(&e.path));
                                 }
                                 t.lookup = entries
                                     .iter()
@@ -80,18 +79,18 @@ impl Explorer {
                                 // A folder that needs administrator rights can be opened in an
                                 // elevated window.
                                 if fs::read_dir(&t.dir).is_err_and(|x| is_denied_io(&x)) {
-                                    self.admin_retry = Some((e.clone(), AdminRetry::OpenFolder(t.dir.clone())));
+                                    self.win.admin_retry = Some((e.clone(), AdminRetry::OpenFolder(t.dir.clone())));
                                 }
                                 t.error(e);
                             }
                         }
                         if visible_ids.contains(&t.id) {
-                            reindex = true;
+                            self.core.reindex_wanted = true;
                         }
                     }
                 }
                 AppMsg::Trash { tab, seq, result } => {
-                    if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                    if let Some(t) = self.win.tabs.iter_mut().find(|t| t.id == tab) {
                         if let Some(tr) = t.trash.as_mut() {
                             if tr.seq == seq {
                                 tr.loading = false;
@@ -103,7 +102,7 @@ impl Explorer {
                                         index_trash_dirs(tr);
                                         // Folder sizes: the old value from the index at once, with a
                                         // spinner; the scan (see `start_indexing`) refreshes it.
-                                        if let Some(ix) = self.indexer.as_ref() {
+                                        if let Some(ix) = self.core.indexer.as_ref() {
                                             for r in tr.rows.iter_mut().filter(|r| r.dir_path.is_some()) {
                                                 match r.dir_path.as_deref().and_then(|p| ix.lookup(p)) {
                                                     Some(old) => r.set_dir_size(old, true),
@@ -111,7 +110,7 @@ impl Explorer {
                                                 }
                                             }
                                             if visible_ids.contains(&t.id) {
-                                                reindex = true;
+                                                self.core.reindex_wanted = true;
                                             }
                                         }
                                         rebuild_trash_view(tr, &t.search);
@@ -129,93 +128,93 @@ impl Explorer {
                 }
                 AppMsg::Drives(mut d) => {
                     // A scan that started before network drives were switched off may still deliver them.
-                    if !self.settings.network_drives {
+                    if !self.core.settings.network_drives {
                         d.retain(|x| x.kind != DriveKind::Network);
                     }
                     #[cfg(windows)]
                     set_special_drives(d.iter().map(|x| x.mount_point.clone()));
-                    self.drives = d;
-                    self.drives_ready = true;
+                    self.core.drives = d;
+                    self.core.drives_ready = true;
                     if self.apply_quick_availability() {
                         self.resolve_quick_kinds();
                     }
                 }
                 AppMsg::Job(id, result) => {
-                    self.ops.retain(|o| o.id != id);
-                    let active = self.active;
+                    self.core.ops.retain(|o| o.id != id);
+                    let active = self.win.active;
                     if let Err(e) = result {
-                        match self.tabs[active].trash.as_mut() {
+                        match self.win.tabs[active].trash.as_mut() {
                             Some(tr) => tr.error = Some(e),
-                            None => self.tabs[active].error(e),
+                            None => self.win.tabs[active].error(e),
                         }
                     }
                     // Refresh every pane on screen: a paste may have landed in a neighbouring pane.
                     for ti in self.visible_tabs() {
-                        if self.tabs[ti].trash.is_some() {
+                        if self.win.tabs[ti].trash.is_some() {
                             self.load_trash(ti);
                         } else {
                             self.load_tab(ti);
                             // forces pump_search to rerun an active search (results may be stale)
-                            self.tabs[ti].search_query.clear();
+                            self.win.tabs[ti].search_query.clear();
                         }
                     }
                 }
                 AppMsg::NavResolved { tab, seq, requested, select, result } => {
-                    let Some(ti) = self.tabs.iter().position(|t| t.id == tab && t.nav_seq == seq) else { continue };
+                    let Some(ti) = self.win.tabs.iter().position(|t| t.id == tab && t.nav_seq == seq) else { return };
                     match result {
                         Ok(path) => self.finish_navigate(ti, path, select),
                         Err(e) => {
-                            self.tabs[ti].loading = false;
+                            self.win.tabs[ti].loading = false;
                             if e.denied {
-                                self.admin_retry = Some((e.msg.clone(), AdminRetry::OpenFolder(requested)));
+                                self.win.admin_retry = Some((e.msg.clone(), AdminRetry::OpenFolder(requested)));
                             }
-                            self.tabs[ti].error(e.msg);
+                            self.win.tabs[ti].error(e.msg);
                         }
                     }
                 }
                 AppMsg::OpenZip { tab, seq, path } => {
-                    if let Some(ti) = self.tabs.iter().position(|t| t.id == tab && t.nav_seq == seq) {
+                    if let Some(ti) = self.win.tabs.iter().position(|t| t.id == tab && t.nav_seq == seq) {
                         self.navigate(ti, path);
                     }
                 }
                 AppMsg::OpenFailed { tab, msg, retry } => {
-                    if let Some(ti) = self.tabs.iter().position(|t| t.id == tab) {
-                        self.tabs[ti].loading = false;
+                    if let Some(ti) = self.win.tabs.iter().position(|t| t.id == tab) {
+                        self.win.tabs[ti].loading = false;
                         if !msg.is_empty() {
                             if let Some(retry) = retry {
-                                self.admin_retry = Some((msg.clone(), retry));
+                                self.win.admin_retry = Some((msg.clone(), retry));
                             }
-                            self.tabs[ti].error(msg);
+                            self.win.tabs[ti].error(msg);
                         }
                     }
                 }
                 AppMsg::ArchiveReady { tab, zip, target, result } => {
-                    self.extracting.remove(&zip);
+                    self.core.extracting.remove(&zip);
                     self.job_finished();
-                    if let Some(ti) = self.tabs.iter().position(|t| t.id == tab) {
+                    if let Some(ti) = self.win.tabs.iter().position(|t| t.id == tab) {
                         match result {
                             Ok(()) => self.navigate(ti, target),
-                            Err(e) => self.tabs[ti].error(e),
+                            Err(e) => self.win.tabs[ti].error(e),
                         }
                     }
                 }
                 AppMsg::Made { op, tab, created, errors, rename, open } => {
-                    self.ops.retain(|o| o.id != op);
+                    self.core.ops.retain(|o| o.id != op);
                     // "Extract all" from inside an opened zip: show the result (the tab only shows a
                     // temporary unpacked copy, so refreshing it would tell the user nothing).
                     let inside_zip = self
-                        .tabs
+                        .win.tabs
                         .iter()
                         .position(|t| t.id == tab)
-                        .filter(|&ti| archive_of(&self.tabs[ti].dir).is_some());
+                        .filter(|&ti| archive_of(&self.win.tabs[ti].dir).is_some());
                     if let (Some(ti), Some(first)) = (inside_zip, created.first()) {
                         self.navigate(ti, first.clone());
                         if !errors.is_empty() {
-                            self.tabs[ti].error(errors.join("\n"));
+                            self.win.tabs[ti].error(errors.join("\n"));
                         }
-                        continue;
+                        return;
                     }
-                    if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                    if let Some(t) = self.win.tabs.iter_mut().find(|t| t.id == tab) {
                         if rename {
                             t.pending_rename = created.first().cloned();
                         } else if !created.is_empty() {
@@ -224,14 +223,14 @@ impl Explorer {
                         }
                     }
                     for ti in self.visible_tabs() {
-                        if self.tabs[ti].trash.is_none() {
+                        if self.win.tabs[ti].trash.is_none() {
                             self.load_tab(ti);
-                            self.tabs[ti].search_query.clear(); // rerun an active search
+                            self.win.tabs[ti].search_query.clear(); // rerun an active search
                         }
                     }
                     // (after load_tab, which clears the tab's error)
                     if !errors.is_empty() {
-                        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                        if let Some(t) = self.win.tabs.iter_mut().find(|t| t.id == tab) {
                             t.error(errors.join("\n"));
                         }
                     }
@@ -242,9 +241,9 @@ impl Explorer {
                 AppMsg::ExtractStaged { op, tab, plan, stagings, errors, open } => {
                     self.extract_staged(op, tab, plan, stagings, errors, open);
                 }
-                AppMsg::AdminOffer { msg, retry } => self.admin_retry = Some((msg, retry)),
+                AppMsg::AdminOffer { msg, retry } => self.win.admin_retry = Some((msg, retry)),
                 AppMsg::Stats(seq, stats) => {
-                    if let Some(p) = &mut self.props {
+                    if let Some(p) = &mut self.win.props {
                         if p.stats_gen == seq {
                             p.stats = Some(stats);
                         }
@@ -254,8 +253,8 @@ impl Explorer {
                 AppMsg::UpdateChecked { announce, result } => self.update_checked(announce, result),
                 AppMsg::ReleaseNotes(result) => {
                     // (ignored when the popup was closed while loading)
-                    if self.whats_new.is_some() {
-                        self.whats_new = Some(match result {
+                    if self.win.whats_new.is_some() {
+                        self.win.whats_new = Some(match result {
                             Ok((version, notes)) => WhatsNew::Ready { version, notes },
                             Err(e) => WhatsNew::Failed(e),
                         });
@@ -263,10 +262,10 @@ impl Explorer {
                 }
                 AppMsg::ShortcutTarget { tab, result } => self.shortcut_resolved(tab, result),
                 AppMsg::QuickKind { path, is_dir } => {
-                    self.probed_icons.remove(&path);
+                    self.core.probed_icons.remove(&path);
                     if let Some(d) = is_dir {
                         let mut changed = false;
-                        for q in &mut self.quick {
+                        for q in &mut self.core.quick {
                             if same_path(&q.path, &path) && q.is_dir != d {
                                 q.set_dir(d);
                                 changed = true;
@@ -278,20 +277,136 @@ impl Explorer {
                     }
                 }
             }
+    }
+
+    /// Hands a message to the window that owns its tab. A job that ended may have changed what other
+    /// windows show too, so they reload their panes as well.
+    fn route_msg(&mut self, msg: AppMsg) {
+        let everywhere = matches!(msg, AppMsg::Job(..) | AppMsg::Made { .. });
+        let owner = msg.tab().and_then(|t| self.tab_owner(t));
+        let i = owner.or_else(|| self.window_index(self.focus)).unwrap_or(0);
+        self.with_window(i, |ex| ex.handle_msg(msg));
+        if everywhere {
+            for j in (0..self.windows.len()).filter(|&j| j != i) {
+                self.with_window(j, |ex| ex.refresh_visible_tabs());
+            }
+        }
+    }
+
+    /// Reloads every pane on screen of the window (a paste may have landed in a neighbouring pane).
+    fn refresh_visible_tabs(&mut self) {
+        for ti in self.visible_tabs() {
+            if self.win.tabs[ti].trash.is_some() {
+                self.load_trash(ti);
+            } else {
+                self.load_tab(ti);
+                // forces pump_search to rerun an active search (results may be stale)
+                self.win.tabs[ti].search_query.clear();
+            }
+        }
+    }
+
+    /// Per-frame processing of everything background threads reported, for all windows: messages go to the
+    /// window that owns the tab, folder sizes to every tab that shows them, file changes to every window that
+    /// shows the folder. Runs once per frame, outside any window (`cur` is None).
+    pub(crate) fn pump_core(&mut self) {
+        while let Ok(msg) = self.core.msg_rx.try_recv() {
+            self.route_msg(msg);
+        }
+        let focus = self.window_index(self.focus).unwrap_or(0);
+        self.with_window(focus, |ex| ex.pump_staging());
+
+        let sizes: Vec<IndexMsg> = std::iter::from_fn(|| self.core.idx_rx.try_recv().ok()).collect();
+        let changed = self.core.watcher.as_ref().map(|w| w.take()).unwrap_or_default();
+        // The index forgets what changed once, however many windows show it.
+        for p in &changed {
+            let Some(ix) = &self.core.indexer else { break };
+            if p.as_os_str().is_empty() {
+                let dirs: Vec<PathBuf> = self.each_window().iter().map(|w| w.tabs[w.active].dir.clone()).collect();
+                dirs.iter().for_each(|d| ix.invalidate_tree(d));
+            } else if !p.starts_with(&self.core.index_dir) {
+                ix.invalidate(p);
+            }
+        }
+        for i in 0..self.windows.len() {
+            self.with_window(i, |ex| {
+                ex.pump_search();
+                ex.apply_index_msgs(&sizes);
+                ex.apply_changes(&changed);
+            });
         }
 
-        self.pump_staging();
+        // What other processes handed over: a tab dragged from one of their windows arrives as a new tab, a folder
+        // opened from outside (see `peers::forward_open`) as a window of its own.
+        for handover in self.core.peers.take_inbox() {
+            match handover {
+                Handover::Tab(dir) if dir.is_dir() => {
+                    let i = self.window_index(self.focus).unwrap_or(0);
+                    self.with_window(i, |ex| {
+                        ex.new_tab(Place::from_path(dir));
+                        ex.win.ui.send_viewport_cmd_to(ex.win.vid, egui::ViewportCommand::Focus);
+                    });
+                }
+                Handover::Window(dir) if dir.is_dir() => self.open_window(dir, None),
+                _ => {}
+            }
+        }
+        let mut reindex_force = false;
+        for i in 0..self.windows.len() {
+            self.with_window(i, |ex| {
+                if ex.win.list_debounce.ready(Duration::from_millis(250), Duration::from_millis(1500)) {
+                    ex.load_tab(ex.win.active);
+                }
+                // Long quiet period for sizes: a download writing to a folder must not trigger a rescan every few ms.
+                if ex.win.size_debounce.ready(Duration::from_millis(1500), Duration::from_secs(10)) {
+                    if ex.core.indexer.as_ref().is_some_and(|ix| ix.is_running()) {
+                        // Restarting now would cancel the running scan and, under constant file activity,
+                        // none would ever finish. Look again once it has had some time.
+                        ex.win.size_debounce.poke();
+                    } else {
+                        ex.core.reindex_wanted = true;
+                        reindex_force = true; // something below the folder changed: sizes really are stale
+                    }
+                }
+                if ex.win.list_debounce.pending() || ex.win.size_debounce.pending() {
+                    ex.win.ui.request_repaint_after(Duration::from_millis(250));
+                }
+            });
+        }
+        // The background threads poll on their own; they only need to know whether any window is in use.
+        let focused = self.each_window().iter().any(|w| self.ctx.input_for(w.vid, |i| i.focused));
+        self.core.drive_ctl.set_focused(focused);
+        if let Some(ix) = &self.core.indexer {
+            ix.set_focused(focused);
+        }
+        if self.core.indexer.as_ref().is_some_and(|ix| ix.is_dirty()) {
+            if self.core.last_save.elapsed() > Duration::from_secs(15) {
+                if let Some(ix) = &self.core.indexer {
+                    ix.save_if_dirty(false);
+                }
+                self.core.last_save = Instant::now();
+            } else {
+                self.ctx.request_repaint_after(Duration::from_secs(16));
+            }
+        }
+        if std::mem::take(&mut self.core.reindex_wanted) {
+            let force = reindex_force || std::mem::take(&mut self.core.reindex_force);
+            self.start_indexing(force);
+        }
+    }
 
-        while let Ok(msg) = self.idx_rx.try_recv() {
+    /// Folder sizes from the indexer, for the tabs of this window that show them.
+    fn apply_index_msgs(&mut self, msgs: &[IndexMsg]) {
+        for msg in msgs {
             // `Partial` is a running total of a scan that is still going; `Size` is the final value.
             let (path, size, partial) = match msg {
-                IndexMsg::Size(p, s) => (p, s, false),
-                IndexMsg::Partial(p, s) => (p, s, true),
+                IndexMsg::Size(p, s) => (p.clone(), *s, false),
+                IndexMsg::Partial(p, s) => (p.clone(), *s, true),
             };
             let Some(parent) = path.parent() else {
                 continue;
             };
-            for t in &mut self.tabs {
+            for t in &mut self.win.tabs {
                 // A trashed folder in the Recycle Bin view.
                 let mut in_trash = false;
                 if let Some(tr) = t.trash.as_mut() {
@@ -344,91 +459,37 @@ impl Explorer {
                 }
             }
         }
+    }
 
-        // Live updates from the file watcher.
-        let changed = self.watcher.as_ref().map(|w| w.take()).unwrap_or_default();
-        if !changed.is_empty() {
-            let dir = self.tabs[self.active].dir.clone();
-            for p in changed {
-                if p.as_os_str().is_empty() {
-                    // Too many changes to list: refresh everything, and forget the cached sizes
-                    // of this folder tree (a forced rescan would otherwise just reuse them).
-                    if let Some(ix) = &self.indexer { ix.invalidate_tree(&dir); }
-                    self.list_debounce.poke();
-                    self.size_debounce.poke();
-                    continue;
-                }
-                if p.starts_with(&self.index_dir) {
-                    continue; // our own cache file
-                }
-                if let Some(ix) = &self.indexer { ix.invalidate(&p); }
-                if p.parent() == Some(dir.as_path()) || p == dir {
-                    self.list_debounce.poke();
-                } else if p.starts_with(&dir) {
-                    self.size_debounce.poke();
-                }
+    /// Live updates from the file watcher: a change in the folder this window shows refreshes its listing,
+    /// a change deeper below it only its folder sizes.
+    fn apply_changes(&mut self, changed: &[PathBuf]) {
+        let dir = self.win.tabs[self.win.active].dir.clone();
+        for p in changed {
+            if p.as_os_str().is_empty() {
+                // Too many changes to list: refresh everything.
+                self.win.list_debounce.poke();
+                self.win.size_debounce.poke();
+                continue;
             }
-        }
-
-        // Folders other windows dragged over to us arrive as new tabs.
-        for dir in self.peers.take_inbox() {
-            if dir.is_dir() {
-                self.new_tab(Place::from_path(dir));
-                self.ui.send_viewport_cmd(egui::ViewportCommand::Focus);
+            if p.starts_with(&self.core.index_dir) {
+                continue; // our own cache file
             }
-        }
-        if self
-            .list_debounce
-            .ready(Duration::from_millis(250), Duration::from_millis(1500))
-        {
-            self.load_tab(self.active);
-        }
-        // Long quiet period for sizes: a download writing to a folder must not trigger a rescan every few ms.
-        if self
-            .size_debounce
-            .ready(Duration::from_millis(1500), Duration::from_secs(10))
-        {
-            if self.indexer.as_ref().is_some_and(|ix| ix.is_running()) {
-                // Restarting now would cancel the running scan and, under constant file activity,
-                // none would ever finish. Look again once it has had some time.
-                self.size_debounce.poke();
-            } else {
-                reindex = true;
-                reindex_force = true; // something below the folder changed: sizes really are stale
+            if p.parent() == Some(dir.as_path()) || *p == dir {
+                self.win.list_debounce.poke();
+            } else if p.starts_with(&dir) {
+                self.win.size_debounce.poke();
             }
-        }
-        if self.list_debounce.pending() || self.size_debounce.pending() {
-            self.ui.request_repaint_after(Duration::from_millis(250));
-        }
-        // The drive watcher thread polls on its own; it only needs to know whether the window is in use.
-        let focused = self.ui.input(|i| i.focused);
-        self.drive_ctl.set_focused(focused);
-        if let Some(ix) = &self.indexer {
-            ix.set_focused(focused);
-        }
-        if self.indexer.as_ref().is_some_and(|ix| ix.is_dirty()) {
-            if self.last_save.elapsed() > Duration::from_secs(15) {
-                if let Some(ix) = &self.indexer {
-                    ix.save_if_dirty(false);
-                }
-                self.last_save = Instant::now();
-            } else {
-                self.ui.request_repaint_after(Duration::from_secs(16));
-            }
-        }
-        if reindex {
-            let force = reindex_force || std::mem::take(&mut self.reindex_force);
-            self.start_indexing(force);
         }
     }
 
     // ------------------------------------------------------------------ system integration
 
-    pub(crate) fn sync_system(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
-        if self.last_poll.elapsed() > Duration::from_secs(2) && ctx.input(|i| i.focused) {
-            self.last_poll = Instant::now();
-            self.sys_accent = system_accent();
-            self.transparency = system_transparency();
+    pub(crate) fn sync_system(&mut self, ctx: &egui::Context, native: Option<&NativeWindow>) {
+        if self.core.last_poll.elapsed() > Duration::from_secs(2) && ctx.input(|i| i.focused) {
+            self.core.last_poll = Instant::now();
+            self.core.sys_accent = system_accent();
+            self.core.transparency = system_transparency();
         }
 
         let accent = self.get_accent();
@@ -438,52 +499,52 @@ impl Explorer {
         // This also happens when the accessibility scale in windows is changed,
         // which affects the pixels_per_point() return value.
         let ppp = ctx.pixels_per_point();
-        let font = self.settings.effective_font_size(self.text_scale);
-        self.m = Metrics::new(font, ppp, self.settings.compact);
-        if self.applied_style != Some((font, accent, self.settings.compact, ppp)) {
-            apply_style(ctx, &self.m, accent);
-            self.applied_style = Some((font, accent, self.settings.compact, ppp));
+        let font = self.core.settings.effective_font_size(self.win.text_scale);
+        self.win.m = Metrics::new(font, ppp, self.core.settings.compact);
+        if self.win.applied_style != Some((font, accent, self.core.settings.compact, ppp)) {
+            apply_style(ctx, &self.win.m, accent);
+            self.win.applied_style = Some((font, accent, self.core.settings.compact, ppp));
         }
 
         // Checks and changes the font size based on system accessibility settings if activated.
-        if self.text_scale_checked.elapsed() >= Duration::from_secs(1) {
-            self.text_scale_checked = Instant::now();
+        if self.win.text_scale_checked.elapsed() >= Duration::from_secs(1) {
+            self.win.text_scale_checked = Instant::now();
             let s = system_text_scale();
-            if (s - self.text_scale).abs() > f32::EPSILON {
-                self.text_scale = s;
+            if (s - self.win.text_scale).abs() > f32::EPSILON {
+                self.win.text_scale = s;
                 ctx.request_repaint();
             }
         }
 
         // Schedules restart for settings requiring it.
-        if std::mem::take(&mut self.require_restart) {
-            self.restart(ctx, frame);
+        if std::mem::take(&mut self.core.require_restart) {
+            self.reset_windows();
         }
 
         let theme = ctx.theme();
 
         // wanted_transparency is the transparency set by the user in the settings.
         // If transparency is disabled or None, wanted_transparency is None.
-        let wanted_transparency = (self.transparency
-            && self.settings.transparency_effect.or_supported() != TransparencyEffect::None)
-            .then(|| self.settings.transparency_effect.or_supported());
+        let wanted_transparency = (self.core.transparency
+            && self.core.settings.transparency_effect.or_supported() != TransparencyEffect::None)
+            .then(|| self.core.settings.transparency_effect.or_supported());
 
         // True if the theme was changed.
-        let changed_theme = std::mem::replace(&mut self.theme_choice, self.settings.theme) != self.settings.theme;
+        let changed_theme = std::mem::replace(&mut self.win.theme_choice, self.core.settings.theme) != self.core.settings.theme;
 
-        let changed_backdrop = self.backdrop_transparency != wanted_transparency;
-        self.backdrop_transparency = wanted_transparency;
-        self.pal = Palette::new(theme, accent, wanted_transparency.unwrap_or(TransparencyEffect::None));
+        let changed_backdrop = self.win.backdrop_transparency != wanted_transparency;
+        self.win.backdrop_transparency = wanted_transparency;
+        self.win.pal = Palette::new(theme, accent, wanted_transparency.unwrap_or(TransparencyEffect::None));
 
         // DWM can drop the effect while the window is still being set up, so it is applied again a few
         // times shortly after startup.
         const RETRY_AT_MS: [u64; 4] = [150, 600, 1500, 3000];
         let mut redo = changed_backdrop || changed_theme;
         if wanted_transparency.is_some() {
-            if let Some(&due) = RETRY_AT_MS.get(self.backdrop_retries) {
-                let elapsed = self.backdrop_start.elapsed().as_millis() as u64;
+            if let Some(&due) = RETRY_AT_MS.get(self.win.backdrop_retries) {
+                let elapsed = self.win.backdrop_start.elapsed().as_millis() as u64;
                 if elapsed >= due {
-                    self.backdrop_retries += 1;
+                    self.win.backdrop_retries += 1;
                     redo = true;
                 } else {
                     // egui is reactive: without this, no frame runs to hit the next deadline
@@ -493,38 +554,26 @@ impl Explorer {
         }
 
         if redo {
-            clear_window_transparency_effects(frame);
-            if let Some(effect) = wanted_transparency {
-                apply_backdrop(frame, self.pal.dark, effect);
-                nudge_frame(frame);
+            match native {
+                Some(native) => {
+                    clear_window_transparency_effects(native);
+                    if let Some(effect) = wanted_transparency {
+                        apply_backdrop(native, self.win.pal.dark, effect);
+                        nudge_frame(native);
+                    }
+                }
+                // The OS window is not known yet: forget what was applied, so the next frame tries again.
+                None => self.win.backdrop_transparency = None,
             }
             ctx.request_repaint();
         }
     }
 
-    /// Starts a fresh window at the same position with the current session, then exits.
-    fn restart(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
-        let pos = ctx.input(|i| i.viewport().outer_rect).map_or(egui::Pos2::ZERO, |r| r.min);
-        // Before spawning: the new window reads these files while starting.
-        self.settings.session = self.session_snapshot();
-        save_settings(&self.settings);
-        spawn_restart((pos.x, pos.y));
-        hide_window(frame);
-        self.peers.shutdown();
-        if let Some(ix) = &self.indexer {
-            ix.save_if_dirty(true);
-        }
-        self.stop_ops_for_exit();
-        remove_archive_cache();
-        finish_journal();
-        terminate_now();
-    }
-
     pub(crate) fn get_accent(&self) -> Accent {
-        if self.settings.use_system_accent {
-            self.sys_accent.unwrap_or_else(Accent::fallback)
+        if self.core.settings.use_system_accent {
+            self.core.sys_accent.unwrap_or_else(Accent::fallback)
         } else {
-            let [r, g, b] = self.settings.custom_accent;
+            let [r, g, b] = self.core.settings.custom_accent;
             Accent::from_base(Color32::from_rgb(r, g, b))
         }
     }

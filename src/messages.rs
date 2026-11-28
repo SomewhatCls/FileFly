@@ -157,3 +157,21 @@ pub(crate) struct NavError {
     /// Refused for lack of access rights: an administrator retry may work.
     pub(crate) denied: bool,
 }
+
+impl AppMsg {
+    /// The tab the message is about, when it is about one: the window that owns that tab handles it.
+    pub(crate) fn tab(&self) -> Option<u64> {
+        match self {
+            AppMsg::Listing { tab, .. }
+            | AppMsg::Trash { tab, .. }
+            | AppMsg::NavResolved { tab, .. }
+            | AppMsg::OpenZip { tab, .. }
+            | AppMsg::OpenFailed { tab, .. }
+            | AppMsg::ArchiveReady { tab, .. }
+            | AppMsg::Made { tab, .. }
+            | AppMsg::ExtractStaged { tab, .. }
+            | AppMsg::ShortcutTarget { tab, .. } => Some(*tab),
+            _ => None,
+        }
+    }
+}

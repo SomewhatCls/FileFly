@@ -268,7 +268,7 @@ fn props_content(
 impl Explorer {
     /// Opens the Properties window for `path` and starts counting what a folder contains.
     pub(crate) fn open_properties(&mut self, path: PathBuf) {
-        let id = self.props_gen.fetch_add(1, AO::SeqCst) + 1;
+        let id = self.core.props_gen.fetch_add(1, AO::SeqCst) + 1;
         let meta = read_props_meta(&path);
         let name = path
             .file_name()
@@ -288,20 +288,20 @@ impl Explorer {
         if props.meta.is_dir {
             props.stats_gen = self.spawn_folder_stats(&props.path);
         }
-        self.props = Some(props);
+        self.win.props = Some(props);
     }
 
     /// Counts the contents of `root` in the background. Returns the number that identifies the result; any
     /// later change of `props_gen` (closing the window, a newer count) cancels this one.
     fn spawn_folder_stats(&self, root: &Path) -> u64 {
-        let seq = self.props_gen.fetch_add(1, AO::SeqCst) + 1;
-        let (tx, ui, g) = (self.msg_tx.clone(), self.ui.clone(), Arc::clone(&self.props_gen));
+        let seq = self.core.props_gen.fetch_add(1, AO::SeqCst) + 1;
+        let (tx, ui, g) = (self.core.msg_tx.clone(), self.core.waker.clone(), Arc::clone(&self.core.props_gen));
         let root = root.to_path_buf();
         std::thread::spawn(move || {
             let stats = folder_stats(&root, &|| g.load(AO::Relaxed) != seq);
             if g.load(AO::Relaxed) == seq {
                 let _ = tx.send(AppMsg::Stats(seq, stats));
-                ui.request_repaint();
+                ui.wake();
             }
         });
         seq
@@ -309,7 +309,7 @@ impl Explorer {
 
     /// A refresh of the item on disk arrived. A folder whose modification time changed is counted again.
     pub(crate) fn props_meta_arrived(&mut self, id: u64, meta: PropsMeta) {
-        let Some(p) = self.props.as_mut().filter(|p| p.id == id) else { return };
+        let Some(p) = self.win.props.as_mut().filter(|p| p.id == id) else { return };
         p.refreshing = false;
         p.refreshed = Instant::now();
         let changed_inside = meta.is_dir && meta.exists && meta.modified != p.meta.modified;
@@ -317,40 +317,42 @@ impl Explorer {
         if changed_inside {
             let path = p.path.clone();
             let seq = self.spawn_folder_stats(&path);
-            if let Some(p) = self.props.as_mut() {
+            if let Some(p) = self.win.props.as_mut() {
                 p.stats_gen = seq;
             }
         }
     }
 
     pub(crate) fn ui_props(&mut self, ui: &mut Ui) {
-        let Some(mut p) = self.props.take() else {
-            forget_tool_window(ui.ctx(), "props");
+        // One Properties window per window: the key (viewport id) must differ between them.
+        let key = format!("props-{}", self.win.serial);
+        let Some(mut p) = self.win.props.take() else {
+            forget_tool_window(ui.ctx(), &key);
             return;
         };
-        let (m, pal) = (self.m, self.pal);
-        let fmt = self.settings.date_format;
+        let (m, pal) = (self.win.m, self.win.pal);
+        let fmt = self.core.settings.date_format;
 
         // Follow the item on disk: look again regularly, off the UI thread (a network drive can be slow).
         if !p.refreshing && p.refreshed.elapsed() >= REFRESH_EVERY {
             p.refreshing = true;
-            let (path, id, tx, ctx) = (p.path.clone(), p.id, self.msg_tx.clone(), self.ui.clone());
+            let (path, id, tx, ctx) = (p.path.clone(), p.id, self.core.msg_tx.clone(), self.core.waker.clone());
             std::thread::spawn(move || {
                 let _ = tx.send(AppMsg::PropsMeta { id, meta: read_props_meta(&path) });
-                ctx.request_repaint();
+                ctx.wake();
             });
         }
-        self.ui.request_repaint_after(REFRESH_EVERY / 3);
+        self.win.ui.request_repaint_after(REFRESH_EVERY / 3);
 
-        let cached = self.indexer.as_ref().and_then(|ix| ix.lookup(&p.path));
+        let cached = self.core.indexer.as_ref().and_then(|ix| ix.lookup(&p.path));
         let caption = format!("{} – Properties", truncate(&p.name, 40));
         let spec = ToolWindow {
-            key: "props",
+            key: &key,
             caption: &caption,
             width: m.accessibility_scale * 460.0,
             max_height: m.accessibility_scale * 760.0,
-            transparency: self.backdrop_transparency.unwrap_or(TransparencyEffect::None),
-            custom_frame: self.settings.custom_frame,
+            transparency: self.win.backdrop_transparency.unwrap_or(TransparencyEffect::None),
+            custom_frame: self.core.settings.custom_frame,
             hold_open: false,
         };
         let ctx = ui.ctx().clone();
@@ -376,10 +378,10 @@ impl Explorer {
             self.apply(Action::OpenContaining(p.path.clone()));
         }
         if close_requested {
-            self.props_gen.fetch_add(1, AO::SeqCst); // cancels a running count
-            forget_tool_window(&ctx, "props");
+            self.core.props_gen.fetch_add(1, AO::SeqCst); // cancels a running count
+            forget_tool_window(&ctx, &key);
         } else {
-            self.props = Some(p);
+            self.win.props = Some(p);
         }
     }
 

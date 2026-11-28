@@ -158,6 +158,11 @@ pub(crate) struct Settings {
     pub(crate) folder_icons: HashMap<String, String>,
     /// Open tabs and split layout from the last session.
     pub(crate) session: Session,
+    /// Set for a process started with `--open` (an elevated window, a folder opened from the shell): it neither
+    /// restores nor saves the session, as it would overwrite the main process's tabs with its single one.
+    /// Inside one process only the first window saves the session. Never written to disk.
+    #[serde(skip)]
+    pub(crate) session_readonly: bool,
     pub(crate) startup_update_check: bool,
     /// Reopen the tabs of the previous session on start.
     pub(crate) restore_tabs: bool,
@@ -192,6 +197,7 @@ impl Default for Settings {
             compact: false,
             blur_paning: true,
             session: Session::default(),
+            session_readonly: false,
             maximized: false,
             folder_icons: HashMap::new(),
             transparency_effect: TransparencyEffect::system_default(),
@@ -252,14 +258,10 @@ pub(crate) fn app_dir() -> PathBuf {
         .join("FileFly")
 }
 
-/// Set once this window has resized a column. Other FileFly windows are separate processes
-/// that all write settings.json when they close; a window that never touched the column
-/// widths must not overwrite what another window saved.
+/// Set once this process has resized a column. Other FileFly processes (elevated windows, `--open`) also
+/// write settings.json when they close; a process that never touched the column widths must not
+/// overwrite what another one saved.
 pub(crate) static COLS_TOUCHED: AtomicBool = AtomicBool::new(false);
-
-/// Windows started with `--open` (a tab dragged out) neither restore nor save the session:
-/// they would overwrite the main window's tabs with their single one.
-pub(crate) static SESSION_READONLY: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn load_settings() -> Settings {
     let mut s: Settings = fs::read_to_string(app_dir().join("settings.json"))
@@ -281,7 +283,7 @@ pub(crate) fn save_settings(s: &Settings) {
     if !COLS_TOUCHED.load(AtomicOrdering::Relaxed) {
         s.col_widths = load_settings().col_widths;
     }
-    if SESSION_READONLY.load(AtomicOrdering::Relaxed) {
+    if s.session_readonly {
         s.session = load_settings().session;
     }
     let s = &s;
