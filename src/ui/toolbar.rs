@@ -276,7 +276,7 @@ pub(crate) fn search_box(ui: &mut Ui, m: &Metrics, pal: &Palette, tab: &mut Tab,
         SearchScope::CurrentDir => format!("Search {}", tab.title()),
         SearchScope::System => "Search entire system".to_owned(),
     };
-    if search_pill(ui, m, pal, Id::unique("search_box"), &mut tab.search, hint, None, Some(&mut tab.chosen_search_scope), false, width) {
+    if search_pill(ui, m, pal, win_id("search_box"), &mut tab.search, hint, None, Some(&mut tab.chosen_search_scope), false, width) {
         tab.view_dirty = true; // text or scope changed: run the search again
     }
 }
@@ -488,9 +488,9 @@ pub(crate) fn static_address(ui: &mut Ui, m: &Metrics, pal: &Palette, width: f32
 impl Explorer {
     //ui_nav represents the navbar found below the tabs.
     pub(crate) fn ui_nav(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        let (m, pal) = (self.m, self.pal);
-        let nw = (((m.radius + 2) as f32) * (1.0 - self.first_anim)).round() as u8;
-        let tab = &mut self.tabs[self.active];
+        let (m, pal) = (self.win.m, self.win.pal);
+        let nw = (((m.radius + 2) as f32) * (1.0 - self.win.first_anim)).round() as u8;
+        let tab = &mut self.win.tabs[self.win.active];
         let (can_back, can_fwd, can_up) = (
             !tab.back.is_empty(),
             !tab.fwd.is_empty(),
@@ -530,11 +530,11 @@ impl Explorer {
 
     //ui_command is the bottom section of the navbar, where you can find quick commands and the settings button
     pub(crate) fn ui_command(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        let (m, pal) = (self.m, self.pal);
+        let (m, pal) = (self.win.m, self.win.pal);
         // Items that a running operation is working on can't be restored or deleted a second time:
         // only the others count as selected, and Empty needs the whole bin to be idle.
         let busy = self.trash_busy_ids();
-        let (in_trash, trash_sel, trash_any, sel_busy, bin_busy) = match &self.tabs[self.active].trash {
+        let (in_trash, trash_sel, trash_any, sel_busy, bin_busy) = match &self.win.tabs[self.win.active].trash {
             Some(t) => {
                 let selected: Vec<_> = t.selected.iter().filter_map(|&i| t.rows.get(i)).collect();
                 let free = selected.iter().filter(|r| !busy.contains(&r.item.id)).count();
@@ -548,18 +548,18 @@ impl Explorer {
             }
             None => (false, 0, false, false, false),
         };
-        let in_licenses = self.tabs[self.active].page == Some(Page::Licenses);
+        let in_licenses = self.win.tabs[self.win.active].page == Some(Page::Licenses);
         let can_paste = self.can_paste();
-        let selection = self.tabs[self.active].selected_paths();
-        let restoring = touches_locked(&self.locked_paths(), &selection);
+        let selection = self.win.tabs[self.win.active].selected_paths();
+        let restoring = touches_locked(&locked_paths(&self.core.ops), &selection);
         let (can_paste, hidden, settings_open) = (
             can_paste,
-            self.settings.show_hidden,
-            self.tabs[self.active].page == Some(Page::Settings),
+            self.core.settings.show_hidden,
+            self.win.tabs[self.win.active].page == Some(Page::Settings),
         );
         // The button stays unless it is turned off in the settings; its dot marks release notes not read yet.
-        let whats_new_visible = self.settings.show_whats_new;
-        let whats_new_unread = self.settings.whats_new_seen != env!("CARGO_PKG_VERSION");
+        let whats_new_visible = self.core.settings.show_whats_new;
+        let whats_new_unread = self.core.settings.whats_new_seen != env!("CARGO_PKG_VERSION");
         egui::Panel::top("command")
             .show_separator_line(false)
             .frame(layer_frame(
@@ -643,7 +643,7 @@ impl Explorer {
                         }
                         // Display git toolbar options if in a git repository.
                         let mut picked: Option<String> = None;
-                        if let Some(git) = &self.git {
+                        if let Some(git) = &self.core.git {
                             if let Some(snap) = &git.snapshot {
                                 let (full, current): (String, Option<&str>) = match &snap.head {
                                     Some(Head::Branch(n)) => (n.clone(), Some(n.as_str())),
@@ -693,19 +693,19 @@ impl Explorer {
                         }
                         // Outside the block due to borrowing logic, refreshes the folder contents after
                         // switching branches.
-                        if let Some(git) = &mut self.git {
+                        if let Some(git) = &mut self.core.git {
                             if let Some(name) = picked {
-                                git.git_async(ui.ctx(), GitCommand::Checkout { branch: name });
+                                git.git_async(GitCommand::Checkout { branch: name });
                             }
                             if std::mem::take(&mut git.switched) {
                                 actions.push(Action::Refresh);
                             }
 
-                            git.update(ui.ctx(), &*self.tabs[self.active].dir);
+                            git.update(&*self.win.tabs[self.win.active].dir);
 
                             // Push error out to the error display.
                             if let Some(err) = git.error.take() {
-                                self.tabs[self.active].git_error = Some(err);
+                                self.win.tabs[self.win.active].git_error = Some(err);
                             }
                         }
                     }

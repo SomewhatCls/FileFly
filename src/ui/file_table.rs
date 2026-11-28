@@ -179,7 +179,7 @@ fn pin_menu_item(
     actions: &mut Vec<Action>,
 ) {
     let pinned = ui
-        .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(Id::unique("pinned_paths")))
+        .data(|d| d.get_temp::<Arc<HashSet<PathBuf>>>(win_id("pinned_paths")))
         .is_some_and(|s| s.contains(target));
 
     if pinned {

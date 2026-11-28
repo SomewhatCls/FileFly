@@ -5,33 +5,33 @@ use std::io;
 
 impl Explorer {
     pub(crate) fn job_started(&mut self, label: &str) {
-        self.jobs_running += 1;
-        self.job_label = label.to_owned();
+        self.core.jobs_running += 1;
+        self.core.job_label = label.to_owned();
     }
 
     pub(crate) fn job_finished(&mut self) {
-        self.jobs_running = self.jobs_running.saturating_sub(1);
-        if self.jobs_running == 0 {
-            self.job_label.clear();
+        self.core.jobs_running = self.core.jobs_running.saturating_sub(1);
+        if self.core.jobs_running == 0 {
+            self.core.job_label.clear();
         }
     }
 
     /// Unpacks `zip` in the background; when done, tab `ti` opens `zip\rel` (see `AppMsg::ArchiveReady`).
     pub(crate) fn open_archive(&mut self, ti: usize, zip: PathBuf, rel: PathBuf) {
-        if !self.extracting.insert(zip.clone()) {
+        if !self.core.extracting.insert(zip.clone()) {
             return; // already being opened (double click on a big archive)
         }
         self.job_started("Opening archive…");
-        let tab = self.tabs[ti].id;
+        let tab = self.win.tabs[ti].id;
         let target = if rel.as_os_str().is_empty() { zip.clone() } else { zip.join(&rel) };
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        let (tx, ui) = (self.core.msg_tx.clone(), self.core.waker.clone());
         std::thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 mount_archive(&zip).map(|_| ()).map_err(|e| format!("Could not open the archive: {e}"))
             }))
             .unwrap_or_else(|_| Err("Could not open the archive: unexpected failure.".to_owned()));
             let _ = tx.send(AppMsg::ArchiveReady { tab, zip, target, result });
-            ui.request_repaint();
+            ui.wake();
         });
     }
 
@@ -49,7 +49,7 @@ impl Explorer {
         let mut name = base.unwrap_or_else(|| "Archive".into());
         name.push(".zip");
         let dest = unique_copy_name(&parent.join(name));
-        let tab = self.tabs[ti].id;
+        let tab = self.win.tabs[ti].id;
         let spec = OpSpec {
             title: "Compressing".to_owned(),
             from: parent.display().to_string(),
@@ -57,10 +57,10 @@ impl Explorer {
             cancelable: true,
         };
         let (op, progress) = self.begin_op(spec);
-        self.lock_op_paths(op, items.iter().cloned().chain([dest.clone()]));
+        lock_op_paths(&mut self.core.ops, op, items.iter().cloned().chain([dest.clone()]));
         progress.unpausable.store(true, std::sync::atomic::Ordering::Relaxed);
         progress.set_current(&file_name_lossy(&dest));
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        let (tx, ui) = (self.core.msg_tx.clone(), self.core.waker.clone());
         std::thread::spawn(move || {
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compress_items(&items, &dest, Some(&*progress))))
                 .unwrap_or_else(|_| Err(io::Error::other("unexpected failure")));
@@ -80,7 +80,7 @@ impl Explorer {
                 },
             };
             let _ = tx.send(msg);
-            ui.request_repaint();
+            ui.wake();
         });
     }
 
@@ -103,10 +103,10 @@ impl Explorer {
         if jobs.is_empty() {
             return;
         }
-        let tab = self.tabs[ti].id;
+        let tab = self.win.tabs[ti].id;
         let (op, progress) = self.begin_extract_op(&jobs);
-        self.lock_op_paths(op, jobs.iter().flat_map(|(zip, dest)| [zip.clone(), dest.clone()]));
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        lock_op_paths(&mut self.core.ops, op, jobs.iter().flat_map(|(zip, dest)| [zip.clone(), dest.clone()]));
+        let (tx, ui) = (self.core.msg_tx.clone(), self.core.waker.clone());
         std::thread::spawn(move || {
             let mut created = Vec::new();
             let mut errors = Vec::new();
@@ -125,7 +125,7 @@ impl Explorer {
                 }
             }
             let _ = tx.send(AppMsg::Made { op, tab, created, errors, rename: false, open: false });
-            ui.request_repaint();
+            ui.wake();
         });
     }
 
@@ -139,11 +139,11 @@ impl Explorer {
             return;
         }
         let open: Option<PathBuf> = if open { jobs.first().map(|(_, t)| t.clone()) } else { None };
-        let tab = self.tabs[ti].id;
+        let tab = self.win.tabs[ti].id;
         let (op, progress) = self.begin_extract_op(&jobs);
         // Only the archives: the target folder may be a big shared one, and what lands in it is not known yet.
-        self.lock_op_paths(op, jobs.iter().map(|(zip, _)| zip.clone()));
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        lock_op_paths(&mut self.core.ops, op, jobs.iter().map(|(zip, _)| zip.clone()));
+        let (tx, ui) = (self.core.msg_tx.clone(), self.core.waker.clone());
         std::thread::spawn(move || {
             let mut plan = PastePlan::default();
             let mut claimed: HashSet<PathBuf> = HashSet::new();
@@ -172,7 +172,7 @@ impl Explorer {
                 AppMsg::ExtractStaged { op, tab, plan, stagings, errors, open }
             };
             let _ = tx.send(msg);
-            ui.request_repaint();
+            ui.wake();
         });
     }
 
@@ -187,18 +187,18 @@ impl Explorer {
         errors: Vec<String>,
         open: Option<PathBuf>,
     ) {
-        self.ops.retain(|o| o.id != op);
-        self.extract_staging.extend(stagings);
+        self.core.ops.retain(|o| o.id != op);
+        self.core.extract_staging.extend(stagings);
         if !errors.is_empty() {
-            if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+            if let Some(t) = self.win.tabs.iter_mut().find(|t| t.id == tab) {
                 t.error(errors.join("\n"));
             }
         }
         if let Some(dir) = open {
             self.new_tab(Place::from_path(dir));
         }
-        if self.conflict.is_some() {
-            self.deferred_extracts.push(plan); // a question is already on screen: ask afterwards
+        if self.core.conflict.is_some() {
+            self.core.deferred_extracts.push(plan); // a question is already on screen: ask afterwards
         } else {
             self.start_staged_paste(plan);
         }
@@ -209,7 +209,7 @@ impl Explorer {
         if plan.todo.is_empty() {
             self.run_paste(plan.ready, true, plan.merged_dirs);
         } else {
-            self.conflict = Some(PendingPaste {
+            self.core.conflict = Some(PendingPaste {
                 cut: true,
                 ready: plan.ready,
                 todo: plan.todo,
@@ -223,18 +223,18 @@ impl Explorer {
     /// another question, and deletes finished staging folders. The latter waits until no question is
     /// open and no operation is running, so it can never pull files out from under a paste.
     pub(crate) fn pump_staging(&mut self) {
-        if self.conflict.is_none() && !self.deferred_extracts.is_empty() {
-            let plan = self.deferred_extracts.remove(0);
+        if self.core.conflict.is_none() && !self.core.deferred_extracts.is_empty() {
+            let plan = self.core.deferred_extracts.remove(0);
             self.start_staged_paste(plan);
         }
-        if self.extract_staging.is_empty()
-            || self.conflict.is_some()
-            || !self.ops.is_empty()
-            || !self.deferred_extracts.is_empty()
+        if self.core.extract_staging.is_empty()
+            || self.core.conflict.is_some()
+            || !self.core.ops.is_empty()
+            || !self.core.deferred_extracts.is_empty()
         {
             return;
         }
-        let dirs = std::mem::take(&mut self.extract_staging);
+        let dirs = std::mem::take(&mut self.core.extract_staging);
         std::thread::spawn(move || dirs.iter().for_each(|d| discard_staging(d)));
     }
 
@@ -244,10 +244,10 @@ impl Explorer {
     /// (`Made`, `ExtractStaged`: they carry the returned id, and the handler removes the entry).
     /// The worker updates the returned `OpProgress`.
     fn begin_op(&mut self, spec: OpSpec) -> (u64, Arc<OpProgress>) {
-        let id = self.next_op;
-        self.next_op += 1;
+        let id = self.core.next_op;
+        self.core.next_op += 1;
         let progress = Arc::new(OpProgress::default());
-        self.ops.push(ActiveOp::new(id, spec, progress.clone()));
+        self.core.ops.push(ActiveOp::new(id, spec, progress.clone()));
         (id, progress)
     }
 
@@ -273,14 +273,14 @@ impl Explorer {
         f: impl FnOnce(Arc<OpProgress>) -> Result<String, String> + Send + 'static,
     ) -> u64 {
         let (id, progress) = self.begin_op(spec);
-        let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+        let (tx, ui) = (self.core.msg_tx.clone(), self.core.waker.clone());
         std::thread::spawn(move || {
             // A panic in the job must still report back, otherwise the dialog stays forever.
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(progress))).unwrap_or_else(|_| {
                 Err("The operation failed unexpectedly (details in crash.log).".to_owned())
             });
             let _ = tx.send(AppMsg::Job(id, r));
-            ui.request_repaint();
+            ui.wake();
         });
         id
     }
@@ -288,7 +288,7 @@ impl Explorer {
     /// Before the process ends: cancels the running operations and gives them a moment to remove
     /// their half-written temp items (a crash or a slow cleanup is covered by the journal).
     pub(crate) fn stop_ops_for_exit(&self) {
-        for op in &self.ops {
+        for op in &self.core.ops {
             op.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         wait_for_temps(Duration::from_secs(3));

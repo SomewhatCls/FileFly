@@ -368,7 +368,7 @@ pub(crate) fn notice_bar(
         (pal.success, pal.success_bg)
     };
     // "Try as administrator" only makes sense for errors.
-    let admin_offer = is_err && ui.data(|d| d.get_temp::<u64>(Id::unique("admin_retry_tab"))) == Some(tab_id);
+    let admin_offer = is_err && ui.data(|d| d.get_temp::<u64>(win_id("admin_retry_tab"))) == Some(tab_id);
     let button: Option<(String, Action)> = if admin_offer {
         Some(("Try as administrator".to_owned(), Action::RetryAsAdmin))
     } else {

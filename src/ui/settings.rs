@@ -804,22 +804,22 @@ impl Explorer {
     /// Applies what the Settings tab changed this frame (it works on a copy of the settings).
     pub(crate) fn finish_settings_page(&mut self, ui: &mut Ui, sp: SettingsPage) {
         let SettingsPage { old, s, font_edit, rescan, choose, delete_index, reset_quick, default_request, show_licenses, check_update, download_update, .. } = sp;
-        self.font_edit = font_edit;
+        self.win.font_edit = font_edit;
         if show_licenses {
-            self.open_place(self.active ,Place::Page(Page::Licenses));
+            self.open_place(self.win.active ,Place::Page(Page::Licenses));
         }
         if s != old {
             // Only the fields the page edits: window geometry, columns and the session belong to the app.
-            self.settings.copy_page_fields_from(&s);
-            self.settings_dirty = true;
+            self.core.settings.copy_page_fields_from(&s);
+            self.core.settings_dirty = true;
             if s.theme != old.theme {
                 ui.set_theme(theme_pref(s.theme));
             }
             // For settings requiring restarts. Will be deprecated once logic is moved out of eframe.
             let restart_fields = |x: &Settings| (x.custom_frame, x.git_activated, x.blur_paning);
             if restart_fields(&s) != restart_fields(&old) {
-                (self.settings.custom_frame, self.settings.git_activated, self.settings.blur_paning) = restart_fields(&s);
-                self.require_restart = true;
+                (self.core.settings.custom_frame, self.core.settings.git_activated, self.core.settings.blur_paning) = restart_fields(&s);
+                self.core.require_restart = true;
             }
             if s.show_hidden != old.show_hidden || s.date_format != old.date_format {
                 self.reload_all();
@@ -831,32 +831,32 @@ impl Explorer {
                 self.set_folder_sizes(s.calculate_folder_sizes);
             }
         }
-        if self.settings_dirty && !ui.input(|i| i.pointer.any_down()) {
-            save_settings(&self.settings);
-            self.settings_dirty = false;
+        if self.core.settings_dirty && !ui.input(|i| i.pointer.any_down()) {
+            save_settings(&self.core.settings);
+            self.core.settings_dirty = false;
         }
         //Sets new default app with registry key, or reverts to default windows explorer.
         if let Some(on) = default_request {
             let result = if on { default_app::set_default() } else { default_app::restore_default() };
-            self.default_error = result.err().map(|e| e.to_string());
-            self.default_on = default_app::is_default();
+            self.core.default_error = result.err().map(|e| e.to_string());
+            self.core.default_on = default_app::is_default();
         }
         if reset_quick {
-            self.settings.quick_access = None;
+            self.core.settings.quick_access = None;
             self.rebuild_quick();
-            save_settings(&self.settings);
+            save_settings(&self.core.settings);
         }
         if rescan {
-            if let Some(ix) = &self.indexer {
+            if let Some(ix) = &self.core.indexer {
                 ix.clear();
             }
             self.start_indexing(true);
         }
         if delete_index {
-            if let Some(ix) = &self.indexer {
+            if let Some(ix) = &self.core.indexer {
                 ix.clear();
             }
-            for t in &mut self.tabs {
+            for t in &mut self.win.tabs {
                 for e in t.entries.iter_mut().filter(|e| e.is_dir) {
                     e.dir_size = None;
                 }
@@ -864,15 +864,15 @@ impl Explorer {
             self.start_indexing(true);
         }
         if choose {
-            if let Some(p) = rfd::FileDialog::new().set_directory(&self.index_dir).pick_folder() {
-                self.index_dir = p.clone();
-                self.settings.index_dir = Some(p.clone());
+            if let Some(p) = rfd::FileDialog::new().set_directory(&self.core.index_dir).pick_folder() {
+                self.core.index_dir = p.clone();
+                self.core.settings.index_dir = Some(p.clone());
                 // Without the indexer only the location is remembered; it is used when it is turned on.
-                if let Some(ix) = self.indexer.as_mut() {
+                if let Some(ix) = self.core.indexer.as_mut() {
                     ix.set_dir(&p);
                     self.start_indexing(true);
                 }
-                save_settings(&self.settings);
+                save_settings(&self.core.settings);
             }
         }
         if check_update {

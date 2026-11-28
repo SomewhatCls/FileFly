@@ -606,6 +606,87 @@ mod tests {
         fresh.scanned = (now_secs() + 5) as u32;
         s.put_many(vec![(key_of(&path(&root, 7)), fresh)]);
         assert!(s.get(&path(&root, 7)).is_some());
+        drop(s); // the open index file would keep Windows from deleting the folder
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Fills a store with `n` folders, closes it and returns its directory and the data file's path.
+    fn filled(name: &str, n: u64) -> (PathBuf, PathBuf) {
+        let dir = tmp(name);
+        let s = Store::open(&dir);
+        s.put_many((0..n).map(|i| (key_of(&path(Path::new("r"), i)), cf(i))).collect());
+        s.sync();
+        drop(s);
+        let file = dir.join(table::DB_FILE);
+        (dir, file)
+    }
+
+    /// A kill can tear a write: a slot with a bad CRC must count as empty and never yield a wrong size, and
+    /// the rest of the cache must stay usable.
+    #[test]
+    fn a_torn_slot_counts_as_empty_and_never_returns_wrong_data() {
+        let n = 3000;
+        let (dir, file) = filled("torn", n);
+        let mut bytes = fs::read(&file).unwrap();
+        let at = format::HEADER + 5; // inside the first slot's payload
+        bytes[at] ^= 0xFF;
+        fs::write(&file, &bytes).unwrap();
+        let s = Store::open(&dir);
+        let mut present = 0;
+        for i in 0..n {
+            if let Some(got) = s.get(&path(Path::new("r"), i)) {
+                assert_eq!(got.size, cf(i).size, "a surviving entry is never wrong");
+                present += 1;
+            }
+        }
+        assert!(present >= n * 9 / 10, "only the torn slot is lost ({present} of {n})");
+        drop(s);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A crash while the table is being resized leaves the "resizing" flag set (with a valid header CRC): the
+    /// next start must discard the file and begin with an empty, working cache. The same goes for a header
+    /// whose CRC is wrong.
+    #[test]
+    fn an_interrupted_resize_or_damaged_header_starts_over() {
+        for damage in ["resizing flag", "header crc"] {
+            let (dir, file) = filled("resize", 500);
+            let mut bytes = fs::read(&file).unwrap();
+            if damage == "resizing flag" {
+                bytes[13] = 1;
+                let crc = util::crc32(&bytes[12..format::HEADER]);
+                bytes[8..12].copy_from_slice(&crc.to_le_bytes());
+            } else {
+                bytes[8] ^= 0xFF;
+            }
+            fs::write(&file, &bytes).unwrap();
+            let s = Store::open(&dir);
+            assert_eq!(s.len(), 0, "{damage}: starts over empty");
+            assert!(s.get(&path(Path::new("r"), 1)).is_none());
+            s.put_many(vec![(key_of(&path(Path::new("r"), 1)), cf(1))]);
+            assert_eq!(s.get(&path(Path::new("r"), 1)).map(|c| c.size), Some(cf(1).size), "{damage}: usable again");
+            drop(s);
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// The index file has one writer: a second store opened on it while the first lives works in RAM only and
+    /// never changes the file.
+    #[test]
+    fn a_second_store_on_the_same_file_never_writes_it() {
+        let dir = tmp("single");
+        let first = Store::open(&dir);
+        first.put_many(vec![(key_of(&path(Path::new("r"), 1)), cf(1))]);
+        first.sync();
+        let second = Store::open(&dir);
+        second.put_many(vec![(key_of(&path(Path::new("r"), 2)), cf(2))]);
+        second.sync();
+        drop(second);
+        drop(first);
+        let reopened = Store::open(&dir);
+        assert!(reopened.get(&path(Path::new("r"), 1)).is_some());
+        assert!(reopened.get(&path(Path::new("r"), 2)).is_none(), "the second store's data never reached the file");
+        drop(reopened);
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -125,7 +125,7 @@ pub(crate) fn trash_table_ui(
     );
 
     let body_rect = ui.available_rect_before_wrap();
-    let body_resp = ui.interact(body_rect, Id::unique("trash_body"), Sense::click());
+    let body_resp = ui.interact(body_rect, win_id("trash_body"), Sense::click());
     if body_resp.clicked() {
         selected.clear();
     }
@@ -183,7 +183,7 @@ pub(crate) fn trash_table_ui(
             let band = rubber_band(
                 ui,
                 m,
-                Id::unique("trash_rubber"),
+                win_id("trash_rubber"),
                 content_top,
                 row_h,
                 view.len(),
@@ -191,7 +191,7 @@ pub(crate) fn trash_table_ui(
                 band_hit,
             );
             if let Some(u) = &band {
-                let base_id = Id::unique("trash_rubber_base");
+                let base_id = win_id("trash_rubber_base");
                 if u.started {
                     let base: Vec<usize> = if u.additive {
                         selected.iter().copied().collect()
@@ -400,11 +400,12 @@ mod tests {
         raw.events = events;
         let (mut origin, mut width) = (egui::Pos2::ZERO, 0.0);
         let mut actions = Vec::new();
-        let out = ctx.run_ui(raw, |ui| {
+        let mut out = ctx.run_ui(raw, |ui| {
             origin = ui.cursor().min;
             width = ui.available_width();
             trash_table_ui(ui, &m, &pal, tr, 1, notice, false, &HashSet::new(), &mut actions);
         });
+        out.textures_delta.clear(); // there is no renderer to upload them; egui panics when a frame's deltas are dropped
         Frame { text: painted_text(&out), origin, width }
     }
 

@@ -4,8 +4,8 @@ use crate::prelude::*;
 
 impl Explorer {
     pub(crate) fn apply(&mut self, action: Action) {
-        let ti = self.active;
-        if self.tabs[ti].special()
+        let ti = self.win.active;
+        if self.win.tabs[ti].special()
             && matches!(
                 action,
                 Action::NewFolder | Action::Paste | Action::Rename(_) | Action::CommitRename(..)
@@ -16,7 +16,7 @@ impl Explorer {
         // An opened zip is shown from a temporary unpacked copy, so changes made there would
         // silently vanish: it is read-only (copying out of it is fine).
         let touches_archive = match &action {
-            Action::NewFolder | Action::Paste => archive_of(&self.tabs[ti].dir).is_some(),
+            Action::NewFolder | Action::Paste => archive_of(&self.win.tabs[ti].dir).is_some(),
             Action::DropCopy(_, dest) => archive_of(dest).is_some(),
             Action::Cut(p) | Action::Delete(p) | Action::DeletePermanently(p) | Action::Compress(p) => {
                 p.iter().any(|x| archive_of(x).is_some())
@@ -25,8 +25,8 @@ impl Explorer {
             _ => false,
         };
         if touches_archive {
-            self.tabs[ti].rename = None;
-            self.tabs[ti].error(
+            self.win.tabs[ti].rename = None;
+            self.win.tabs[ti].error(
                 "A zip archive is read-only here. Extract it (right-click → Extract all) to change its contents."
                     .to_owned(),
             );
@@ -34,13 +34,13 @@ impl Explorer {
         }
         // Something that is being restored into place can't be changed until that is done.
         let into_restore = match &action {
-            Action::Cut(p) | Action::Delete(p) | Action::DeletePermanently(p) | Action::Compress(p) => touches_locked(&self.locked_paths(), p),
-            Action::Rename(p) | Action::CommitRename(p, _) => touches_locked(&self.locked_paths(), std::slice::from_ref(p)),
+            Action::Cut(p) | Action::Delete(p) | Action::DeletePermanently(p) | Action::Compress(p) => touches_locked(&locked_paths(&self.core.ops), p),
+            Action::Rename(p) | Action::CommitRename(p, _) => touches_locked(&locked_paths(&self.core.ops), std::slice::from_ref(p)),
             _ => false,
         };
         if into_restore {
-            self.tabs[ti].rename = None;
-            self.tabs[ti].error("Not available while items are being restored here.".to_owned());
+            self.win.tabs[ti].rename = None;
+            self.win.tabs[ti].error("Not available while items are being restored here.".to_owned());
             return;
         }
         // `Delete` and `DeletePermanently` share one code path; this must be read before the match moves `action`.
@@ -55,66 +55,70 @@ impl Explorer {
             }
             Action::OpenPage(page) => self.open_place(ti, Place::Page(page)), // settings button, bin entry
             Action::NewTabAt(p) => self.new_tab(Place::from_path(p)),
-            Action::Refresh => match self.tabs[ti].page {
+            Action::Refresh => match self.win.tabs[ti].page {
                 Some(Page::RecycleBin) => self.load_trash(ti),
                 Some(Page::Settings) => self.refresh_drives(),
                 Some(Page::Licenses) => {}
-                None => { self.reindex_force = true; self.load_tab(ti); }
+                None => { self.core.reindex_force = true; self.load_tab(ti); }
             },
             Action::NewTab => {
-                let home = dirs::home_dir().unwrap_or_else(|| self.tabs[ti].dir.clone());
+                let home = dirs::home_dir().unwrap_or_else(|| self.win.tabs[ti].dir.clone());
                 self.new_tab(Place::from_path(home));
             }
             Action::CloseTab(i) => {
-                if self.tabs.len() <= 1 {
-                    self.session_ended = true;
-                    self.settings.session = Session {
-                        tabs: Vec::new(),
-                        active: 0,
-                        tiles: None,
-                        sidebar_width: self.sidebar_width,
-                    };
-                    self.ui.send_viewport_cmd(egui::ViewportCommand::Close);
-                } else if i < self.tabs.len() {
-                    let closed_id = self.tabs[i].id;
-                    self.tabs.remove(i);
-                    if self.active >= self.tabs.len() {
-                        self.active = self.tabs.len() - 1;
-                    } else if i < self.active {
-                        self.active -= 1;
+                if self.win.tabs.len() <= 1 {
+                    // The last tab closes its window; only when that is the last window it also ends the
+                    // session (the next start opens the default folder instead of this tab).
+                    if self.windows.len() == 1 {
+                        self.win.session_ended = true;
+                        self.core.settings.session = Session {
+                            tabs: Vec::new(),
+                            active: 0,
+                            tiles: None,
+                            sidebar_width: self.win.sidebar_width,
+                        };
                     }
-                    if let Some(t) = self.tiles.take() {
-                        self.tiles = remove_leaf(t, closed_id);
+                    self.win.ui.send_viewport_cmd(egui::ViewportCommand::Close);
+                } else if i < self.win.tabs.len() {
+                    let closed_id = self.win.tabs[i].id;
+                    self.win.tabs.remove(i);
+                    if self.win.active >= self.win.tabs.len() {
+                        self.win.active = self.win.tabs.len() - 1;
+                    } else if i < self.win.active {
+                        self.win.active -= 1;
+                    }
+                    if let Some(t) = self.win.tiles.take() {
+                        self.win.tiles = remove_leaf(t, closed_id);
                     }
                     self.on_active_changed();
                     self.fix_tiles();
                 }
             }
             Action::ClosePane(id) => {
-                if let Some(t) = self.tiles.take() {
-                    self.tiles = remove_leaf(t, id);
+                if let Some(t) = self.win.tiles.take() {
+                    self.win.tiles = remove_leaf(t, id);
                 }
                 self.fix_tiles();
             }
             Action::NewWindow(dir, at) => {
                 let dir = dir
                     .or_else(|| dirs::home_dir())
-                    .unwrap_or_else(|| self.tabs[ti].dir.clone());
-                spawn_window(&dir, at);
+                    .unwrap_or_else(|| self.win.tabs[ti].dir.clone());
+                self.open_window(dir, at);
             }
             Action::OpenTerminal(dir) => {
                 if let Err(e) = open_terminal(&dir) {
-                    self.tabs[ti].error(format!("Could not open a terminal: {e}"));
+                    self.win.tabs[ti].error(format!("Could not open a terminal: {e}"));
                 }
             }
             Action::SwitchTab(i) => self.activate_tab(i),
             Action::StepTab(d) => {
-                let n = self.tabs.len() as i32;
-                let next = (self.active as i32 + d).rem_euclid(n) as usize;
+                let n = self.win.tabs.len() as i32;
+                let next = (self.win.active as i32 + d).rem_euclid(n) as usize;
                 self.activate_tab(next);
             }
             Action::Up => {
-                let tab = &self.tabs[ti];
+                let tab = &self.win.tabs[ti];
                 let parent = if tab.special() {
                     None // a page (Settings, Recycle Bin, …) has no parent folder
                 } else {
@@ -125,7 +129,7 @@ impl Explorer {
                 }
             }
             Action::Back => {
-                let tab = &mut self.tabs[ti];
+                let tab = &mut self.win.tabs[ti];
                 if let Some(p) = tab.back.pop() {
                     let cur = tab.place();
                     tab.fwd.push(cur);
@@ -133,7 +137,7 @@ impl Explorer {
                 }
             }
             Action::Forward => {
-                let tab = &mut self.tabs[ti];
+                let tab = &mut self.win.tabs[ti];
                 if let Some(p) = tab.fwd.pop() {
                     let cur = tab.place();
                     tab.back.push(cur);
@@ -141,7 +145,7 @@ impl Explorer {
                 }
             }
             Action::FocusAddress => {
-                let tab = &mut self.tabs[ti];
+                let tab = &mut self.win.tabs[ti];
                 // A page's address bar starts empty: its label is not a path.
                 tab.address = if tab.special() { String::new() } else { tab.shown_dir().display().to_string() };
                 tab.editing_addr = true;
@@ -149,8 +153,8 @@ impl Explorer {
             }
             Action::TypeAhead(s) => self.type_ahead(ti, &s),
             Action::FocusSearch => self
-                .ui
-                .memory_mut(|m| m.request_focus(Id::unique("search_box"))),
+                .win.ui
+                .memory_mut(|m| m.request_focus(win_id("search_box"))),
             Action::Open(p) => {
                 if trash_bin::SUPPORTED && Self::is_recycle_bin_dir(&p) {
                     self.open_place(ti, Place::Page(Page::RecycleBin));
@@ -166,7 +170,7 @@ impl Explorer {
                     // DO NOT USE THE SYSTEM CLIPBOARD ON NON-WINDOWS
                     #[cfg(windows)]
                     let _ = set_clipboard(&p, false);
-                    self.clipboard = Some((p, false));
+                    self.core.clipboard = Some((p, false));
                 }
             }
             Action::Cut(p) => {
@@ -174,7 +178,7 @@ impl Explorer {
                     // DO NOT USE THE SYSTEM CLIPBOARD ON NON-WINDOWS
                     #[cfg(windows)]
                     let _ = set_clipboard(&p, true);
-                    self.clipboard = Some((p, true));
+                    self.core.clipboard = Some((p, true));
                 }
             }
             Action::DropCopy(srcs, dest) => self.paste_into(dest, srcs, false),
@@ -184,11 +188,11 @@ impl Explorer {
                     .map(|x| x.display().to_string())
                     .collect::<Vec<_>>()
                     .join("\n");
-                self.ui.copy_text(text);
+                self.win.ui.copy_text(text);
             }
             Action::Paste => self.paste(),
             Action::Rename(p) => {
-                let tab = &mut self.tabs[ti];
+                let tab = &mut self.win.tabs[ti];
                 if let Some(i) = tab.index_of(&p) {
                     let (name, is_dir) = {
                         let e = &tab.source()[i];
@@ -204,9 +208,9 @@ impl Explorer {
                     tab.scroll_to = tab.view.iter().position(|&v| v == i);
                 }
             }
-            Action::CancelRename => self.tabs[ti].rename = None,
+            Action::CancelRename => self.win.tabs[ti].rename = None,
             Action::CommitRename(p, new_name) => {
-                self.tabs[ti].rename = None;
+                self.win.tabs[ti].rename = None;
                 let new_name = new_name.trim().to_owned();
                 let old_name = p
                     .file_name()
@@ -216,7 +220,7 @@ impl Explorer {
                     return;
                 }
                 if new_name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
-                    self.tabs[ti].error(
+                    self.win.tabs[ti].error(
                         "A name can't contain any of these characters: \\ / : * ? \" < > |",
                     );
                     return;
@@ -227,26 +231,26 @@ impl Explorer {
                 // (Changing only the letter case is the same file and stays allowed: the file system
                 // decides what "the same" is, not an ASCII-only comparison of the names.)
                 if fs::symlink_metadata(&dest).is_ok() && !is_same_entry(&p, &dest) {
-                    self.tabs[ti].error(format!("An item named “{new_name}” already exists here."));
+                    self.win.tabs[ti].error(format!("An item named “{new_name}” already exists here."));
                     return;
                 }
                 match fs::rename(&p, &dest) {
                     Ok(()) => {
-                        if let Some(ix) = &self.indexer { ix.invalidate(&p); }
-                        self.tabs[ti].select_only(dest);
+                        if let Some(ix) = &self.core.indexer { ix.invalidate(&p); }
+                        self.win.tabs[ti].select_only(dest);
                         self.load_tab(ti);
-                        self.tabs[ti].search_query.clear(); // rerun an active search
+                        self.win.tabs[ti].search_query.clear(); // rerun an active search
                     }
                     // Protected location (Program Files, ...): ask for administrator rights right
                     // away (UAC prompt) instead of just reporting the failure. When this window is
                     // already elevated, "denied" is a real refusal and is reported as usual.
                     Err(e) if is_denied_io(&e) && !is_elevated() => {
                         let op = AdminOp::Rename { from: p.clone(), to: dest.clone() };
-                        if let Some(ix) = &self.indexer { ix.invalidate(&p); }
-                        self.tabs[ti].select_only(dest);
+                        if let Some(ix) = &self.core.indexer { ix.invalidate(&p); }
+                        self.win.tabs[ti].select_only(dest);
                         self.run_job("Waiting for administrator approval…", move || run_elevated(&op));
                     }
-                    Err(e) => self.tabs[ti].error(format!("Could not rename item: {e}")),
+                    Err(e) => self.win.tabs[ti].error(format!("Could not rename item: {e}")),
                 }
             }
             Action::Delete(p) | Action::DeletePermanently(p) => {
@@ -257,9 +261,9 @@ impl Explorer {
                 // if the scan wasn't finished), or else the indexer's stored one; the Recycle Bin
                 // size in the sidebar starts from it. It is exact only if the indexer vouches for it.
                 // (Not for permanent deletion: those items never arrive in the bin.)
-                if let Some(ix) = self.indexer.as_ref().filter(|_| !permanent) {
+                if let Some(ix) = self.core.indexer.as_ref().filter(|_| !permanent) {
                     let sel: HashSet<&PathBuf> = p.iter().collect();
-                    let shown: HashMap<&PathBuf, u64> = self.tabs[ti]
+                    let shown: HashMap<&PathBuf, u64> = self.win.tabs[ti]
                         .entries
                         .iter()
                         .filter(|e| e.is_dir && sel.contains(&e.path))
@@ -272,7 +276,7 @@ impl Explorer {
                         }
                     }
                 }
-                let (tx, ui) = (self.msg_tx.clone(), self.ui.clone());
+                let (tx, ui) = (self.core.msg_tx.clone(), self.core.waker.clone());
                 let spec = OpSpec {
                     title: if permanent { "Deleting permanently" } else { "Moving to Recycle Bin" }.to_owned(),
                     from: p[0].parent().map(|d| d.display().to_string()).unwrap_or_default(),
@@ -408,7 +412,7 @@ impl Explorer {
                             (msg, AdminOp::DeleteMixed { bin: denied, permanent: denied_perm })
                         };
                         let _ = tx.send(AppMsg::AdminOffer { msg: msg.clone(), retry: AdminRetry::Op(op) });
-                        ui.request_repaint();
+                        ui.wake();
                         return Err(msg);
                     }
                     if failed > 0 {
@@ -416,23 +420,23 @@ impl Explorer {
                     }
                     Ok(String::new())
                 });
-                self.lock_op_paths(op, locked);
+                lock_op_paths(&mut self.core.ops, op, locked);
             }
             Action::RetryAsAdmin => {
-                let Some((_, retry)) = self.admin_retry.take() else { return };
-                self.tabs[ti].notice = None;
+                let Some((_, retry)) = self.win.admin_retry.take() else { return };
+                self.win.tabs[ti].notice = None;
                 match retry {
                     AdminRetry::Op(op) => {
                         self.run_job("Waiting for administrator approval…", move || run_elevated(&op))
                     }
                     AdminRetry::OpenFolder(p) => {
                         if let Err(e) = open_folder_elevated(&p) {
-                            self.tabs[ti].error(e);
+                            self.win.tabs[ti].error(e);
                         }
                     }
                     AdminRetry::RunFile(p) => {
                         if let Err(e) = run_file_elevated(&p) {
-                            self.tabs[ti].error(e);
+                            self.win.tabs[ti].error(e);
                         }
                     }
                 }
@@ -441,37 +445,37 @@ impl Explorer {
             Action::ResetFolderIcon(p) => self.set_folder_icon(&p, None),
             Action::RunAsAdmin(p) => {
                 if let Err(e) = run_file_elevated(&p) {
-                    self.tabs[ti].error(e);
+                    self.win.tabs[ti].error(e);
                 }
             }
             Action::OpenFolderAsAdmin(p) => {
                 if let Err(e) = open_folder_elevated(&p) {
-                    self.tabs[ti].error(e);
+                    self.win.tabs[ti].error(e);
                 }
             }
             Action::NewFolder => {
-                let target = unique_folder_name(&self.tabs[ti].dir.join("New folder"));
+                let target = unique_folder_name(&self.win.tabs[ti].dir.join("New folder"));
                 match fs::create_dir(&target) {
                     Ok(()) => {
-                        self.tabs[ti].pending_rename = Some(target);
+                        self.win.tabs[ti].pending_rename = Some(target);
                         self.load_tab(ti);
                     }
                     Err(e) => {
                         let msg = format!("Could not create folder: {e}");
                         if is_denied_io(&e) {
                             let op = AdminOp::NewFolder { path: target.clone() };
-                            self.admin_retry = Some((msg.clone(), AdminRetry::Op(op)));
+                            self.win.admin_retry = Some((msg.clone(), AdminRetry::Op(op)));
                         }
-                        self.tabs[ti].error(msg);
+                        self.win.tabs[ti].error(msg);
                     }
                 }
             }
             // Attempts to create empty, extensionless file.
             Action::NewFile => {
-                let target = unique_copy_name(&self.tabs[ti].dir.join("New File"));
+                let target = unique_copy_name(&self.win.tabs[ti].dir.join("New File"));
                 match File::create_new(&target) {
                     Ok(_) => {
-                        self.tabs[ti].pending_rename = Some(target);
+                        self.win.tabs[ti].pending_rename = Some(target);
                         self.load_tab(ti);
                     }
                     Err(e) => {
@@ -480,10 +484,10 @@ impl Explorer {
                         // Permission errors can be retried with elevated rights.
                         if is_denied_io(&e) {
                             let op = AdminOp::NewFile { path: target };
-                            self.admin_retry = Some((message.clone(), AdminRetry::Op(op)));
+                            self.win.admin_retry = Some((message.clone(), AdminRetry::Op(op)));
                         }
 
-                        self.tabs[ti].error(message);
+                        self.win.tabs[ti].error(message);
                     }
                 }
             }
@@ -499,22 +503,22 @@ impl Explorer {
             }
             Action::OpenShortcutLocation(p) => self.open_shortcut_location(ti, p),
             Action::PeaOpen(p) => {
-                if let Some(exe) = &self.peazip {
+                if let Some(exe) = &self.core.peazip {
                     if let Err(e) = open_with_peazip(exe, &p) {
-                        self.tabs[ti].error(format!("Could not start PeaZip: {e}"));
+                        self.win.tabs[ti].error(format!("Could not start PeaZip: {e}"));
                     }
                 }
             }
             Action::PeaAdd(p) => {
-                if let Some(exe) = &self.peazip {
+                if let Some(exe) = &self.core.peazip {
                     if let Err(e) = add_to_peazip(exe, &p) {
-                        self.tabs[ti].error(format!("Could not start PeaZip: {e}"));
+                        self.win.tabs[ti].error(format!("Could not start PeaZip: {e}"));
                     }
                 }
             }
             Action::ToggleHidden => {
-                self.settings.show_hidden = !self.settings.show_hidden;
-                self.settings_dirty = true;
+                self.core.settings.show_hidden = !self.core.settings.show_hidden;
+                self.core.settings_dirty = true;
                 self.reload_all();
             }
             Action::OpenWhatsNew => self.open_whats_new(),
@@ -533,7 +537,7 @@ impl Explorer {
                         if n == 1 { "" } else { "s" }
                     );
                     let guard = self.mark_trash_busy(&items);
-                    self.confirm = Some(ConfirmPurge { items, text, guard });
+                    self.win.confirm = Some(ConfirmPurge { items, text, guard });
                 }
             }
             Action::TrashEmpty => {
@@ -543,16 +547,16 @@ impl Explorer {
                     let n = items.len();
                     let text = format!("All {n} item{} in the Recycle Bin will be deleted permanently. This can't be undone.", if n == 1 { "" } else { "s" });
                     let guard = self.mark_trash_busy(&items);
-                    self.confirm = Some(ConfirmPurge { items, text, guard });
+                    self.win.confirm = Some(ConfirmPurge { items, text, guard });
                 }
             }
             Action::TrashSelectAll => {
-                if let Some(tr) = self.tabs[ti].trash.as_mut() {
+                if let Some(tr) = self.win.tabs[ti].trash.as_mut() {
                     tr.selected = tr.view.iter().copied().collect();
                 }
             }
             Action::SelectAll => {
-                let tab = &mut self.tabs[ti];
+                let tab = &mut self.win.tabs[ti];
                 if tab.trash.is_some() {
                     return;
                 }
@@ -567,7 +571,7 @@ impl Explorer {
                 tab.selected = all;
             }
             Action::MoveSelection(delta) => {
-                let tab = &mut self.tabs[ti];
+                let tab = &mut self.win.tabs[ti];
                 if let Some(tr) = tab.trash.as_mut() {
                     trash_move(tr, delta);
                     return;
@@ -589,7 +593,7 @@ impl Explorer {
                 tab.scroll_to = Some(next);
             }
             Action::SelectEdge(last) => {
-                let tab = &mut self.tabs[ti];
+                let tab = &mut self.win.tabs[ti];
                 if let Some(tr) = tab.trash.as_mut() {
                     trash_edge(tr, last);
                     return;

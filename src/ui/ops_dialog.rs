@@ -299,15 +299,15 @@ impl Explorer {
     /// One progress window for all running file operations (a separate OS window): every
     /// operation is a panel of its own, stacked top to bottom with its own bar and graph, like
     /// Explorer's copy dialog. A new operation adds a panel; a finished one removes its panel.
-    pub(crate) fn ui_ops(&mut self, ui: &mut Ui) {
-        if self.ops.is_empty() {
-            forget_tool_window(ui.ctx(), "file-ops");
+    pub(crate) fn ui_ops(&mut self, ctx: &egui::Context) {
+        if self.core.ops.is_empty() {
+            forget_tool_window(ctx, "file-ops");
             return;
         }
-        self.ui.request_repaint_after(Duration::from_millis(100));
-        let (m, pal) = (self.m, self.pal);
+        self.win.ui.request_repaint_after(Duration::from_millis(100));
+        let (m, pal) = (self.win.m, self.win.pal);
         let now = Instant::now();
-        let ctx = ui.ctx().clone();
+        let ctx = ctx.clone();
         let width = m.accessibility_scale * 440.0;
 
         // Operations that currently get a panel (hidden ones keep running without one, and very
@@ -321,7 +321,7 @@ impl Explorer {
         let mut animating = false; // a bar of unknown length is on screen
         let mut first_title = String::new();
         let mut any_cancelable = false;
-        for op in self.ops.iter_mut().filter(|o| is_shown(o)) {
+        for op in self.core.ops.iter_mut().filter(|o| is_shown(o)) {
             op.sample(now);
             if shown == 0 {
                 first_title = op.title.clone();
@@ -337,7 +337,7 @@ impl Explorer {
         // The window is drawn as part of this frame, so the 100 ms above would make the animation
         // run at 10 fps. While it is on screen it gets a frame per refresh instead.
         if animating {
-            self.ui.request_repaint_after(Duration::from_millis(16));
+            self.win.ui.request_repaint_after(Duration::from_millis(16));
         }
 
         let title = if shown == 1 { first_title } else { format!("{shown} operations") };
@@ -346,8 +346,8 @@ impl Explorer {
             caption: &title,
             width,
             max_height: m.accessibility_scale * 640.0,
-            transparency: self.backdrop_transparency.unwrap_or(TransparencyEffect::None),
-            custom_frame: self.settings.custom_frame,
+            transparency: self.win.backdrop_transparency.unwrap_or(TransparencyEffect::None),
+            custom_frame: self.core.settings.custom_frame,
             // The window's own close button / Alt+F4 cancels every cancelable operation in it (the window
             // then stays until they have really stopped); without any, it just hides them.
             hold_open: any_cancelable,
@@ -356,7 +356,7 @@ impl Explorer {
         let close_requested = tool_window(&ctx, &m, &pal, &spec, |ui| {
             ui.add_space(m.pad * 0.5);
             let mut first = true;
-            for (i, op) in self.ops.iter_mut().enumerate() {
+            for (i, op) in self.core.ops.iter_mut().enumerate() {
                 if !is_shown(op) {
                     continue;
                 }
@@ -372,7 +372,7 @@ impl Explorer {
         });
 
         for (i, r) in results {
-            let op = &mut self.ops[i];
+            let op = &mut self.core.ops[i];
             if r.more {
                 op.expanded = !op.expanded;
             }

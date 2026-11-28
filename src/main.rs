@@ -3,7 +3,8 @@
 //! FileFly - a tabbed, tiling file explorer built with the egui framework.
 //!
 //! Layout of the source tree:
-//!   app/          the `Explorer` state, navigation, jobs, clipboard, actions, frame loop
+//!   app/          the `Explorer` (shared `Core` + one `Window` per OS window), navigation, jobs, clipboard,
+//!                 actions, and the host frame that shows all windows (`windows.rs`)
 //!   ui/           all drawing code (title bar, sidebar, toolbar, file table, dialogs, settings, ...)
 //!   data/         plain data: listing entries, tabs, the tiling tree, Recycle Bin state
 //!   ops/          file-operation progress and the paste workers
@@ -33,6 +34,7 @@ mod ui;
 mod git;
 mod backdrop_blur;
 mod update;
+mod waker;
 mod lnk_resolver;
 mod recycle_check;
 

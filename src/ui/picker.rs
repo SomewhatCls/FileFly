@@ -671,12 +671,12 @@ impl Explorer {
         // A zip inside an opened zip lives in the temporary cache: start next to the outer zip.
         let start = folder_outside(parent);
         let purpose = PickFor::Extract { zips, show: true };
-        self.picker = Some(FolderPicker::new(
+        self.win.picker = Some(FolderPicker::new(
             purpose,
-            self.tabs[ti].id,
+            self.win.tabs[ti].id,
             start,
-            &self.settings,
-            &self.ui,
+            &self.core.settings,
+            &self.win.ui,
         ));
     }
 
@@ -687,34 +687,34 @@ impl Explorer {
             .and_then(|i| i.parent().map(Path::to_path_buf))
             .filter(|d| d.is_dir())
             .unwrap_or_else(|| folder.clone());
-        self.picker = Some(FolderPicker::new(
+        self.win.picker = Some(FolderPicker::new(
             PickFor::Icon { folder },
-            self.tabs[ti].id,
+            self.win.tabs[ti].id,
             start,
-            &self.settings,
-            &self.ui,
+            &self.core.settings,
+            &self.win.ui,
         ));
     }
 
     /// Gives `folder` the icon `icon` (an `.ico` file), or the normal one for `None`.
     pub(crate) fn set_folder_icon(&mut self, folder: &Path, icon: Option<PathBuf>) {
-        self.settings.folder_icons.retain(|k, _| !same_path(Path::new(k), folder));
+        self.core.settings.folder_icons.retain(|k, _| !same_path(Path::new(k), folder));
         if let Some(i) = icon {
-            self.settings
+            self.core.settings
                 .folder_icons
                 .insert(folder.to_string_lossy().into_owned(), i.to_string_lossy().into_owned());
         }
-        save_settings(&self.settings);
+        save_settings(&self.core.settings);
         self.sync_special_icons(); // re-keys the listings on screen
     }
 
     pub(crate) fn ui_picker(&mut self, ui: &mut Ui) {
-        let Some(mut p) = self.picker.take() else { return };
+        let Some(mut p) = self.win.picker.take() else { return };
         p.poll();
-        let (m, pal) = (self.m, self.pal);
-        let transparency = self.backdrop_transparency;
+        let (m, pal) = (self.win.m, self.win.pal);
+        let transparency = self.win.backdrop_transparency;
         let ctx = ui.ctx().clone();
-        let (quick, drives) = (&self.quick, &self.drives);
+        let (quick, drives) = (&self.core.quick, &self.core.drives);
         let mut input = PickerInput::default();
         let icon_mode = p.wants_files();
 
@@ -741,7 +741,7 @@ impl Explorer {
             .with_min_inner_size([m.accessibility_scale * 560.0, m.accessibility_scale * 420.0])
             .with_resizable(true)
             .with_maximize_button(false)
-            .with_decorations(!self.use_custom_window_frame)
+            .with_decorations(!self.win.use_custom_window_frame)
             .with_transparent(true);
         if let Some(pos) = p.win_pos {
             builder = builder.with_position(pos);
@@ -752,24 +752,22 @@ impl Explorer {
         let instance = p.instance;
         let vid = egui::ViewportId::from_hash_of(("folder-picker", instance));
 
-        ctx.show_viewport_immediate(vid, builder, |ui, _class| {
+        show_viewport(&ctx, vid, builder, |ui, _class| {
             // Whether a text box had the keyboard when the frame began (a field that loses focus
             // to Enter / Esc during this frame must not also trigger the shortcuts below).
             let typing = ui.egui_wants_keyboard_input();
-            // Same backdrop as the main window (retried until the native window exists, redone
-            // when the theme changes).
+            // Same backdrop as the main window (applied once the native window exists, redone when the
+            // theme changes or the OS window is replaced).
             let key = Id::unique(("folder-picker-backdrop", instance));
-            let want = (pal.dark, transparency.expect("A transparency effect should always be set"));
-            if ui.ctx().data(|d| d.get_temp::<(bool, TransparencyEffect)>(key)) != Some(want)
-                && backdrop_by_title(&win_title, pal.dark, want.1)
-            {
-                ui.ctx().data_mut(|d| d.insert_temp(key, want));
+            // No effect is set while transparency is off (or the owner's OS window is not known yet).
+            if let Some(effect) = transparency {
+                ensure_backdrop(ui.ctx(), key, &win_title, pal.dark, effect);
             }
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 input.cancel = true;
             }
             // Undecorated windows have no native resize border: same edge handling as the main window.
-            if self.use_custom_window_frame {
+            if self.win.use_custom_window_frame {
                 handle_resize(ui.ctx(), &m);
             }
 
@@ -783,7 +781,7 @@ impl Explorer {
                     let caption_w = m.accessibility_scale * 46.0 * 2.0;
                     let drag = ui.interact(
                         Rect::from_min_max(full.min, pos2(full.right() - caption_w, full.bottom())),
-                        Id::unique("pk_drag"),
+                        win_id("pk_drag"),
                         Sense::click_and_drag(),
                     );
                     if drag.drag_started_by(egui::PointerButton::Primary) {
@@ -796,7 +794,7 @@ impl Explorer {
                         FontId::proportional(m.font * 0.95),
                         pal.text,
                     );
-                    if self.use_custom_window_frame {
+                    if self.win.use_custom_window_frame {
                         caption_buttons(ui, &m, &pal, false, false);
                     }
                 });
@@ -805,7 +803,7 @@ impl Explorer {
             egui::Panel::left("pk_side")
                 .resizable(true)
                 .default_size(
-                    self.sidebar_width
+                    self.win.sidebar_width
                         .unwrap_or(m.accessibility_scale * 200.0)
                 )
                 .size_range(
@@ -871,7 +869,7 @@ impl Explorer {
                         ui.add_space(m.pad * 0.5);
                         let (addr_w, search_w) = nav_widths(ui, &m, 240.0);
                         let state = AddrState { text: &mut p.address, editing: &mut p.editing_addr, focus: &mut p.addr_focus };
-                        match breadcrumb_bar(ui, &m, &pal, Id::unique("pk_addr_edit"), &p.dir, state, addr_w) {
+                        match breadcrumb_bar(ui, &m, &pal, win_id("pk_addr_edit"), &p.dir, state, addr_w) {
                             Some(AddrEvent::Go(path)) => input.go = Some(path),
                             Some(AddrEvent::Submit(text)) => input.go = Some(PathBuf::from(expand_env(text.trim()))),
                             Some(AddrEvent::Cancelled) => {
@@ -887,7 +885,7 @@ impl Explorer {
                             .unwrap_or_else(|| p.dir.display().to_string());
                         let hint = format!("Search {}", truncate(&folder, 18));
                         let tip = Some("Search this folder (Ctrl+F)");
-                        if search_pill(ui, &m, &pal, Id::unique("pk_search"), &mut p.search, hint, tip, None, true, search_w) {
+                        if search_pill(ui, &m, &pal, win_id("pk_search"), &mut p.search, hint, tip, None, true, search_w) {
                             p.start_search(ui.ctx());
                         }
                     });
@@ -959,7 +957,7 @@ impl Explorer {
             egui::CentralPanel::default()
                 .frame(layer_frame(&pal, 0, m.pad, m.pad, m.pad * 0.4, m.pad * 0.4, false))
                 .show(ui, |ui| {
-                    folder_list(ui, &m, &pal, &mut p, &mut input, self.indexer.is_some());
+                    folder_list(ui, &m, &pal, &mut p, &mut input, self.core.indexer.is_some());
                 });
 
             // ---- keyboard: the explorer's shortcuts (see `shortcuts.rs`), for this window's own input
@@ -1048,7 +1046,7 @@ impl Explorer {
                 ui.ctx().request_repaint();
             }
             if focus_search {
-                ui.ctx().memory_mut(|mem| mem.request_focus(Id::unique("pk_search")));
+                ui.ctx().memory_mut(|mem| mem.request_focus(win_id("pk_search")));
             }
 
             // Draws chrome layer depending on desktop environment
@@ -1059,11 +1057,11 @@ impl Explorer {
                 _ => 15.0,
             };
 
-            if self.pal.transparency != TransparencyEffect::None {
-                ui.painter().rect_filled(ui.ctx().content_rect(), corner_radius, self.pal.chrome);
+            if self.win.pal.transparency != TransparencyEffect::None {
+                ui.painter().rect_filled(ui.ctx().content_rect(), corner_radius, self.win.pal.chrome);
             } else {
                 ui.painter().rect_filled(ui.ctx().content_rect(),
-                                         if !Self::is_maximized(ui.ctx()){corner_radius}else{0.0}, self.pal.layer);
+                                         if !Self::is_maximized(ui.ctx()){corner_radius}else{0.0}, self.win.pal.layer);
             }
         });
 
@@ -1082,17 +1080,17 @@ impl Explorer {
             input.refresh = true;
         }
         if input.back {
-            p.go_back(&self.ui);
+            p.go_back(&self.win.ui);
         } else if input.forward {
-            p.go_forward(&self.ui);
+            p.go_forward(&self.win.ui);
         } else if let Some(dir) = input.go {
-            p.go(dir, &self.ui);
+            p.go(dir, &self.win.ui);
         } else if input.refresh {
             let (dir, search) = (p.dir.clone(), p.search.clone());
-            p.show(dir, &self.ui);
+            p.show(dir, &self.win.ui);
             if !search.trim().is_empty() {
                 p.search = search;
-                p.start_search(&self.ui);
+                p.start_search(&self.win.ui);
             }
         } else if input.new_folder {
             p.finish_rename(true);
@@ -1107,11 +1105,11 @@ impl Explorer {
                 return;
             }
         }
-        self.picker = Some(p);
+        self.win.picker = Some(p);
     }
 
     fn accept_picker(&mut self, p: FolderPicker) {
-        let ti = self.tabs.iter().position(|t| t.id == p.tab).unwrap_or(self.active);
+        let ti = self.win.tabs.iter().position(|t| t.id == p.tab).unwrap_or(self.win.active);
         let target = p.target().to_path_buf();
         let chosen = p.selected().cloned();
         match p.purpose {

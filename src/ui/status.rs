@@ -6,8 +6,8 @@ impl Explorer {
     //The bottom status bar, showing the number of items in the current view and potentially
     //a loading symbol.
     pub(crate) fn ui_status(&mut self, ui: &mut Ui) {
-        let (m, pal) = (self.m, self.pal);
-        let tab = &self.tabs[self.active];
+        let (m, pal) = (self.win.m, self.win.pal);
+        let tab = &self.win.tabs[self.win.active];
         let mut text = format!(
             "{} item{}",
             tab.view.len(),
@@ -52,13 +52,13 @@ impl Explorer {
         // while the user has hidden any of those dialogs. Clicking it opens the dialog again (or, with
         // several operations running, a list to choose from).
         let ops: Vec<(u64, String, String)> =
-            self.ops.iter().filter(|o| o.hidden).map(|o| (o.id, o.title.clone(), crate::ui::ops_dialog::op_target(o))).collect();
+            self.core.ops.iter().filter(|o| o.hidden && self.is_focus_window()).map(|o| (o.id, o.title.clone(), crate::ui::ops_dialog::op_target(o))).collect();
         // The longest an item name gets before it is cut off with "…".
         let name_limit = m.accessibility_scale * 160.0;
-        let busy = self.jobs_running > 0 || tab.loading || tab.trash.as_ref().is_some_and(|t| t.loading);
-        let job = self.job_label.clone();
+        let busy = self.core.jobs_running > 0 || tab.loading || tab.trash.as_ref().is_some_and(|t| t.loading);
+        let job = self.core.job_label.clone();
         let mut reopen: Vec<u64> = Vec::new();
-        let clip = self.clipboard.as_ref().map(|(p, cut)| {
+        let clip = self.core.clipboard.as_ref().map(|(p, cut)| {
             let what = if p.len() == 1 {
                 p[0].file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -84,7 +84,7 @@ impl Explorer {
                     nw: 0,
                     ne: 0,
                     sw: 0,
-                    se: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()) && self.settings.custom_frame {15}else{0},
+                    se: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()) && self.core.settings.custom_frame {15}else{0},
                 }),
             )
             .show(ui, |ui| {
@@ -128,7 +128,7 @@ impl Explorer {
                             .response;
                         let full = if target.is_empty() { title.clone() } else { format!("{title}: {target}") };
                         let click = ui
-                            .interact(entry.rect, Id::unique("status_ops"), Sense::click())
+                            .interact(entry.rect, win_id("status_ops"), Sense::click())
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .on_hover_text(full);
                         if click.clicked() {
@@ -172,16 +172,16 @@ impl Explorer {
                         }
                         // Avoid special tabs from displaying old status because dir change doesn't fire here.
                         // Consider a more elegant solution.
-                        if is_archive_path(&*self.tabs[self.active].dir) &&
-                            self.tabs[self.active].trash.is_none() &&
-                            self.tabs[self.active].page.is_none() {
+                        if is_archive_path(&*self.win.tabs[self.win.active].dir) &&
+                            self.win.tabs[self.win.active].trash.is_none() &&
+                            self.win.tabs[self.win.active].page.is_none() {
                             status_pill(ui, &m, pal.control_hover, pal.text_secondary,"Read-only");
                         }
                     });
                 });
             });
         for id in reopen {
-            if let Some(op) = self.ops.iter_mut().find(|o| o.id == id) {
+            if let Some(op) = self.core.ops.iter_mut().find(|o| o.id == id) {
                 op.hidden = false;
             }
         }

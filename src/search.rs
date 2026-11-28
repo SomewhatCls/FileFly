@@ -58,7 +58,7 @@ impl Drop for SearchJob {
 }
 
 //Executes recursive search, called when search field input changes
-pub(crate) fn start_search(roots: Vec<PathBuf>, query: String, show_hidden: bool, fmt: DateFormat, ui: egui::Context, ) -> SearchJob {
+pub(crate) fn start_search(roots: Vec<PathBuf>, query: String, show_hidden: bool, fmt: DateFormat, ui: Waker) -> SearchJob {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let c = cancel.clone();
@@ -120,7 +120,7 @@ pub(crate) fn start_search(roots: Vec<PathBuf>, query: String, show_hidden: bool
                     if tx.send(std::mem::take(&mut batch)).is_err() {
                         return;
                     }
-                    ui.request_repaint();
+                    ui.wake();
                     last_flush = Instant::now();
                     if sent >= max_results {
                         break; // fall through so the channel is closed and `done` gets set
@@ -135,14 +135,14 @@ pub(crate) fn start_search(roots: Vec<PathBuf>, query: String, show_hidden: bool
             let _ = tx.send(batch);
         }
         drop(tx); // disconnect first, so the repaint below sees `done`
-        ui.request_repaint();
+        ui.wake();
     });
 
     SearchJob { rx, cancel, done: false }
 }
 
 //Restarts search when input in Search field changes.
-pub(crate) fn on_search_changed(tab: &mut Tab, show_hidden: bool, fmt: DateFormat, ctx: &egui::Context) {
+pub(crate) fn on_search_changed(tab: &mut Tab, show_hidden: bool, fmt: DateFormat, waker: &Waker) {
     tab.search_job = None; // dropping the old job cancels its walk
     tab.search_results.clear();
     tab.search_lookup.clear();
@@ -153,7 +153,7 @@ pub(crate) fn on_search_changed(tab: &mut Tab, show_hidden: bool, fmt: DateForma
         } else {
             vec![tab.dir.clone()]
         };
-        tab.search_job = Some(start_search(roots, tab.search_query.clone(), show_hidden, fmt, ctx.clone()));
+        tab.search_job = Some(start_search(roots, tab.search_query.clone(), show_hidden, fmt, waker.clone()));
 
     }
     tab.view_dirty = true;

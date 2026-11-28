@@ -8,7 +8,7 @@ use super::{
     scan::{scan_many, RootSpec},
     store::{self, Cache, Store},
 };
-use eframe::egui;
+use crate::waker::Waker;
 use std::{
     collections::HashSet,
     fs,
@@ -67,7 +67,7 @@ pub struct Indexer {
     focused: Arc<AtomicBool>,
     live: Arc<AtomicUsize>,
     tx: Sender<IndexMsg>,
-    ctx: egui::Context,
+    waker: Waker,
     /// Recently changed files (exact sizes, see `hot.rs`).
     hot: Arc<HotFiles>,
     /// Where the file watcher reports changes (see `live.rs`).
@@ -78,7 +78,7 @@ pub struct Indexer {
 
 impl Indexer {
     /// `dir` is where the index file lives.
-    pub fn new(ctx: egui::Context, tx: Sender<IndexMsg>, dir: &Path) -> Self {
+    pub fn new(waker: Waker, tx: Sender<IndexMsg>, dir: &Path) -> Self {
         let sink = ChangeSink::new();
         sink.set_ignored_dir(dir);
         let hot = Arc::new(HotFiles::default());
@@ -89,7 +89,7 @@ impl Indexer {
             focused: Arc::new(AtomicBool::new(true)),
             live: Arc::new(AtomicUsize::new(0)),
             tx,
-            ctx,
+            waker,
             hot,
             sink,
             tracked: Arc::new(Mutex::new(Arc::new(HashSet::new()))),
@@ -118,14 +118,14 @@ impl Indexer {
                 hot: Arc::clone(&self.hot),
                 sink: Arc::clone(&self.sink),
                 tx: self.tx.clone(),
-                ctx: self.ctx.clone(),
+                waker: self.waker.clone(),
             },
             epoch,
         );
     }
 
     /// The collection point for file-system events. Create the watcher with
-    /// `DirWatcher::new(ctx, indexer.change_sink())` to get live size updates.
+    /// `DirWatcher::new(waker, indexer.change_sink())` to get live size updates.
     pub fn change_sink(&self) -> Arc<ChangeSink> {
         Arc::clone(&self.sink)
     }
@@ -217,7 +217,7 @@ impl Indexer {
         let focused = Arc::clone(&self.focused);
         let sink = Arc::clone(&self.sink);
         let tx = self.tx.clone();
-        let ctx = self.ctx.clone();
+        let waker = self.waker.clone();
         self.live.fetch_add(1, Ordering::SeqCst);
         let guard = Live(Arc::clone(&self.live));
         std::thread::spawn(move || {
@@ -227,7 +227,7 @@ impl Indexer {
             let send = |msg: IndexMsg| {
                 let alive = tx.send(msg).is_ok();
                 if alive {
-                    ctx.request_repaint();
+                    waker.wake();
                 }
                 alive
             };

@@ -5,17 +5,17 @@ use crate::prelude::*;
 impl Explorer {
     /// The title bar: tabs on the left, draggable empty space, caption buttons on the right.
     pub(crate) fn ui_tabs(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        let (m, pal) = (self.m, self.pal);
-        let active = self.active;
-        let left_gap = if self.settings.left_drag_space { m.accessibility_scale * 40.0 } else { 0.0 };
+        let (m, pal) = (self.win.m, self.win.pal);
+        let active = self.win.active;
+        let left_gap = if self.core.settings.left_drag_space { m.accessibility_scale * 40.0 } else { 0.0 };
         // 1.0 while the first tab is selected: the band below then has a square corner and the tab's wing meets the window edge.
-        self.first_anim = ui.animate_bool_with_time(
-            Id::unique("first_tab_active"),
-            active == 0 && !self.settings.left_drag_space,
+        self.win.first_anim = ui.animate_bool_with_time(
+            win_id("first_tab_active"),
+            active == 0 && !self.core.settings.left_drag_space,
             0.15,
         );
         let info: Vec<(u64, String, String, &'static str)> = self
-            .tabs
+            .win.tabs
             .iter()
             .map(|t| {
                 if t.trash.is_some() {
@@ -31,18 +31,18 @@ impl Explorer {
         // Tabs that are currently shown in a tile get a thin accent underline.
         let vis: Vec<u64> = {
             let mut v = Vec::new();
-            if let Some(t) = &self.tiles {
+            if let Some(t) = &self.win.tiles {
                 t.leaf_ids(&mut v);
             }
             v
         };
         let mut drag_start: Option<u64> = None;
         // Tab being dragged (set by a previous frame) and where the pointer is: used to reorder tabs.
-        let dragging = self.tab_drag;
+        let dragging = self.win.tab_drag;
         let pointer = ui.input(|i| i.pointer.latest_pos());
         let mut reorder: Option<(usize, usize)> = None;
         let mut start_move = false;
-        let closing_id = Id::unique("tabs_closing");
+        let closing_id = win_id("tabs_closing");
         let mut closing: Vec<u64> = ui.data(|d| d.get_temp(closing_id)).unwrap_or_default();
         let bar_h = m.tab_h + m.accessibility_scale * 6.0;
         let caption_w = m.accessibility_scale * 46.0 * 3.0;
@@ -53,8 +53,8 @@ impl Explorer {
             .exact_size(bar_h)
             .frame(
                 bar_frame(&pal, 0.0, 0.0, 0.0, 0.0).corner_radius(CornerRadius {
-                    nw: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()) && self.settings.custom_frame {15}else{0},
-                    ne: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx())  && self.settings.custom_frame {15}else{0},
+                    nw: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx()) && self.core.settings.custom_frame {15}else{0},
+                    ne: if get_desktop().contains("GNOME") && !Self::is_maximized(ui.ctx())  && self.core.settings.custom_frame {15}else{0},
                     sw: 0,
                     se: 0,
                 }),
@@ -67,7 +67,7 @@ impl Explorer {
                 // Empty title-bar space moves the window; double-click maximizes. Registered first so tabs sit on top.
                 let drag_rect = Rect::from_min_max(full.min, pos2(caption.left(), full.bottom()));
                 let drag =
-                    ui.interact(drag_rect, Id::unique("titlebar_drag"), Sense::click_and_drag());
+                    ui.interact(drag_rect, win_id("titlebar_drag"), Sense::click_and_drag());
                 if drag.drag_started_by(egui::PointerButton::Primary) {
                     start_move = true; // sent after the panel, see below
                 }
@@ -95,7 +95,7 @@ impl Explorer {
 
                         // New tabs grow in from zero width. Tabs seen for the first time (not on the very first
                         // frame, so a restored session doesn't animate) are seeded at 0 and eased to 1.
-                        let known_id = Id::unique("tabs_known_ids");
+                        let known_id = win_id("tabs_known_ids");
                         let known: Vec<u64> = ui.data(|d| d.get_temp(known_id)).unwrap_or_default();
                         let first_frame = known.is_empty();
                         let grow: Vec<f32> = info
@@ -135,7 +135,7 @@ impl Explorer {
 
                         // Bring the active tab into view when it (or the tab count) changes.
                         let strip_key = (info.get(active).map(|t| t.0).unwrap_or(0), info.len());
-                        let strip_id = Id::unique("tab_strip_last");
+                        let strip_id = win_id("tab_strip_last");
                         let strip_changed =
                             ui.data(|d| d.get_temp::<(u64, usize)>(strip_id)) != Some(strip_key);
                         ui.data_mut(|d| d.insert_temp(strip_id, strip_key));
@@ -165,6 +165,22 @@ impl Explorer {
                                 //multiplier for scrolling the tab bar
                                 const TAB_SCROLL_SPEED: f32 = 8.0;
                                 ui.scroll_with_delta(vec2(dx * TAB_SCROLL_SPEED, 0.0));
+                            }
+                        }
+                        // Dragging a tab towards either end of an overflowing strip scrolls it that way, faster
+                        // the closer the pointer is to the end, so tabs further away can be reached.
+                        if let (Some(_), Some(p)) = (dragging, pointer) {
+                            if overflow && p.y >= full.top() && p.y <= full.bottom() {
+                                let zone = m.accessibility_scale * 56.0;
+                                const SPEED: f32 = 900.0; // points per second at the very end
+                                let into_left = ((scroll_rect.left() + zone - p.x) / zone).clamp(0.0, 1.0);
+                                let into_right = ((p.x - (scroll_rect.right() - zone)) / zone).clamp(0.0, 1.0);
+                                let dir = into_left - into_right; // positive: show tabs further left
+                                if dir != 0.0 {
+                                    let dt = ui.input(|i| i.stable_dt).min(0.05);
+                                    ui.scroll_with_delta(vec2(dir * SPEED * dt, 0.0));
+                                    ui.request_repaint();
+                                }
                             }
                         }
                         let mut tab_rects: Vec<Rect> = Vec::with_capacity(info.len());
@@ -353,7 +369,7 @@ impl Explorer {
                     }
                 }
 
-                if self.settings.custom_frame {
+                if self.core.settings.custom_frame {
                     caption_buttons(ui, &m, &pal, maximized, true);
                 }
             });
@@ -361,12 +377,12 @@ impl Explorer {
         ui.data_mut(|d| d.insert_temp(closing_id, closing));
 
         if let Some(id) = drag_start {
-            self.tab_drag = Some(id);
+            self.win.tab_drag = Some(id);
         }
         if start_move {
             ui.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             ui.ctx()
-                .data_mut(|d| d.insert_temp(Id::unique("pointer_reset"), true));
+                .data_mut(|d| d.insert_temp(win_id("pointer_reset"), true));
             ui.request_repaint();
         }
         if let Some((from, to)) = reorder {
@@ -377,15 +393,15 @@ impl Explorer {
 
     /// Moves a tab to a new position and keeps `active` pointing at the same tab.
     pub(crate) fn move_tab(&mut self, from: usize, to: usize) {
-        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+        if from == to || from >= self.win.tabs.len() || to >= self.win.tabs.len() {
             return;
         }
-        let active_id = self.tabs.get(self.active).map(|t| t.id);
-        let t = self.tabs.remove(from);
-        self.tabs.insert(to, t);
+        let active_id = self.win.tabs.get(self.win.active).map(|t| t.id);
+        let t = self.win.tabs.remove(from);
+        self.win.tabs.insert(to, t);
         if let Some(id) = active_id {
-            if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
-                self.active = i;
+            if let Some(i) = self.win.tabs.iter().position(|t| t.id == id) {
+                self.win.active = i;
             }
         }
     }
@@ -393,11 +409,11 @@ impl Explorer {
     /// While a tab is being dragged: shows where it would land (clearly, in the accent colour) and
     /// performs the drop on release.
     pub(crate) fn tab_drag_overlay(&mut self, ui: &mut Ui, panes: &[(u64, Rect)]) {
-        if self.is_backdrop {
+        if self.win.is_backdrop {
             // Prevents the backdrop render cycle from overwriting the tab drag state.
             return;
         }
-        let Some(dragged) = self.tab_drag else {
+        let Some(dragged) = self.win.tab_drag else {
             return;
         };
         let (pos, down, released) = ui.input(|i| {
@@ -407,15 +423,16 @@ impl Explorer {
                 i.pointer.primary_released(),
             )
         });
-        let (m, pal) = (self.m, self.pal);
+        let (m, pal) = (self.win.m, self.win.pal);
         ui.set_cursor_icon(egui::CursorIcon::Grabbing);
         ui.request_repaint();
         let outside = self.cursor_outside_window() == Some(true);
         let overlay = ui.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
-            Id::unique("tile_drop_preview"),
+            win_id("tile_drop_preview"),
         ));
         let mut target: Option<(u64, DropZone)> = None;
+        let mut preview: Option<Rect> = None;
         // Over the title bar (above all panes) a dragged tab only reorders: no split overlay there.
         let panes_top = panes
             .iter()
@@ -423,19 +440,22 @@ impl Explorer {
             .fold(f32::INFINITY, f32::min);
 
         if outside {
-            if self.peer_under.0.elapsed() > Duration::from_millis(150) {
-                let over = cursor_screen_pos()
-                    .map_or(false, |(cx, cy)| self.peers.window_at(cx, cy).is_some());
-                self.peer_under = (Instant::now(), over);
+            if self.win.peer_under.0.elapsed() > Duration::from_millis(150) {
+                let serial = self.win.serial;
+                let over = cursor_screen_pos().map_or(false, |(cx, cy)| {
+                    self.window_under(cx, cy, serial).is_some() || self.core.peers.window_at(cx, cy).is_some()
+                });
+                self.win.peer_under = (Instant::now(), over);
             }
-            let msg = if self.peer_under.1 {
-                if self.tabs.len() > 1 {
+            let pane = self.win.tiles.as_ref().is_some_and(|t| t.contains(dragged));
+            let msg = if self.win.peer_under.1 {
+                if self.win.tabs.len() > 1 {
                     "Release to move this tab into that window  (hold Shift: move all tabs)"
                 } else {
                     "Release to merge this window into that window"
                 }
-            } else if self.tabs.len() > 1 {
-                "Release to open this tab in its own window"
+            } else if self.win.tabs.len() > 1 {
+                if pane { "Release to open this pane in its own window" } else { "Release to open this tab in its own window" }
             } else {
                 "Drop on another FileFly window to merge"
             };
@@ -454,35 +474,45 @@ impl Explorer {
                 pal.on_accent,
             );
         } else if let Some(p) = pos.filter(|p| panes.is_empty() || p.y >= panes_top) {
-            let already = panes.iter().any(|(t, _)| *t == dragged);
-            let can_split = already || panes.len() < 4;
-            let dragged_special = self.tabs.iter().any(|t| t.id == dragged && t.special());
-            if let Some((tid, rect)) = panes.iter().find(|(_, r)| r.contains(p)) {
-                let same = *tid == dragged;
-                // Dropping a tab on an edge of its own pane duplicates it into a new pane, as long as
-                // there is room (and it is a normal folder tab when other panes are already open).
-                let zone_ok = if !same {
-                    can_split
-                } else if panes.len() == 1 {
-                    true
-                } else {
-                    panes.len() < 4 && !dragged_special
-                };
-                let zone = drop_zone(*rect, p, zone_ok);
-                if !(same && zone == DropZone::Center) {
+            // A tab open in a pane can be moved to another pane (a tab that is not open yet needs a free slot).
+            // Over its own pane there is nothing to drop on (only the split shortcut duplicates a pane), except in
+            // single-pane mode, where an edge drop moves the shown tab into a new pane.
+            let can_split = panes.iter().any(|(t, _)| *t == dragged) || panes.len() < MAX_PANES;
+            if let Some((tid, rect)) = panes.iter().find(|(_, r)| r.contains(p)).filter(|(t, _)| *t != dragged || panes.len() == 1) {
+                let zone = drop_zone(*rect, p, can_split);
+                if *tid != dragged || zone != DropZone::Center {
                     target = Some((*tid, zone));
+                }
+                // Where the dragged pane ends up: the tree is simulated, because moving an open pane away
+                // frees its old split and so changes the space its new neighbour has.
+                if zone != DropZone::Center && *tid != dragged {
+                    if let Some(tree) = &self.win.tiles {
+                        let full = panes.iter().fold(Rect::NOTHING, |acc, (_, r)| acc.union(*r));
+                        let mut rects = Vec::new();
+                        tree.clone().drop_onto(dragged, *tid, zone).leaf_rects(full, m.accessibility_scale * 5.0, &mut rects);
+                        if let Some((_, r)) = rects.iter().find(|(t, _)| *t == dragged) {
+                            let own = panes.iter().find(|(t, _)| *t == dragged).map(|(_, r)| *r);
+                            if own.is_some_and(|o| o.min.distance(r.min) < 1.0 && o.max.distance(r.max) < 1.0) {
+                                // It would land exactly where it already is: nothing to show (and nothing to do).
+                                target = None;
+                            } else {
+                                preview = Some(*r);
+                            }
+                        }
+                    }
                 }
             }
 
             // Draw a blurred backdrop.
             if let Some((tid, zone)) = target {
                 if let Some((_, rect)) = panes.iter().find(|(t, _)| *t == tid) {
-                    let zr = zone_rect(*rect, zone).shrink(m.accessibility_scale * 4.0);
+                    let zr = preview.unwrap_or_else(|| zone_rect(*rect, zone));
+                    let zr = zr.shrink(m.accessibility_scale * 4.0);
                     let radius = CornerRadius::same(m.radius);
 
                     let screen = ui.content_rect();
                     let blurred = self
-                        .backdrop_blur
+                        .blur
                         .as_ref()
                         .is_some_and(|b| b.paint_zone(&overlay, zr, screen, m.radius as f32));
 
@@ -502,7 +532,7 @@ impl Explorer {
                         StrokeKind::Inside,
                     );
                     let label = self
-                        .tabs
+                        .win.tabs
                         .iter()
                         .find(|t| t.id == dragged)
                         .map(|t| t.title())
@@ -519,7 +549,7 @@ impl Explorer {
             }
         }
         if released || !down {
-            self.tab_drag = None;
+            self.win.tab_drag = None;
             if let Some((tid, zone)) = target {
                 self.drop_tab(dragged, tid, zone);
             } else if outside {
