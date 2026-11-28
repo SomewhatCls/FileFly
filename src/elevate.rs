@@ -18,6 +18,9 @@ pub(crate) enum AdminOp {
     Rename { from: PathBuf, to: PathBuf },
     /// Move to the Recycle Bin.
     Delete { paths: Vec<PathBuf> },
+    /// Both kinds at once, in one elevation: `bin` to the Recycle Bin, `permanent` for good (already
+    /// confirmed by the user before the elevation prompt).
+    DeleteMixed { bin: Vec<PathBuf>, permanent: Vec<PathBuf> },
     NewFolder { path: PathBuf },
     NewFile { path: PathBuf },
     /// `(source, destination, replace an existing destination)`
@@ -69,6 +72,22 @@ fn execute(op: AdminOp) -> Result<(), String> {
         }
         AdminOp::Delete { paths } => trash::delete_all(&paths)
             .map_err(|e| format!("Could not move item to the Recycle Bin: {e}")),
+        AdminOp::DeleteMixed { bin, permanent } => {
+            // Both parts always run; the first error is the one reported.
+            let mut first_err: Option<String> = None;
+            if !bin.is_empty() {
+                if let Err(e) = trash::delete_all(&bin) {
+                    first_err = Some(format!("Could not move item to the Recycle Bin: {e}"));
+                }
+            }
+            for p in permanent {
+                if let Err(e) = delete_for_good(&p, &|| false, &|_, _| {}) {
+                    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    first_err.get_or_insert(format!("Could not delete “{name}”: {e}"));
+                }
+            }
+            first_err.map_or(Ok(()), Err)
+        }
         AdminOp::NewFolder { path } => {
             fs::create_dir(&path).map_err(|e| format!("Could not create folder: {e}"))
         }

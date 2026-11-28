@@ -119,6 +119,7 @@ pub(crate) enum Action {
     CommitRename(PathBuf, String),
     CancelRename,
     Delete(Vec<PathBuf>),
+    DeletePermanently(Vec<PathBuf>),
     NewFolder,
     NewFile,
     Properties(PathBuf),

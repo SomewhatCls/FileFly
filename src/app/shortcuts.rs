@@ -83,12 +83,6 @@ impl Explorer {
             if i.pointer.button_pressed(egui::PointerButton::Extra2) {
                 actions.push(Action::Forward);
             }
-            if i.consume_key(M::CTRL | M::SHIFT, Key::F) {
-                actions.push(Action::NewFolder);
-            }
-            if i.consume_key(M::CTRL | M::SHIFT, Key::N) {
-                actions.push(Action::NewFile);
-            }
             if i.consume_key(M::CTRL, Key::Comma) {
                 actions.push(Action::OpenPage(Page::Settings));
             }
@@ -121,16 +115,23 @@ impl Explorer {
             let ev_copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
             let ev_cut = i.events.iter().any(|e| matches!(e, egui::Event::Cut));
             let ev_paste = i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)));
+            // On Windows egui-winit reports Shift+Delete as Event::Cut. That is the permanent delete,
+            // not a cut. (Ctrl+Shift+X is a real cut: it has `command` set.)
+            let ev_delete_permanently = cfg!(windows) && ev_cut && i.modifiers.shift && !i.modifiers.command;
             if !sel.is_empty() {
                 if ev_copy || (i.modifiers.command && i.key_pressed(Key::C)) {
                     actions.push(Action::Copy(sel.clone()));
                 }
-                if ev_cut || (i.modifiers.command && i.key_pressed(Key::X)) {
+                if (ev_cut && !ev_delete_permanently) || (i.modifiers.command && i.key_pressed(Key::X)) {
                     actions.push(Action::Cut(sel.clone()));
                 }
                 // Before plain Enter, which would otherwise take Alt+Enter as well.
                 if i.consume_key(M::ALT, Key::Enter) {
                     actions.push(Action::Properties(sel[0].clone()));
+                }
+                // So that permanent delete isnt captured by moving to recycle bin.
+                if ev_delete_permanently || i.consume_key(M::SHIFT, Key::Delete) {
+                    actions.push(Action::DeletePermanently(sel.clone()));
                 }
                 if i.consume_key(M::NONE, Key::Enter) {
                     if sel.len() == 1 {
