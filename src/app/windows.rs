@@ -388,6 +388,11 @@ impl Explorer {
             handle_resize(&ctx, &self.win.m);
         }
         if ctx.input(|i| i.viewport().close_requested()) {
+            // This frame draws nothing, and eframe presents it before it applies any viewport command (so
+            // `Visible(false)` would be one frame late): hide the OS window right now, or an empty backdrop shows.
+            if let Some(n) = &self.win.native {
+                hide_window(n);
+            }
             return true;
         }
 
