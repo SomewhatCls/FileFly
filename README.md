@@ -1,6 +1,13 @@
 # FileFly - a cross-platform, quad-paning file manager
 <img width="1804" height="1328" alt="image" src="https://github.com/user-attachments/assets/60aab92b-76a3-4a78-871d-e3a83e1d5a10" />
 
+## FileFly is now on Microsoft Store!
+The Microsoft Store version features store-dependent automatic updates and a signed msix package, which avoids SmartScreen warnings. Get it here:
+
+<a href="https://get.microsoft.com/installer/download/9NNMFJCLVFBS?referrer=appbadge" target="_self" >
+	<img src="https://get.microsoft.com/images/en-us%20dark.svg" width="200"/>
+</a>
+
 ## Table of contents
 
 - [Project Background](#project-background)
