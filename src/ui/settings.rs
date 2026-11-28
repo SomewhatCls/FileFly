@@ -551,7 +551,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             m,
             pal,
             "Custom window frame",
-            Some("Use the custom integrated window control title bar of the App. Changing this setting will restart the app."),
+            Some("Use the custom integrated window control title bar of the App."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.custom_frame),
         );
         fl_divider(ui, m, pal);
@@ -560,7 +560,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             m,
             pal,
             "Paning blur effects",
-            Some("Blurs the backdrop behind the paning overlay when dragging tabs.  Changing this setting will restart the app."),
+            Some("Blurs the backdrop behind the paning overlay when dragging tabs."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.blur_paning),
         );
         fl_divider(ui, m, pal);
@@ -708,7 +708,7 @@ pub(crate) fn settings_content(ui: &mut Ui, m: &Metrics, pal: &Palette, sp: &mut
             m,
             pal,
             "Git integration",
-            Some("Shows the current branch and allows you to checkout local branches within git repositories. Changing this setting will restart the app."),
+            Some("Shows the current branch and allows you to checkout local branches within git repositories."),
             |ui| fl_switch(ui, m, pal, &mut sp.s.git_activated),
         );
         fl_divider(ui, m, pal);
@@ -816,10 +816,13 @@ impl Explorer {
                 ui.set_theme(theme_pref(s.theme));
             }
             // For settings requiring restarts. Will be deprecated once logic is moved out of eframe.
-            let restart_fields = |x: &Settings| (x.custom_frame, x.git_activated, x.blur_paning);
-            if restart_fields(&s) != restart_fields(&old) {
-                (self.core.settings.custom_frame, self.core.settings.git_activated, self.core.settings.blur_paning) = restart_fields(&s);
-                self.core.require_restart = true;
+            let refresh_fields = |x: &Settings| (x.custom_frame, x.blur_paning);
+            if refresh_fields(&s) != refresh_fields(&old) {
+                (self.core.settings.custom_frame, self.core.settings.blur_paning) = refresh_fields(&s);
+                self.core.refresh_ui = true;
+            }
+            if s.git_activated != old.git_activated {
+                self.apply_git_setting();
             }
             if s.show_hidden != old.show_hidden || s.date_format != old.date_format {
                 self.reload_all();

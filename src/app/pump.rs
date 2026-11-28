@@ -517,8 +517,8 @@ impl Explorer {
         }
 
         // Schedules restart for settings requiring it.
-        if std::mem::take(&mut self.core.require_restart) {
-            self.reset_windows();
+        if std::mem::take(&mut self.core.refresh_ui) {
+            self.refresh_windows();
         }
 
         let theme = ctx.theme();

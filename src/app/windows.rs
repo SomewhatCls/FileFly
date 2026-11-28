@@ -220,10 +220,10 @@ impl Explorer {
     /// Starts every window's own state over around the same core (for settings that are only read when a window
     /// is set up). Nothing is stopped: operations keep running and keep their locks. Safe to call from inside a
     /// window frame: the work is done at the start of the next host frame.
-    pub(crate) fn reset_windows(&mut self) {
+    pub(crate) fn refresh_windows(&mut self) {
         self.core.settings.session = self.session_snapshot();
         save_settings(&self.core.settings);
-        self.reset_pending = true;
+        self.refresh_pending = true;
         self.ctx.request_repaint();
     }
 
@@ -325,10 +325,11 @@ impl Explorer {
             });
         });
 
-        if std::mem::take(&mut self.reset_pending) {
+        if std::mem::take(&mut self.refresh_pending) {
             for w in &mut self.windows {
-                w.reset_shell(&self.core.settings);
+                w.refresh_shell(&self.core.settings);
             }
+            self.apply_render_settings();
         }
 
         // Decided before any window is drawn, so exactly one window hosts the shared dialogs this frame.
@@ -367,10 +368,46 @@ impl Explorer {
         }
     }
 
+    /// After a live frame change (`Window::refresh_shell`) the OS window's client area changes without any resize
+    /// event reaching eframe, so its GL surface keeps the old size and the desktop compositor stretches the
+    /// picture (and the pointer no longer matches what is drawn). A real size change makes eframe resize the
+    /// surface: once the frame change has landed, grow the window by one point and put it back.
+    fn settle_surface(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.win.reshape.take() else { return };
+        let (size, maximized) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.inner_rect.map(|r| r.size()), v.maximized.unwrap_or(false) || v.fullscreen.unwrap_or(false))
+        });
+        let Some(size) = size.filter(|_| !maximized) else { return }; // a maximized window keeps its client size
+        self.win.reshape = match state {
+            Reshape::Wait { before: None, .. } => {
+                ctx.request_repaint();
+                Some(Reshape::Wait { before: Some(size), frames: 0 })
+            }
+            Reshape::Wait { before: Some(b), frames } => {
+                if size != b {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size + egui::vec2(1.0, 1.0)));
+                    ctx.request_repaint();
+                    Some(Reshape::Restore(size))
+                } else if frames < 30 {
+                    ctx.request_repaint_after(Duration::from_millis(50));
+                    Some(Reshape::Wait { before: Some(b), frames: frames + 1 })
+                } else {
+                    None // the client area did not change: nothing to fix
+                }
+            }
+            Reshape::Restore(original) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(original));
+                None
+            }
+        };
+    }
+
     /// One frame of the window that is swapped in, inside its viewport. Returns whether the user closed it.
     fn window_frame(&mut self, ui: &mut Ui) -> bool {
         let ctx = ui.ctx().clone();
         self.track_native();
+        self.settle_surface(&ctx);
         if std::mem::take(&mut self.win.fresh) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.on_active_changed();

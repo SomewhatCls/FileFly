@@ -62,7 +62,7 @@ pub(crate) struct Core {
     pub(crate) peers: Peers,
     /// Windows transparency effects available (off in Battery Saver / when disabled in Settings).
     pub(crate) transparency: bool,
-    pub(crate) require_restart: bool,
+    pub(crate) refresh_ui: bool,
     /// Current state of the update request.
     pub(crate) update: UpdateState,
     /// This stores which entry icons are currently being probed, to prevent
@@ -75,6 +75,14 @@ pub(crate) struct Core {
     pub(crate) deferred_extracts: Vec<PastePlan>,
 }
 
+/// Progress of the resize that makes eframe refit its surface after a live frame change.
+pub(crate) enum Reshape {
+    /// Waiting for the new client size to show up (`before` is the size when the change was made).
+    Wait { before: Option<egui::Vec2>, frames: u8 },
+    /// The window was grown by one point: put it back to this size.
+    Restore(egui::Vec2),
+}
+
 /// State of one window: its tabs, layout, dialogs and everything bound to its egui context.
 pub(crate) struct Window {
     /// Unique for the life of the process, never reused. Part of every id and title that must not collide
@@ -82,7 +90,7 @@ pub(crate) struct Window {
     pub(crate) serial: u64,
     /// This window's viewport.
     pub(crate) vid: egui::ViewportId,
-    /// What the OS window is created with. Only `reset_shell` changes it (the decorations flag): egui patches the
+    /// What the OS window is created with. Only `refresh_shell` changes it (the decorations flag): egui patches the
     /// live window to match, so nothing else may differ from what the window was created with.
     pub(crate) builder: egui::ViewportBuilder,
     /// Handle of the OS window, found by its unique start title once it exists (see `track_native`).
@@ -128,6 +136,8 @@ pub(crate) struct Window {
     pub(crate) backdrop_retries: usize,
     pub(crate) is_backdrop: bool,
     pub(crate) use_custom_window_frame: bool,
+    /// Set when the frame style was changed on the live OS window (see `Window::settle_surface`).
+    pub(crate) reshape: Option<Reshape>,
     pub(crate) text_scale_checked: Instant,
     /// The last known theme.
     pub(crate) theme_choice: ThemeChoice,
@@ -169,9 +179,11 @@ pub(crate) struct Explorer {
     pub(crate) icon: Option<Arc<egui::IconData>>,
     /// Draws the blurred backdrop behind tab paning overlays (owns GL resources of the host window).
     pub(crate) blur: Option<BackdropBlur>,
-    /// A setting that needs the windows to start over was changed (see `reset_windows`); handled at the start of
+    /// The host window's GL handle, kept so the blur can be built again when its setting is switched.
+    pub(crate) gl: Option<Arc<eframe::glow::Context>>,
+    /// A setting that needs the windows to start over was changed (see `refresh_windows`); handled at the start of
     /// the next host frame.
-    pub(crate) reset_pending: bool,
+    pub(crate) refresh_pending: bool,
 }
 
 /// A request that involves a window other than the one it was made in (see `Explorer::pending`).
@@ -226,6 +238,7 @@ impl Window {
             backdrop_retries: 0,
             is_backdrop: false,
             use_custom_window_frame: settings.custom_frame,
+            reshape: None,
             theme_choice: ThemeChoice::default(),
             text_scale_checked: Instant::now(),
             peer_under: (Instant::now(), false),
@@ -261,7 +274,10 @@ impl Window {
     /// window itself lives on: destroying it and creating it again within one egui frame cannot be done (eframe
     /// panics: "the user callback was never called"), and a window needs no new OS window for these settings, egui
     /// patches the decorations of the live one.
-    pub(crate) fn reset_shell(&mut self, settings: &Settings) {
+    pub(crate) fn refresh_shell(&mut self, settings: &Settings) {
+        if self.use_custom_window_frame != settings.custom_frame {
+            self.reshape = Some(Reshape::Wait { before: None, frames: 0 });
+        }
         self.builder = self.builder.clone().with_decorations(!settings.custom_frame);
         self.use_custom_window_frame = settings.custom_frame;
         self.applied_style = None;
@@ -384,7 +400,7 @@ impl Explorer {
             reindex_wanted: false,
             peers: Peers::new(waker.clone(), &app_dir()),
             transparency: system_transparency(),
-            require_restart: false,
+            refresh_ui: false,
             key_state: std::panic::catch_unwind(device_query::DeviceState::new).ok(),
             update: UpdateState::Idle,
             probed_icons: HashSet::new(),
@@ -410,7 +426,8 @@ impl Explorer {
             ctx: egui::Context::default(),
             icon: Some(icon),
             blur: None,
-            reset_pending: false,
+            gl: None,
+            refresh_pending: false,
         };
         // Independent of the tabs, so it also applies when FileFly is started on a given folder.
         app.win.sidebar_width = app.core.settings.session.sidebar_width;
@@ -431,7 +448,7 @@ impl Explorer {
 
     /// Binds the core to the host window's egui context, once: fonts, icons, theme, the repaint hook of every
     /// background thread, and the GL resources of the blurred drag backdrop. Never repeated: all windows share
-    /// this context, so a settings restart only resets windows (see `reset_windows`).
+    /// this context, so a settings restart only resets windows (see `refresh_windows`).
     pub(crate) fn attach(&mut self, cc: &eframe::CreationContext<'_>) {
         let ui = cc.egui_ctx.clone();
         egui_extras::install_image_loaders(&ui);
@@ -454,13 +471,37 @@ impl Explorer {
             w.ui = ui.clone();
         }
         icons_reset();
+        self.gl = cc.gl.clone();
+        self.apply_git_setting();
+        self.apply_render_settings();
+    }
+
+    /// Switches the git toolbar state on or off. Needs no restart: the toolbar reads it every frame.
+    pub(crate) fn apply_git_setting(&mut self) {
+        let on = self.core.settings.git_activated && git_available();
+        if on != self.core.git.is_some() {
+            self.core.git = on.then(|| GitState::new(self.core.waker.clone()));
+        }
+    }
+
+    /// (Re)builds what the "restart" settings switch on or off and the windows cannot patch live: the blurred
+    /// drag backdrop (it changes the render pipeline). Runs at start and whenever that setting changed. Nothing
+    /// here touches operations, the indexer or any OS window.
+    pub(crate) fn apply_render_settings(&mut self) {
+        let settings = &self.core.settings;
         // A second context draws the app twice for the blurred backdrop of tab paning drags.
-        self.blur = cc.gl.clone().filter(|_| self.core.settings.blur_paning).and_then(|gl| {
-            BackdropBlur::new(gl, |ctx2| {
-                egui_extras::install_image_loaders(ctx2);
-                install_fonts(ctx2);
-            })
-        });
+        if !settings.blur_paning {
+            if let Some(mut b) = self.blur.take() {
+                b.release(); // no Drop: frees its textures
+            }
+        } else if self.blur.is_none() {
+            self.blur = self.gl.clone().and_then(|gl| {
+                BackdropBlur::new(gl, |ctx2| {
+                    egui_extras::install_image_loaders(ctx2);
+                    install_fonts(ctx2);
+                })
+            });
+        }
     }
 
     /// Starts or stops folder-size indexing while the app runs ("Calculate folder sizes" in Settings).
