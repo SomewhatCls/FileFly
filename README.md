@@ -4,7 +4,7 @@
 ## FileFly is now on Microsoft Store!
 The Microsoft Store version features store-dependent automatic updates and a signed msix package, which avoids SmartScreen warnings. Get it here:
 
-<a href="https://apps.microsoft.com/detail/9NNMFJCLVFBS?referrer=appbadge&mode=full" target="_blank"  rel="noopener noreferrer">
+<a href="https://apps.microsoft.com/detail/9NNMFJCLVFBS" target="_blank"  rel="noopener noreferrer">
 	<img src="https://get.microsoft.com/images/en-us%20dark.svg" width="200"/>
 </a>
 
