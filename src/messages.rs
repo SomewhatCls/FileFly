@@ -86,6 +86,7 @@ pub(crate) enum Action {
     OpenWhatsNew,
     CloseTab(usize),
     ClosePane(u64),
+    NewWindow(Option<PathBuf>, Option<(f32, f32)>),
     OpenTerminal(PathBuf),
     SwitchTab(usize),
     StepTab(i32),

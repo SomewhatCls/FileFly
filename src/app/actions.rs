@@ -96,6 +96,12 @@ impl Explorer {
                 }
                 self.fix_tiles();
             }
+            Action::NewWindow(dir, at) => {
+                let dir = dir
+                    .or_else(|| dirs::home_dir())
+                    .unwrap_or_else(|| self.tabs[ti].dir.clone());
+                spawn_window(&dir, at);
+            }
             Action::OpenTerminal(dir) => {
                 if let Err(e) = open_terminal(&dir) {
                     self.tabs[ti].error(format!("Could not open a terminal: {e}"));

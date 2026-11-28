@@ -42,6 +42,9 @@ impl Explorer {
             if i.consume_key(M::CTRL | M::SHIFT, Key::N) {
                 actions.push(Action::NewFolder);
             }
+            if i.consume_key(M::COMMAND, Key::N) {
+                actions.push(Action::NewWindow(None, None));
+            }
             if i.consume_key(M::CTRL, Key::T) {
                 actions.push(Action::NewTab);
             }
