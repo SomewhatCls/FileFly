@@ -799,10 +799,11 @@ mod imp {
             || fs.starts_with("fuse.nfs")
     }
 
-    fn load(include_network: bool) -> Vec<DriveInfo> {
+    fn load(include_network: bool) -> Option<Vec<DriveInfo>> {
+        let disks = Disks::new_with_refreshed_list().ok()?;
         let mut out = Vec::new();
         let mut net_roots = Vec::new();
-        for d in Disks::new_with_refreshed_list().list() {
+        for d in &disks {
             let mount = d.mount_point().to_path_buf();
             let fs = d.file_system().to_string_lossy().into_owned();
             let kind = if is_network_fs(&fs) {
@@ -830,7 +831,7 @@ mod imp {
         if let Ok(mut g) = NETWORK_ROOTS.write() {
             *g = net_roots;
         }
-        out
+        Some(out)
     }
 
     #[derive(Default)]
@@ -857,7 +858,11 @@ mod imp {
             && st.last_full.is_some_and(|t| t.elapsed() < window)
             && sig == st.sig;
         if !fresh {
-            st.cache = load(include_network);
+            // On a failed refresh keep the last good list, so the watcher doesn't
+            // report every drive as vanished.
+            if let Some(list) = load(include_network) {
+                st.cache = list;
+            }
             st.sig = sig;
             st.last_full = Some(Instant::now());
             st.net_flag = include_network;
